@@ -343,6 +343,8 @@ const S = {
   loaded: false, demo: false, offline: false, skew: 0,
   height: null, chain: null, hamster: null, live: null, api: "https://api.squeekchain.com/v1",
   night: null, balance: null, catalog: new Map(), me: null, watching: false,
+  spin: null, // server's wheel-duty view: { idle } = no settled block for MANUAL_IDLE_AFTER_MS
+  meAt: 0, // serverTime of the newest `me` applied (drops an older snapshot that lands late)
 };
 const params = new URLSearchParams(location.search);
 const UTC_OVERRIDE = params.has("utc") ? Number(params.get("utc")) : null; // ?utc=22 previews the tint at that hour
@@ -383,24 +385,27 @@ function applyState(j) {
   S.chain = j.chain;
   S.hamster = j.hamster;
   S.night = j.night;
+  S.spin = j.spin || null;
   S.balance = j.balance || S.balance;
   if (j.api) S.api = j.api;
   if (typeof j.serverTime === "number") S.skew = j.serverTime - Date.now();
   if (j.room) applyRoom(j.room);
   if (Array.isArray(j.catalog) && (first || j.catalog.length !== S.catalog.size)) S.catalog = new Map(j.catalog.map((i) => [i.id, i]));
-  if (j.me) applyMe(j.me, first);
+  if (j.me) applyMe(j.me, first, { at: j.serverTime });
   else if (j.meError) toast(j.meError === "server_full" ? "The server is full right now." : `Could not load your room (${j.meError}).`, "err");
   if (first) { ham.init = false; liveFetch(); }
 }
 // Every server response that carries `me` lands here: the UI always re-renders from the server's
 // copy (no optimistic updates).
-function applyMe(me, first = false) {
+// opts.at: the response's serverTime (snapshots and wheel-duty ticks), opts.soft: a wheel-duty credit.
+function applyMe(me, first = false, opts = {}) {
   if (!me) return;
+  if (typeof opts.at === "number") { if (opts.at < S.meAt) return; S.meAt = opts.at; }
   const prev = S.me;
   S.me = me;
   S.watching = !!me.watching;
   if (first || !prev) meter.shown = me.watts;
-  else if (me.lifetimeWatts > prev.lifetimeWatts) onAccrual(me.lifetimeWatts - prev.lifetimeWatts);
+  else if (me.lifetimeWatts > prev.lifetimeWatts) onAccrual(me.lifetimeWatts - prev.lifetimeWatts, !!opts.soft);
   meter.target = me.watts;
   afterMe();
 }
@@ -436,14 +441,16 @@ async function beat() {
 const meter = { shown: 0, target: 0, lastText: "", glowUntil: 0 };
 const fmt = (n) => Math.round(n).toLocaleString("en-US");
 let cuckooAt = 0; // the cuckoo clock pops its bird for ~2 s after each accrual
-function onAccrual(delta) {
-  cuckooAt = performance.now();
-  meter.glowUntil = performance.now() + 1600;
+// soft: a wheel-duty tick (a watt or two every few seconds): shorter glow, one spark, no cuckoo.
+function onAccrual(delta, soft = false) {
+  if (!soft) cuckooAt = performance.now();
+  meter.glowUntil = performance.now() + (soft ? 900 : 1600);
   $("meter").classList.add("glow");
   const gEl = $("gain");
   gEl.textContent = `+${fmt(delta)}`;
   gEl.classList.remove("show"); void gEl.offsetWidth; gEl.classList.add("show");
-  for (let i = 0; i < Math.min(5, 2 + Math.floor(Math.log10(delta + 1))); i++) spawnSpark(i * 90);
+  const n = soft ? 1 : Math.min(5, 2 + Math.floor(Math.log10(delta + 1)));
+  for (let i = 0; i < n; i++) spawnSpark(i * 90);
 }
 function renderHud() {
   const st = liveStatus();
@@ -467,6 +474,7 @@ function renderHud() {
     const watching = S.watching || me.watching;
     const bonus = Math.max(me.bonusPct || 0, (S.balance && S.balance.LIVE_BONUS_PCT) || 120) - 100; // me.bonusPct lags the first heartbeat
     $("watchLine").innerHTML = watching ? `watching<span class="chip on">+${bonus}%</span>` : "&nbsp;";
+    renderDutyHud(me);
   }
   stepMeter(0); // paints the meter text even when rAF is throttled
   $("demo").hidden = !S.demo;
@@ -507,6 +515,12 @@ $("night").onclick = async () => {
   const r = await post("/api/dev/night", {});
   if (r.ok) toast(`Night started: ${Math.round(r.j.durationMs / 60000)} min, ${r.j.blocks} blocks in bursts.`);
   else toast(r.j.error === "night_running" ? "A night is already running." : `night failed: ${r.j.error || r.status}`);
+  refresh();
+};
+$("sleep").onclick = async () => {
+  const r = await post("/api/dev/sleep", {});
+  if (r.ok) toast("The chain has been quiet for 11 minutes. Wheel duty is open.");
+  else toast(r.j.error === "night_running" ? "A night is running. Wait for it to end." : `nap failed: ${r.j.error || r.status}`);
   refresh();
 };
 
@@ -558,12 +572,133 @@ function stepHamster(dt, st) {
 const wheel = { rpm: 0, angle: 0 };
 const MAX_VIS_RPM = 160; // keeps 6 spokes under ~16 degrees per frame so the spin never reads backwards
 function stepWheel(dt, st) {
-  const target = ham.mode === "run" ? clamp(st.rpm || 30, 20, MAX_VIS_RPM) : 0;
-  const tau = target > wheel.rpm ? 450 : 900; // spin up quickly, coast down
-  wheel.rpm += (target - wheel.rpm) * (1 - Math.exp(-dt / tau));
-  if (wheel.rpm < 0.5 && target === 0) wheel.rpm = 0;
+  if (ham.mode === "sleep" && (duty.vel > 0 || duty.hold || duty.key)) {
+    wheel.rpm = duty.vel * DUTY_MAX_RPM; // he's in the burrow: the player's hand drives the wheel
+  } else {
+    const target = ham.mode === "run" ? clamp(st.rpm || 30, 20, MAX_VIS_RPM) : 0;
+    const tau = target > wheel.rpm ? 450 : 900; // spin up quickly, coast down
+    wheel.rpm += (target - wheel.rpm) * (1 - Math.exp(-dt / tau));
+    if (wheel.rpm < 0.5 && target === 0) wheel.rpm = 0;
+  }
   wheel.angle = (wheel.angle + (wheel.rpm / 60000) * dt) % 1; // revolutions
 }
+
+// ---------- wheel duty: the player spins the wheel while he sleeps ----------
+// Open only while the room shows him asleep in the burrow AND the server says the chain has been
+// quiet for MANUAL_IDLE_AFTER_MS (the server judges that; this page only mirrors it). He sleeps
+// through it: nothing here touches the hamster. While the wheel turns above DUTY_MIN_VEL the page
+// sends a tick every DUTY_TICK_MS; the server credits the real time between ticks.
+const DUTY_MAX_RPM = 60, DUTY_MIN_VEL = 0.3, DUTY_TICK_MS = 5000;
+const DUTY_RAMP_TAU = 500, DUTY_COAST_TAU = 550; // ~1.5 s to full speed, ~2 s to coast down
+const duty = { hold: false, key: false, vel: 0, spinning: false, tickAt: 0, busy: false, avail: false, hintT: 0 };
+const grabEl = $("wheelGrab"), dutyHintEl = $("dutyHint");
+const ss = { get(k) { try { return sessionStorage.getItem(k); } catch { return null; } }, set(k, v) { try { sessionStorage.setItem(k, v); } catch {} } };
+const dutyCapLeft = () => (S.me && S.me.manual ? S.me.manual.msCapLeft : 0);
+function dutyAvailable(st) {
+  return S.loaded && !S.offline && !!S.me && !!S.spin && S.spin.idle === true && !st.active && ham.mode === "sleep"
+    && !P.mode && !certOpen() && dutyCapLeft() > 0 && document.visibilityState === "visible";
+}
+function grabDuty(how) {
+  duty[how] = true;
+  duty.vel = Math.max(duty.vel, clamp(wheel.rpm / DUTY_MAX_RPM, 0, 1)); // catch a wheel that is still turning
+  grabEl.classList.add("on");
+  hideDutyHint();
+}
+function releaseDuty(how) {
+  if (how) duty[how] = false; else duty.hold = duty.key = false;
+  if (!duty.hold && !duty.key) grabEl.classList.remove("on");
+}
+function stepDuty(dt, st) {
+  const avail = dutyAvailable(st);
+  if (avail !== duty.avail) {
+    const engaged = duty.hold || duty.key || duty.spinning;
+    duty.avail = avail;
+    if (!avail) {
+      releaseDuty();
+      hideDutyHint();
+      if (engaged) {
+        if (st.active || !(S.spin && S.spin.idle)) toast("Squeektoshi's got it from here.");
+        else if (S.me && dutyCapLeft() <= 0) toast("That's all the wheel duty for today. It resets at 00:00 UTC.");
+      }
+    } else showDutyHint();
+    positionWheelGrab();
+    renderHud();
+  }
+  if (avail && (duty.hold || duty.key)) duty.vel += (1 - duty.vel) * (1 - Math.exp(-dt / DUTY_RAMP_TAU));
+  else duty.vel *= Math.exp(-dt / DUTY_COAST_TAU);
+  if (duty.vel < 0.005) duty.vel = 0;
+  const spinning = avail && duty.vel > DUTY_MIN_VEL;
+  if (spinning !== duty.spinning) {
+    duty.spinning = spinning;
+    if (avail) sendSpin(spinning); // a new spin restarts the server's clock; a stop credits the tail
+    renderHud();
+  } else if (spinning && performance.now() - duty.tickAt >= DUTY_TICK_MS) sendSpin(false);
+}
+async function sendSpin(restart) {
+  if (duty.busy) return;
+  duty.busy = true;
+  duty.tickAt = performance.now();
+  const r = await post("/api/spin", restart ? { restart: true } : {});
+  duty.busy = false;
+  if (r.ok && r.j.me) applyMe(r.j.me, false, { at: r.j.serverTime, soft: true });
+  else if (r.j && r.j.error === "hamster_awake") S.spin = { ...(S.spin || {}), idle: false }; // a block landed: stepDuty closes it
+}
+// the grab zone sits over the wheel (and its stand) only while wheel duty is open
+function positionWheelGrab() {
+  grabEl.hidden = !duty.avail;
+  const cr = view.getBoundingClientRect(), sr = stage.getBoundingClientRect(), k = cr.width / LW;
+  if (!cr.width) return;
+  const x0 = WHEEL.cx - WHEEL.r - 2, x1 = WHEEL.cx + WHEEL.r + 2;
+  const y0 = Math.max(WHEEL.cy - WHEEL.r - 1, (ROOM.WALL_BOTTOM + 1) * CELL), y1 = FLOOR_Y + 2; // stays clear of wall decor
+  const ox = cr.left - sr.left, oy = cr.top - sr.top;
+  if (duty.avail) Object.assign(grabEl.style, { left: `${Math.round(ox + x0 * k)}px`, top: `${Math.round(oy + y0 * k)}px`, width: `${Math.round((x1 - x0) * k)}px`, height: `${Math.round((y1 - y0) * k)}px` });
+  if (!dutyHintEl.hidden) {
+    const tw = dutyHintEl.offsetWidth;
+    const left = clamp(ox + WHEEL.cx * k, tw / 2 + 4, Math.max(tw / 2 + 4, sr.width - tw / 2 - 4));
+    dutyHintEl.style.left = `${Math.round(left)}px`;
+    dutyHintEl.style.top = `${Math.round(oy + y0 * k - 6)}px`;
+  }
+}
+function showDutyHint() { // once per browser session
+  if (ss.get("sr_duty_hint")) return;
+  ss.set("sr_duty_hint", "1");
+  dutyHintEl.hidden = false;
+  positionWheelGrab();
+  clearTimeout(duty.hintT);
+  duty.hintT = setTimeout(hideDutyHint, 9000);
+}
+function hideDutyHint() { clearTimeout(duty.hintT); dutyHintEl.hidden = true; }
+function renderDutyHud(me) {
+  const m = me.manual, el = $("duty");
+  const show = !!m && (duty.avail || m.msUsedToday > 0);
+  el.hidden = !show;
+  if (!show) return;
+  const used = m.msUsedToday / 60000, cap = m.capMs / 60000;
+  $("dutyLine").textContent = `wheel duty ${used < 10 ? used.toFixed(1) : Math.floor(used)}/${cap} min`;
+  const rate = $("dutyRate");
+  rate.hidden = !duty.spinning;
+  rate.textContent = `${+m.wattsPerMin.toFixed(2)} W/min`;
+  $("dutyProg").style.width = clamp((m.msUsedToday / m.capMs) * 100, 0, 100).toFixed(2) + "%";
+  el.classList.toggle("on", duty.spinning);
+}
+grabEl.addEventListener("pointerdown", (e) => {
+  if ((e.pointerType === "mouse" && e.button !== 0) || !duty.avail) return;
+  e.preventDefault();
+  try { grabEl.setPointerCapture(e.pointerId); } catch {}
+  grabDuty("hold");
+});
+for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) grabEl.addEventListener(ev, () => releaseDuty("hold"));
+grabEl.addEventListener("contextmenu", (e) => e.preventDefault()); // long-press on phones
+const isSpace = (e) => e.code === "Space" || e.key === " ";
+addEventListener("keydown", (e) => {
+  if (!isSpace(e) || !duty.avail || certOpen()) return;
+  const t = e.target;
+  if (t !== grabEl && t && t.closest && t.closest("input,textarea,select,button,a,summary,[contenteditable]")) return;
+  e.preventDefault(); // no page scroll while you hold it
+  if (!duty.key) grabDuty("key");
+});
+addEventListener("keyup", (e) => { if (isSpace(e) && duty.key) { e.preventDefault(); releaseDuty("key"); } });
+addEventListener("blur", () => releaseDuty());
 
 // ---------- effects: watt sparks + sleep Zs ----------
 const sparks = [], zs = [];
@@ -584,6 +719,9 @@ function stepFx(dt, st) {
   if (st.active && ham.mode === "run") {
     sparkClock -= dt;
     if (sparkClock <= 0) { spawnSpark(); sparkClock = 650 - 300 * clamp(st.speed / 1600, 0, 1) + Math.random() * 250; }
+  } else if (duty.spinning) { // wheel duty: a slow drip of sparks
+    sparkClock -= dt;
+    if (sparkClock <= 0) { spawnSpark(); sparkClock = 1600 + Math.random() * 900; }
   }
   for (let i = sparks.length - 1; i >= 0; i--) {
     const s = sparks[i];
@@ -651,8 +789,8 @@ function fit() {
   view.style.width = (LW * s) / dpr + "px";
   view.style.height = (LH * s) / dpr + "px";
 }
-new ResizeObserver(() => { fit(); positionTool(); }).observe(stage);
-addEventListener("resize", () => { fit(); positionTool(); });
+new ResizeObserver(() => { fit(); positionTool(); positionWheelGrab(); }).observe(stage);
+addEventListener("resize", () => { fit(); positionTool(); positionWheelGrab(); });
 (function watchDpr() { const mq = matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`); mq.addEventListener("change", () => { fit(); watchDpr(); }, { once: true }); })();
 
 function itemsIn(zone) {
@@ -780,6 +918,7 @@ let last = performance.now(), acc = 0, acc10 = 0, hudClock = 0;
 function step(dt) {
   const st = liveStatus();
   stepHamster(dt, st);
+  stepDuty(dt, st);
   stepWheel(dt, st);
   stepFx(dt, st);
   stepMeter(dt);
@@ -1676,7 +1815,7 @@ $("certShare").onclick = async () => {
 };
 
 // debug handle for the browser console / verification
-window.__squeekroom = { S, ham, wheel, sparks, meter, liveStatus, tintAt, P, checkSpot, enterPlace, select, get selPid() { return selPid; }, get FX() { return FX; },
+window.__squeekroom = { S, ham, wheel, duty, sparks, meter, liveStatus, tintAt, P, checkSpot, enterPlace, select, get selPid() { return selPid; }, get FX() { return FX; },
   renderNow() { const st = liveStatus(); tick10(); render(st); }, // paints one frame even when rAF is paused (hidden tab)
   renderCert, openCert, closeCert, certLeftWords, get cert() { return certUi.cert; } };
 

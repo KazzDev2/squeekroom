@@ -313,3 +313,176 @@ test("claim: rejects ineligible, issues serial + seed, idempotent", () => {
   assert.deepEqual(again.cert, c);
   assert.equal(st.certSerial, 1);
 });
+
+// ---------- wheel duty (manual spinning while he sleeps) ----------
+const TS = Date.UTC(2026, 9, 30, 12, 0, 0);
+const ASLEEP = TS - BALANCE.MANUAL_IDLE_AFTER_MS - 60_000; // last block 11 min before TS
+const freshS = (over = {}) => Object.assign(S.newPlayer(1000, TS), over);
+const { applySpin, chainIdle } = S;
+// Tick every `every` ms for `ms` in total, after a first (clock-starting) tick at `start`.
+function spinFor(p, ms, every = 5000, start = TS, lastAdvanceAt = ASLEEP) {
+  let t = start, credited = 0;
+  assert.equal(applySpin(p, lastAdvanceAt, t).credited, 0); // starts the clock
+  for (let left = ms; left > 0; left -= every) {
+    t += Math.min(every, left);
+    credited += applySpin(p, lastAdvanceAt, t).credited;
+  }
+  return { credited, t };
+}
+
+test("wheel duty: balance constants", () => {
+  assert.equal(BALANCE.MANUAL_WATTS_PER_MIN, 15);
+  assert.equal(BALANCE.MANUAL_DAILY_CAP_MIN, 120);
+  assert.equal(BALANCE.MANUAL_IDLE_AFTER_MS, 600_000);
+  assert.equal(BALANCE.MANUAL_TICK_MAX_MS, 10_000);
+  assert.equal(BALANCE.MANUAL_TICK_MIN_MS, 2_000);
+});
+
+test("wheel duty: 15 W/min at tier 0, 24 W/min at T2 (wheel multiplier applies)", () => {
+  const p = freshS();
+  const r = spinFor(p, 60_000);
+  assert.equal(r.credited, 15);
+  assert.equal(p.watts, 400 + 15);
+  assert.equal(p.lifetimeWatts, 15);
+  assert.equal(applySpin(p, ASLEEP, r.t + 5000).wattsPerMin, 15);
+
+  const q = freshS({ wheelTier: 2 });
+  assert.equal(spinFor(q, 60_000).credited, 24);
+  assert.equal(q.lifetimeWatts, 24);
+  const t1 = freshS({ wheelTier: 1 }); // 18.75 W/min: fractions carry over exactly
+  assert.equal(spinFor(t1, 4 * 60_000).credited, 75);
+});
+
+test("wheel duty: 0.2x a running hamster at the same tier", () => {
+  // Settling, the hamster earns ~1.25 W/s at tier 0 (7.5 blocks a minute x BASE_WATTS_PER_BLOCK).
+  const hamsterWPerMin = 1.25 * 60;
+  assert.equal(7.5 * BALANCE.BASE_WATTS_PER_BLOCK, hamsterWPerMin);
+  assert.equal(BALANCE.MANUAL_WATTS_PER_MIN / hamsterWPerMin, 0.2);
+  // the multiplier scales both the same way, so the ratio holds at every tier
+  for (let tier = 0; tier <= 5; tier++) {
+    const p = freshS({ wheelTier: tier });
+    const wpm = applySpin(p, ASLEEP, TS).wattsPerMin;
+    assert.equal(wpm / ((hamsterWPerMin * BALANCE.WHEEL_MULT_PCT[tier]) / 100), 0.2, `tier ${tier}`);
+  }
+});
+
+test("wheel duty: first tick and long gaps restart the clock; a normal 5 s tick credits 5 s", () => {
+  const p = freshS();
+  const first = applySpin(p, ASLEEP, TS);
+  assert.equal(first.ok, true);
+  assert.equal(first.credited, 0);
+  assert.equal(first.started, true);
+  assert.equal(p.lastSpinAt, TS);
+  assert.equal(p.manualMsToday, 0);
+
+  // 5 s later: 5 s x 15 W/min = 1.25 W -> 1 W now, 0.25 W carried
+  const a = applySpin(p, ASLEEP, TS + 5000);
+  assert.equal(a.credited, 1);
+  assert.equal(a.creditedMs, 5000);
+  assert.equal(a.msUsedToday, 5000);
+  assert.equal(p.manualFrac, 0.25 * S.MANUAL_FRAC_DEN);
+
+  // a 60 s gap: credits nothing (not even the 10 s clamp), just restarts the clock
+  const gap = applySpin(p, ASLEEP, TS + 65_000);
+  assert.equal(gap.credited, 0);
+  assert.equal(gap.started, true);
+  assert.equal(p.manualMsToday, 5000);
+  assert.equal(p.lastSpinAt, TS + 65_000);
+
+  // a late-but-recent tick (15 s) is clamped to MANUAL_TICK_MAX_MS
+  const late = applySpin(p, ASLEEP, TS + 80_000);
+  assert.equal(late.creditedMs, BALANCE.MANUAL_TICK_MAX_MS);
+  assert.equal(p.manualMsToday, 15_000);
+
+  // the page can restart the clock itself when a new spin begins
+  const re = applySpin(p, ASLEEP, TS + 85_000, { restart: true });
+  assert.equal(re.credited, 0);
+  assert.equal(re.started, true);
+  assert.equal(p.manualMsToday, 15_000);
+});
+
+test("wheel duty: ticks closer than 2 s are no-ops", () => {
+  const p = freshS();
+  applySpin(p, ASLEEP, TS);
+  const early = applySpin(p, ASLEEP, TS + 1500);
+  assert.equal(early.ok, true);
+  assert.equal(early.noop, true);
+  assert.equal(early.credited, 0);
+  assert.equal(early.nextMs, 500);
+  assert.equal(p.lastSpinAt, TS); // the clock is not moved by a no-op
+  // spam cannot add time: the next real tick credits only real elapsed time
+  for (let t = 100; t < 2000; t += 100) assert.equal(applySpin(p, ASLEEP, TS + t).noop, true);
+  const ok = applySpin(p, ASLEEP, TS + 4000);
+  assert.equal(ok.creditedMs, 4000);
+  assert.equal(p.manualMsToday, 4000);
+});
+
+test("wheel duty: daily cap reached mid-tick credits only the remainder", () => {
+  const cap = BALANCE.MANUAL_DAILY_CAP_MIN * 60_000;
+  assert.equal(S.MANUAL_CAP_MS, cap);
+  const day = new Date(TS).toISOString().slice(0, 10);
+  const p = freshS({ manualDay: day, manualMsToday: cap - 3000, lastSpinAt: TS });
+  const r = applySpin(p, ASLEEP, TS + 5000);
+  assert.equal(r.creditedMs, 3000);
+  assert.equal(r.msUsedToday, cap);
+  assert.equal(r.msCapLeft, 0);
+  assert.equal(p.watts, 400); // 3 s = 0.75 W: carried, not yet a whole watt
+  const after = applySpin(p, ASLEEP, TS + 10_000);
+  assert.equal(after.ok, true);
+  assert.equal(after.creditedMs, 0);
+  assert.equal(after.credited, 0);
+  assert.equal(after.msCapLeft, 0);
+  assert.equal(p.manualMsToday, cap);
+  // a full day of honest spinning tops out at the cap: 120 min x 15 W/min
+  const q = freshS();
+  assert.equal(spinFor(q, cap + 30 * 60_000).credited, 1800);
+  assert.equal(q.manualMsToday, cap);
+});
+
+test("wheel duty: UTC day rollover resets the cap", () => {
+  const midnight = Date.UTC(2026, 9, 31, 0, 0, 0);
+  const cap = S.MANUAL_CAP_MS;
+  const p = freshS({ manualDay: "2026-10-30", manualMsToday: cap, lastSpinAt: midnight - 2000 });
+  assert.equal(S.manualUsedToday(p, midnight - 1), cap);
+  assert.equal(S.manualUsedToday(p, midnight), 0); // the page sees a fresh day before any tick
+  const r = applySpin(p, midnight - 600_000 * 2, midnight + 3000);
+  assert.equal(r.creditedMs, 5000); // the tick that crosses midnight counts toward the new day
+  assert.equal(p.manualDay, "2026-10-31");
+  assert.equal(r.msUsedToday, 5000);
+  assert.equal(r.msCapLeft, cap - 5000);
+});
+
+test("wheel duty: hamster_awake while blocks are still settling", () => {
+  const p = freshS();
+  const recent = applySpin(p, TS - 60_000, TS); // a block 1 min ago
+  assert.deepEqual(recent, { ok: false, error: "hamster_awake", idle: false });
+  assert.equal(p.lastSpinAt, 0);
+  assert.equal(applySpin(p, null, TS).error, "hamster_awake"); // height never observed
+  assert.equal(applySpin(p, TS - BALANCE.MANUAL_IDLE_AFTER_MS + 1, TS).error, "hamster_awake");
+  assert.equal(applySpin(p, TS - BALANCE.MANUAL_IDLE_AFTER_MS, TS).ok, true); // exactly 10 min quiet
+  // live mode: a stale chain reading means we can't tell he's asleep
+  assert.equal(chainIdle(ASLEEP, TS, TS - 10_000), true);
+  assert.equal(chainIdle(ASLEEP, TS, TS - 600_000), false);
+  assert.equal(chainIdle(ASLEEP, TS, 0), false);
+  assert.equal(chainIdle(ASLEEP, TS, null), true); // demo mode: no freshness check
+});
+
+test("wheel duty: watts stay integers, fractions are never lost, activeDays counts", () => {
+  for (let tier = 0; tier <= 5; tier++) {
+    const p = freshS({ wheelTier: tier });
+    let t = TS;
+    applySpin(p, ASLEEP, t);
+    let ms = 0;
+    for (let i = 0; i < 400; i++) {
+      const step = 2000 + ((i * 7919) % 8001); // 2..10 s, irregular
+      t += step;
+      ms += step;
+      applySpin(p, ASLEEP, t);
+      assert.ok(Number.isInteger(p.watts) && Number.isInteger(p.lifetimeWatts), `tier ${tier}`);
+    }
+    const exact = (ms * BALANCE.MANUAL_WATTS_PER_MIN * BALANCE.WHEEL_MULT_PCT[tier]) / S.MANUAL_FRAC_DEN;
+    assert.equal(p.lifetimeWatts, Math.floor(exact), `tier ${tier}`);
+    assert.equal(p.watts, 400 + p.lifetimeWatts);
+    assert.equal(p.activeDays, 1);
+  }
+});
