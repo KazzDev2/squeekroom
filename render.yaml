@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: squeekroom
+    runtime: node
+    plan: free
+    buildCommand: ""
+    startCommand: node server.js
+    healthCheckPath: /api/state
+    envVars:
+      - key: SQUEEK_API
+        value: https://api.squeekchain.com/v1
+# Free plan has no persistent disk: state.json resets on restart/redeploy and the
+# service sleeps when idle. For durable rooms switch to plan: starter and add:
+#      - key: DATA_DIR
+#        value: /var/data
+#    disk:
+#      name: squeekroom-data
+#      mountPath: /var/data
+#      sizeGB: 1

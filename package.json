@@ -1,0 +1,16 @@
+{
+  "name": "squeekroom",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A cozy pixel room powered by a real hamster: every Squeek block generates watts for your room.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "demo": "node server.js --demo",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

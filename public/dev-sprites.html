@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Squeekroom sprites</title>
+<style>
+:root{--bg:#141210;--panel:#1d1a16;--ink:#ece6da;--muted:#968e80;--line:#332e27;--chk1:#c9c1b1;--chk2:#d8d1c3}
+:root[data-chk="dark"]{--chk1:#2b2824;--chk2:#36322c}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;padding:16px}
+h1{font-size:16px;margin:0 0 4px;letter-spacing:.06em}
+h2{font-size:12px;margin:22px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.14em;border-bottom:1px solid var(--line);padding-bottom:4px}
+.top{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.top button{background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:5px;padding:4px 9px;cursor:pointer;font:inherit}
+.pal{display:flex;flex-wrap:wrap;gap:4px;margin-top:10px}
+.pal div{width:44px;text-align:center;font-size:10px;color:var(--muted)}
+.pal i{display:block;height:24px;border-radius:3px;border:1px solid var(--line);margin-bottom:2px}
+.pal i.t{background:repeating-conic-gradient(#555 0 25%,#888 0 50%) 0 0/8px 8px}
+.grid{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end}
+.cell{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;cursor:zoom-in}
+.cell:hover{border-color:#6b6150}
+.cell canvas{display:block;image-rendering:pixelated;background:repeating-conic-gradient(var(--chk1) 0 25%,var(--chk2) 0 50%) 0 0/16px 16px}
+.cell .n{margin-top:6px;font-weight:600}
+.cell .d{color:var(--muted);font-size:11px}
+#zoom{position:fixed;inset:0;background:rgba(8,7,6,.92);display:none;overflow:auto;padding:24px;z-index:9;cursor:zoom-out}
+#zoom.on{display:block}
+#zoom .strip{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;margin-top:14px}
+#zoom canvas{image-rendering:pixelated;background:repeating-conic-gradient(var(--chk1) 0 25%,var(--chk2) 0 50%) 0 0/24px 24px;display:block}
+#zoom .cap{color:var(--muted);margin-top:4px}
+.err{color:#ef4444}
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>SQUEEKROOM SPRITES</h1>
+  <span id="count" class="d"></span>
+  <button id="chk">checker: light</button>
+  <button id="pause">pause</button>
+  <span class="d" style="color:var(--muted)">click any sprite to zoom 12x</span>
+</div>
+<div class="pal" id="pal"></div>
+<div id="sections"></div>
+<div id="zoom"></div>
+<script src="sprites.js"></script>
+<script>
+(() => {
+const S = window.SPRITES || {}, P = window.SPRITE_PALETTE || [], R = window.SKIN_REMAPS || {};
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+const SCALE = 4;
+let paused = false, t0 = performance.now();
+const cells = []; // { ctx, scale, draw(timeMs) }
+
+// palette strip
+P.forEach((hex, i) => { const d = el("div"); const sw = el("i", hex ? "" : "t"); if (hex) sw.style.background = hex; d.append(sw, `${i.toString(16)} ${hex || "clear"}`); $("pal").append(d); });
+
+// animation timing that mirrors game.js
+const fpsOf = (s) => s.fps || (s.frames.length > 1 ? 10 : 0);
+const RPM = 60;
+const angleAt = (ms) => ((ms / 60000) * RPM) % 1;
+function frameAt(s, ms) { const f = fpsOf(s); return f ? Math.floor((ms / 1000) * f) : 0; }
+function drawOne(ctx, id, ms, extra) {
+  const s = S[id];
+  const o = { angle: angleAt(ms), ...(extra || {}) };
+  const fr = s.angleFrames || id === "wheel" ? Math.floor(o.angle * 24) % 4 : frameAt(s, ms);
+  drawSprite(ctx, s, fr, -(s.ox || 0), -(s.oy || 0), o);
+}
+function makeCanvas(w, h, scale) { const c = el("canvas"); c.width = w * scale; c.height = h * scale; c.style.width = w * scale + "px"; c.style.height = h * scale + "px"; const ctx = c.getContext("2d"); ctx.imageSmoothingEnabled = false; return [c, ctx]; }
+function addCell(parent, title, sub, w, h, draw, zoomFn) {
+  const cell = el("div", "cell"), [c, ctx] = makeCanvas(w, h, SCALE);
+  cell.append(c, el("div", "n", title), el("div", "d", sub));
+  parent.append(cell);
+  cells.push({ ctx, w, h, scale: SCALE, draw });
+  cell.onclick = zoomFn;
+}
+
+// composite: wheel + tier overlay + hamster running inside, as game.js stacks them
+function drawWheelScene(ctx, tier, ms, skin) {
+  const a = angleAt(ms);
+  drawSprite(ctx, S.wheel, Math.floor(a * 24) % 4, 0, 0, { angle: a, tier });
+  if (tier > 0 && S["wheel_t" + tier]) drawSprite(ctx, S["wheel_t" + tier], Math.floor(ms / 100), 0, 0, { angle: a, tier });
+  const f = Math.floor((ms / 1000) * 10) % 4;
+  drawSprite(ctx, S.hamster_run, f, 24 - 12, 44 - 24 - (f % 2), { skin, remap: R[skin] });
+}
+function drawRunner(ctx, skin, ms) {
+  const f = Math.floor((ms / 1000) * 10) % 4;
+  drawSprite(ctx, S.hamster_run, f, 2, 3 - (f % 2), { skin, remap: R[skin] }); // renderer lifts odd frames 1px
+  ctx.fillStyle = "rgba(0,0,0,.25)"; ctx.fillRect(4, 27, 20, 1);
+}
+
+const sections = $("sections");
+function section(title) { const h = el("h2", "", title), g = el("div", "grid"); sections.append(h, g); return g; }
+
+// skins row
+const sk = section("hamster skins (run, 10 fps, odd frames lifted 1px like the renderer)");
+for (const skin of ["skin_classic", "skin_albino", "skin_caramel", "skin_panda", "skin_shadow", "skin_golden"]) {
+  addCell(sk, skin.replace("skin_", ""), "remap " + (R[skin] || []).map((v, i) => (v !== i ? `${i.toString(16)}>${v.toString(16)}` : "")).filter(Boolean).join(" "), 28, 28,
+    (ctx, ms) => drawRunner(ctx, skin, ms), () => zoomScene(28, 28, (ctx, ms) => drawRunner(ctx, skin, ms), "hamster_run / " + skin));
+}
+const sk2 = section("hamster poses in all skins (sit / blink / sleep)");
+for (const skin of ["skin_classic", "skin_albino", "skin_caramel", "skin_panda", "skin_shadow", "skin_golden"]) {
+  const draw = (ctx, ms) => {
+    drawSprite(ctx, S.hamster_sit, 0, 0, 0, { remap: R[skin] });
+    drawSprite(ctx, S.hamster_blink, 0, 24, 0, { remap: R[skin] });
+    drawSprite(ctx, S.hamster_sleep, Math.floor(ms / 1200), 48, 0, { remap: R[skin] });
+  };
+  addCell(sk2, skin.replace("skin_", ""), "sit · blink · sleep", 72, 24, draw, () => zoomScene(72, 24, draw, "poses / " + skin));
+}
+// wheel tiers composite
+const wt = section("wheel tiers 0-5 with the hamster inside (60 rpm, frame = floor(angle*24)%4)");
+for (let tier = 0; tier <= 5; tier++) {
+  const draw = (ctx, ms) => drawWheelScene(ctx, tier, ms, "skin_classic");
+  addCell(wt, "tier " + tier, tier ? (S["wheel_t" + tier] || {}).name || "" : "base wheel", 48, 50, draw, () => zoomScene(48, 50, draw, "wheel tier " + tier));
+}
+
+// every sprite, grouped
+const groups = {};
+for (const [id, s] of Object.entries(S)) if (typeof s !== "function") (groups[s.group || "other"] ||= []).push(id); // skin_* thumbnails are functions (see the skins rows)
+let nf = 0;
+for (const [gname, ids] of Object.entries(groups)) {
+  const g = section(gname);
+  for (const id of ids) {
+    const s = S[id];
+    nf += s.frames.length;
+    const meta = `${s.w}x${s.h} · ${s.frames.length}f` + (fpsOf(s) && s.frames.length > 1 ? ` · ${s.angleFrames || id === "wheel" ? "by angle" : fpsOf(s) + "fps"}` : "") + (s.ox != null || s.oy != null ? ` · off ${s.ox | 0},${s.oy | 0}` : "");
+    if (/^(wp|fl)_/.test(id)) { // swatches: show a 3x2 tiling so seams are visible
+      addCell(g, id, meta + " · tiled 3x2", s.w * 3, s.h * 2, (ctx) => { for (let ty = 0; ty < 2; ty++) for (let tx = 0; tx < 3; tx++) drawSprite(ctx, s, 0, tx * s.w, ty * s.h, {}); }, () => zoomSprite(id));
+      continue;
+    }
+    addCell(g, s.name ? `${id} (${s.name})` : id, meta, s.w, s.h, (ctx, ms) => drawOne(ctx, id, ms), () => zoomSprite(id));
+  }
+}
+// live function sprites (base art + live pixels). Fake inputs: status cycles active / idle / none
+// every 4 s, the clock runs on real UTC, the window sky runs one day per 24 s, the cuckoo pops every 5 s.
+const lv = section("animated (live): function sprites over base art · status cycles active/idle/none · window: 1 day per 24 s");
+for (const [id, s] of Object.entries(S)) {
+  if (typeof s !== "function" || !s.live) continue;
+  nf += s.base.frames.length;
+  const draw = (ctx, ms) => {
+    const key = ["active", "idle", "none"][Math.floor(ms / 4000) % 3];
+    s(ctx, Math.floor(ms / 100), 0, 0, { t: ms, now: Date.now(), utcHour: (ms / 1000) % 24, live: { key, speed: 1200, rpm: 70 }, cuckooAge: ms % 5000 });
+  };
+  addCell(lv, id, `${s.w}x${s.h} · live · base ${s.base.frames.length}f`, s.w, s.h, draw, () => zoomScene(s.w, s.h, draw, id + " (live)"));
+}
+$("count").textContent = `${Object.keys(S).length} sprites · ${nf} frames`;
+
+// zoom overlay (12x): animated view + every frame
+const Z = $("zoom");
+Z.onclick = () => { Z.className = ""; Z.innerHTML = ""; zoomCells.length = 0; };
+const zoomCells = [];
+function zoomSprite(id) {
+  const s = S[id];
+  Z.innerHTML = ""; zoomCells.length = 0;
+  Z.append(el("div", "n", `${id}  ${s.w}x${s.h}  ${s.frames.length} frame(s)${s.note ? "  · " + s.note : ""}`));
+  const strip = el("div", "strip");
+  const [ca, xa] = makeCanvas(s.w, s.h, 12);
+  const wa = el("div"); wa.append(ca, el("div", "cap", "animated")); strip.append(wa);
+  zoomCells.push({ ctx: xa, w: s.w, h: s.h, scale: 12, draw: (ctx, ms) => drawOne(ctx, id, ms) });
+  if (s.frames.length > 1) s.frames.forEach((_, i) => {
+    const [c, x] = makeCanvas(s.w, s.h, 12);
+    x.scale(12, 12);
+    // draw frame i directly (bypass seq/angle selection)
+    const one = { ...s, frames: [s.frames[i]], seq: null, angleFrames: false };
+    drawSprite(x, one, 0, -(s.ox || 0), -(s.oy || 0), {});
+    gridLines(x, s.w, s.h);
+    const w = el("div"); w.append(c, el("div", "cap", "frame " + i)); strip.append(w);
+  });
+  Z.append(strip);
+  Z.className = "on";
+}
+function zoomScene(w, h, draw, title) {
+  Z.innerHTML = ""; zoomCells.length = 0;
+  Z.append(el("div", "n", title));
+  const strip = el("div", "strip"), [c, x] = makeCanvas(w, h, 12);
+  strip.append(c); Z.append(strip);
+  zoomCells.push({ ctx: x, w, h, scale: 12, draw });
+  Z.className = "on";
+}
+function gridLines(x, w, h) {
+  x.fillStyle = "rgba(0,0,0,.08)";
+  for (let i = 1; i < w; i++) x.fillRect(i, 0, 1 / 12, h);
+  for (let j = 1; j < h; j++) x.fillRect(0, j, w, 1 / 12);
+}
+
+// one rAF for every cell
+function loop(now) {
+  const ms = paused ? pausedAt : now - t0;
+  for (const c of cells.concat(zoomCells)) {
+    c.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    c.ctx.clearRect(0, 0, c.w * c.scale, c.h * c.scale);
+    c.ctx.scale(c.scale, c.scale);
+    try { c.draw(c.ctx, ms); } catch (e) { console.error(e); }
+  }
+  requestAnimationFrame(loop);
+}
+let pausedAt = 0;
+$("pause").onclick = () => { paused = !paused; if (paused) pausedAt = performance.now() - t0; else t0 = performance.now() - pausedAt; $("pause").textContent = paused ? "play" : "pause"; };
+$("chk").onclick = () => { const d = document.documentElement.dataset.chk === "dark"; document.documentElement.dataset.chk = d ? "" : "dark"; $("chk").textContent = "checker: " + (d ? "light" : "dark"); };
+// ?frame=ms freezes time for reproducible screenshots
+const fz = new URLSearchParams(location.search).get("t");
+if (fz != null) { paused = true; pausedAt = Number(fz) || 0; $("pause").textContent = "play"; }
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

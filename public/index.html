@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Squeekroom</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: a live strip on top, the room fills the left, the shop desk on the right; stacks on phones.
+   Variables and panel styling mirror squeekplace so the two games feel like siblings. */
+:root{
+  --bg:#f3efe6; --panel:#fffdf8; --ink:#1d1a14; --muted:#6b645a; --line:#d9d2c3;
+  --squeek:#f5a623; --squeek-deep:#c2410c; --chain:#3b82f6; --ok:#16a34a; --warn:#b45309;
+  --tile-bg:#e9e3d6; --tile-empty:#ece7dc; --grid:#dcd5c6; --stage:#2a251d;
+  --display:"Silkscreen",ui-monospace,monospace; --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#15130f; --panel:#1e1b16; --ink:#f1ece2; --muted:#a39b8d; --line:#3a352c;
+  --tile-bg:#221f19; --tile-empty:#262219; --grid:#2e2a22; --stage:#0f0d0a; color-scheme:dark;}}
+:root[data-theme="dark"]{
+  --bg:#15130f; --panel:#1e1b16; --ink:#f1ece2; --muted:#a39b8d; --line:#3a352c;
+  --tile-bg:#221f19; --tile-empty:#262219; --grid:#2e2a22; --stage:#0f0d0a; color-scheme:dark;}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.45 var(--mono);display:flex;flex-direction:column;min-height:100%}
+button,input,textarea{font:inherit;color:inherit}
+h1{font-family:var(--display);font-weight:700;font-size:18px;letter-spacing:.5px;margin:0}
+.strip{display:flex;flex-wrap:wrap;align-items:center;gap:10px 22px;padding:10px max(16px,env(safe-area-inset-right,0px)) 10px max(16px,env(safe-area-inset-left,0px));border-bottom:1px solid var(--line);background:var(--panel)}
+.strip .stat{display:flex;flex-direction:column;min-width:0}
+.strip .lbl{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.strip .val{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.strip .sub{font-size:11px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--muted);margin-right:6px;vertical-align:middle}
+.dot.on{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 25%,transparent);animation:pulse 1.2s infinite}
+.dot.stale{background:var(--warn)}
+.dot.off{background:transparent;border:1px solid var(--muted)}
+@keyframes pulse{50%{box-shadow:0 0 0 6px transparent}}
+.bar{height:6px;width:140px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:4px}
+.bar i{display:block;height:100%;background:var(--chain);width:0;transition:width .6s}
+.bar.thin{height:3px;width:100%;min-width:160px;margin-top:3px}
+.bar.thin i{background:var(--squeek)}
+/* the watts meter: eased count-up in JS, glow when the wheel credits watts */
+.meter .big{font-family:var(--display);font-size:22px;line-height:1.1;color:var(--ink);transition:color .5s,text-shadow .5s}
+.meter .big small{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--muted);margin-left:4px}
+.meter.glow .big{color:var(--squeek-deep);text-shadow:0 0 10px color-mix(in srgb,var(--squeek) 80%,transparent),0 0 2px var(--squeek)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .meter.glow .big{color:var(--squeek)}}
+:root[data-theme="dark"] .meter.glow .big{color:var(--squeek)}
+.gain{display:inline-block;margin-left:8px;font-size:12px;font-weight:600;color:var(--ok);font-family:var(--mono);opacity:0}
+.gain.show{animation:gain 1.8s ease-out forwards}
+@keyframes gain{0%{opacity:0;transform:translateY(4px)}15%{opacity:1;transform:none}75%{opacity:1}100%{opacity:0;transform:translateY(-4px)}}
+.chip{display:inline-block;font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:0 5px;border-radius:3px;border:1px solid var(--line);color:var(--muted);margin-left:6px;vertical-align:1px}
+.chip.on{border-color:var(--ok);color:var(--ok)}
+.spacer{flex:1}
+.demobar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px max(16px,env(safe-area-inset-right,0px)) 6px max(16px,env(safe-area-inset-left,0px));border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--chain) 7%,var(--panel))}
+.demobar[hidden]{display:none}
+.demobar button{background:var(--chain);color:#fff;border:0;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:12px}
+.demobar button:disabled{opacity:.5;cursor:default}
+.hint{font-size:11px;color:var(--muted)}
+.main{flex:1;display:grid;grid-template-columns:1fr 320px;min-height:0}
+@media (max-width:860px){body{height:auto}.main{grid-template-columns:1fr;flex:none}}
+.main>*{min-width:0}
+.stage{position:relative;min-height:380px;background:var(--stage);overflow:hidden;user-select:none}
+.stage canvas{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:block;image-rendering:pixelated;image-rendering:crisp-edges;box-shadow:0 0 0 1px var(--line),0 12px 32px rgba(0,0,0,.35)}
+@media (max-width:860px){.stage{min-height:0;height:auto;aspect-ratio:320/206}}
+.stage .note{position:absolute;left:12px;bottom:10px;font-size:11px;color:#a39b8d;pointer-events:none}
+.panel{border-left:1px solid var(--line);background:var(--panel);padding:14px max(16px,env(safe-area-inset-right,0px)) 24px 16px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+@media (max-width:860px){.panel{border-left:0;border-top:1px solid var(--line);padding-left:max(16px,env(safe-area-inset-left,0px))}}
+.panel h2{font-family:var(--display);font-size:13px;margin:0;letter-spacing:.3px}
+.panel p{margin:0;color:var(--muted);font-size:12px}
+/* room column: the stage plus the inventory bar right under it (stays next to the room on phones) */
+.roomcol{display:flex;flex-direction:column;min-height:0;min-width:0}
+.roomcol .stage{flex:1}
+.stage canvas{touch-action:none}
+.stage canvas.grab{cursor:grab}
+.stage canvas.placing{cursor:crosshair}
+.firsthint{position:absolute;left:50%;top:14px;transform:translateX(-50%);max-width:calc(100% - 32px);background:color-mix(in srgb,var(--panel) 92%,transparent);color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:12px;text-align:center;pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.25)}
+.firsthint[hidden]{display:none}
+.itemtool{position:absolute;z-index:5;display:flex;align-items:center;gap:4px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);transform:translate(-50%,-100%);white-space:nowrap}
+.itemtool[hidden]{display:none}
+.itemtool .tname{font-size:11px;color:var(--muted);padding:0 4px;max-width:120px;overflow:hidden;text-overflow:ellipsis}
+.itemtool button{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:4px 8px;font-size:12px;cursor:pointer}
+.itemtool button:hover{border-color:var(--ink)}
+.itemtool button.danger{color:#dc2626}
+.itemtool button.x{padding:4px 6px;color:var(--muted)}
+.invbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:8px max(16px,env(safe-area-inset-right,0px)) 8px max(16px,env(safe-area-inset-left,0px));border-top:1px solid var(--line);background:var(--panel);min-height:58px}
+.invhead{display:flex;flex-direction:column;font-size:11px;color:var(--muted);line-height:1.3}
+.invhead b{font-family:var(--display);font-size:11px;color:var(--ink);font-weight:400}
+.invhead[hidden],.placing[hidden]{display:none}
+.placing{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px}
+.placing .ptext{min-width:0}
+.placing #placingWhy{color:var(--muted)}
+.placing #placingWhy.bad{color:#dc2626}
+.placing button{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:4px 9px;font-size:12px;cursor:pointer}
+.placing button:hover{border-color:var(--ink)}
+.invrow{display:flex;gap:6px;overflow-x:auto;flex:1;min-width:0;scrollbar-width:thin;padding:2px 0}
+.invrow .empty{font-size:12px;color:var(--muted);align-self:center}
+.chip2{position:relative;flex:none;width:44px;height:44px;border:1px solid var(--line);border-radius:6px;background:var(--tile-bg);cursor:pointer;padding:0;display:grid;place-items:center}
+.chip2:hover{border-color:var(--ink)}
+.chip2.on{border-color:var(--squeek-deep);box-shadow:0 0 0 2px color-mix(in srgb,var(--squeek) 55%,transparent)}
+.chip2 canvas{width:36px;height:36px;image-rendering:pixelated}
+.chip2 .n{position:absolute;right:-4px;top:-5px;background:var(--ink);color:var(--bg);font-size:10px;line-height:1;padding:2px 4px;border-radius:8px;font-weight:600}
+/* shop */
+.shophead{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.wallet{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.tabs{display:flex;flex-wrap:wrap;gap:4px}
+.tabs button{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:5px 8px;font-size:12px;cursor:pointer;white-space:nowrap}
+.tabs button:hover{border-color:var(--ink)}
+.tabs button[aria-selected="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:8px}
+.cards .sub{grid-column:1/-1;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-top:4px}
+.card{border:1px solid var(--line);border-radius:8px;background:var(--bg);padding:8px;display:flex;flex-direction:column;gap:3px;min-width:0}
+.card.cur{border-color:var(--squeek-deep)}
+.card .thumb{display:block;align-self:center;width:64px;height:64px;image-rendering:pixelated;background:var(--tile-bg);border-radius:4px;margin-bottom:3px}
+.card .cname{font-weight:600;font-size:12px;line-height:1.25}
+.card .cmeta{display:flex;justify-content:space-between;gap:4px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.card .price{color:var(--ink);font-weight:600}
+.card .own{overflow:hidden;text-overflow:ellipsis}
+.card .price.poor{color:#dc2626}
+.card .cnote{font-size:11px;color:var(--muted);min-height:1.3em;font-variant-numeric:tabular-nums}
+.card .cnote.poor{color:#dc2626}
+.card .cnote.up{color:var(--ok)}
+.card button{margin-top:auto;background:var(--squeek);color:#1d1a14;border:1px solid var(--squeek-deep);border-radius:6px;padding:6px 8px;font-weight:600;cursor:pointer;font-size:12px}
+.card button.alt{background:var(--panel);color:var(--ink);border-color:var(--line)}
+.card button:disabled{background:transparent;color:var(--muted);border-color:var(--line);cursor:default}
+.card button.ok{background:var(--ok);border-color:var(--ok);color:#fff}
+.card.shake,.meter.poor{animation:shake .45s}
+@keyframes shake{20%{transform:translateX(-4px)}40%{transform:translateX(4px)}60%{transform:translateX(-3px)}80%{transform:translateX(2px)}}
+.meter{position:relative}
+.meter.poor .big{color:#dc2626;text-shadow:0 0 10px rgba(239,68,68,.55)}
+.spend{position:absolute;left:0;top:30px;font-family:var(--mono);font-size:12px;font-weight:600;color:var(--squeek-deep);pointer-events:none;animation:spend 1.6s ease-out forwards;white-space:nowrap}
+@keyframes spend{0%{opacity:0;transform:translateY(-6px)}15%{opacity:1}100%{opacity:0;transform:translateY(22px)}}
+.nickrow{display:flex;align-items:center;gap:6px;border-top:1px solid var(--line);padding-top:10px;font-size:12px}
+.nickrow label{color:var(--muted);white-space:nowrap}
+.nickrow input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:4px 8px;font-size:12px}
+.nickrow button{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:4px 9px;font-size:12px;cursor:pointer}
+.toast.err{background:#b91c1c;color:#fff}
+.toast.ok{background:var(--ok);color:#fff}
+@media (max-width:860px){
+  .roomcol .stage{flex:none}
+  .tabs{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin:0 -16px;padding:0 16px 2px}
+  .tabs::-webkit-scrollbar{display:none}
+  .firsthint{top:8px;font-size:11px;padding:4px 10px}
+}
+@media (prefers-reduced-motion:reduce){.card.shake,.meter.poor{animation:none}.spend{animation-duration:.01s}}
+details{font-size:12px;color:var(--muted)}
+details summary{cursor:pointer;color:var(--ink)}
+.foot{border-top:1px solid var(--line);background:var(--panel);padding:8px max(16px,env(safe-area-inset-right,0px)) calc(8px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));font-size:11px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 14px}
+.toasts{position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);display:flex;flex-direction:column;gap:6px;z-index:20}
+.toast{background:var(--ink);color:var(--bg);padding:8px 12px;border-radius:6px;font-size:12px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+@media (prefers-reduced-motion:reduce){.dot.on{animation:none}.gain.show{animation-duration:.01s}}
+/* lifetime progress: a button (click = what's left, or claim / open the certificate) */
+.life{all:unset;display:flex;flex-direction:column;cursor:pointer;border-radius:3px}
+.life:focus-visible{outline:2px solid var(--chain);outline-offset:2px}
+.life .bar{display:block}
+.life.locked .sub{opacity:.85}
+.life.locked .bar i{background:color-mix(in srgb,var(--squeek) 45%,var(--muted))}
+.life.ready .bar i{background:var(--squeek);box-shadow:0 0 6px var(--squeek)}
+.certbtn,.pxbtn{font-family:var(--display);font-size:11px;letter-spacing:.3px;line-height:1.2;background:var(--squeek);color:#1d1a14;border:2px solid #1d1a14;border-radius:0;padding:4px 9px;cursor:pointer;white-space:nowrap;box-shadow:inset -2px -2px 0 var(--squeek-deep),inset 2px 2px 0 #ffd166}
+.certbtn{margin-top:6px;align-self:flex-start;animation:certglow 1.6s ease-in-out infinite}
+.certbtn[hidden]{display:none}
+.certbtn:disabled{opacity:.6;cursor:default;animation:none}
+.certbtn.claimed{animation:none;background:var(--panel);color:var(--ink);border-color:var(--ink);box-shadow:inset -2px -2px 0 var(--line)}
+.certbtn:focus-visible,.pxbtn:focus-visible,.certx:focus-visible{outline:2px solid var(--chain);outline-offset:2px}
+@keyframes certglow{50%{box-shadow:inset -2px -2px 0 var(--squeek-deep),inset 2px 2px 0 #ffd166,0 0 12px 3px color-mix(in srgb,var(--squeek) 75%,transparent)}}
+/* certificate overlay: always the dark stage look, whatever the page theme */
+body.modal-open{overflow:hidden}
+.certmodal{position:fixed;inset:0;z-index:40;background:rgba(10,8,6,.84);display:flex;align-items:center;justify-content:center;padding:16px}
+.certmodal[hidden]{display:none}
+.certbox{background:#1e1b16;color:#f1ece2;border:2px solid #000;box-shadow:0 0 0 2px #7c3f1d,0 0 0 4px #000,0 24px 60px rgba(0,0,0,.6);padding:12px;display:grid;gap:12px;max-height:100%;overflow:auto}
+.certcv{display:block;width:min(640px,calc(100vw - 64px),calc((100vh - 230px) * 2 / 3));width:min(640px,calc(100vw - 64px),calc((100dvh - 230px) * 2 / 3));height:auto;image-rendering:pixelated;background:#15110c;justify-self:center}
+.certside{display:flex;flex-direction:column;gap:10px;min-width:0}
+.certhead{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.certhead h2{font-family:var(--display);font-size:15px;margin:0;color:#ffd166;letter-spacing:.3px}
+.certsub{font-size:12px;color:#a39b8d;margin-top:2px;overflow-wrap:anywhere}
+.certnote{margin:0;font-size:12px;color:#a39b8d}
+.certacts{display:flex;flex-wrap:wrap;gap:8px}
+.pxbtn{font-size:12px;padding:6px 12px}
+.pxbtn.alt{background:#2a251d;color:#f1ece2;border-color:#000;box-shadow:inset -2px -2px 0 #000,inset 2px 2px 0 #4b4337}
+.certx{background:#2a251d;color:#f1ece2;border:2px solid #000;border-radius:0;padding:2px 8px;cursor:pointer;font-size:13px;box-shadow:inset -2px -2px 0 #000,inset 2px 2px 0 #4b4337}
+@media (min-width:760px) and (min-aspect-ratio:1/1){
+  .certbox{grid-template-columns:auto 230px;align-items:start}
+  .certcv{width:min(640px,calc(100vw - 340px),calc((100vh - 64px) * 2 / 3));width:min(640px,calc(100vw - 340px),calc((100dvh - 64px) * 2 / 3))}
+}
+@media (prefers-reduced-motion:reduce){.certbtn{animation:none}}
+</style>
+</head>
+<body>
+<header class="strip">
+  <h1>SQUEEKROOM</h1>
+  <div class="stat" title="Live reading of the real hamster">
+    <span class="lbl">Squeektoshi</span>
+    <span class="val"><span class="dot" id="dot"></span><span id="status">connecting…</span></span>
+    <span class="sub" id="source">&nbsp;</span>
+  </div>
+  <div class="stat"><span class="lbl">Speed</span><span class="val" id="speed">—</span><span class="sub">record 1.60 m/s</span></div>
+  <div class="stat"><span class="lbl">Squeek block</span><span class="val" id="block">—</span><div class="bar"><i id="prog"></i></div></div>
+  <div class="stat meter" id="meter">
+    <span class="lbl">Watts</span>
+    <span class="val big"><span id="watts">—</span><small>W</small><span class="gain" id="gain"></span></span>
+    <button type="button" class="life locked" id="life" title="Progress toward the commemorative certificate">
+      <span class="sub" id="lifeLine">lifetime —</span>
+      <span class="bar thin"><i id="lifeProg"></i></span>
+    </button>
+    <button type="button" class="certbtn" id="certBtn" hidden>Claim your certificate</button>
+  </div>
+  <div class="stat"><span class="lbl">Wheel</span><span class="val" id="tier">—</span><span class="sub" id="watchLine">&nbsp;</span></div>
+</header>
+<div class="demobar" id="demo" hidden>
+  <span class="hint">demo</span>
+  <button data-adv="1">+1 block</button>
+  <button data-adv="10">+10</button>
+  <button data-adv="1078">+1 day (1078)</button>
+  <button id="grant">grant 50k W</button>
+  <button id="night">run a night</button>
+  <span class="hint" id="nightInfo"></span>
+</div>
+
+<main class="main">
+  <div class="roomcol">
+    <section class="stage" id="stage">
+      <canvas id="room" width="320" height="192" aria-label="Pixel room with a hamster wheel and a burrow"></canvas>
+      <div class="firsthint" id="firstHint" hidden>The wheel pays for everything. Buy your first thing from the shop.</div>
+      <div class="itemtool" id="itemTool" hidden role="toolbar" aria-label="Selected item">
+        <span class="tname" id="toolName"></span>
+        <button data-act="move" title="Move (or drag it)">Move</button>
+        <button data-act="flip" title="Flip (F)">Flip</button>
+        <button data-act="remove" class="danger" title="Remove: back to your things (Delete)">Remove</button>
+        <button data-act="close" class="x" aria-label="Deselect" title="Deselect (Esc)">✕</button>
+      </div>
+      <div class="note" id="note"></div>
+    </section>
+    <div class="invbar" id="invbar">
+      <div class="invhead" id="invHead"><b>YOUR THINGS</b><span id="invHint">tap one to place it</span></div>
+      <div class="placing" id="placing" hidden>
+        <span class="ptext"><b id="placingName"></b> <span id="placingWhy"></span></span>
+        <button id="pFlip" title="Flip (F)">Flip</button>
+        <button id="pCancel" title="Cancel (Esc or right-click)">Cancel</button>
+      </div>
+      <div class="invrow" id="inv"></div>
+    </div>
+  </div>
+
+  <aside class="panel" id="shop">
+    <div class="shophead"><h2>SHOP</h2><span class="wallet" id="wallet"></span></div>
+    <div class="tabs" id="tabs" role="tablist" aria-label="Shop categories"></div>
+    <div class="cards" id="cards"></div>
+    <div class="nickrow">
+      <label for="nick">Room name</label>
+      <input id="nick" maxlength="20" placeholder="anon" autocomplete="off" spellcheck="false">
+      <button id="nickSave">Save</button>
+    </div>
+    <details><summary>How watts work</summary>
+      <p style="margin-top:6px">Every settled Squeek block pays every room 10 W times your wheel multiplier, whether you are here or not. Squeektoshi runs when he feels like it, mostly late at night (UTC), and naps the rest of the day. Keeping this page open adds a small watching bonus. Wheel upgrades are the only things that change how much you earn; everything else is for the room.</p>
+    </details>
+  </aside>
+</main>
+
+<footer class="foot">
+  <span>Squeekroom</span>
+  <span>Watts come from settled Squeek blocks (SqueekCore on Sepolia), online or not.</span>
+  <span>The hamster runs on his own schedule. Nothing here asks him to.</span>
+</footer>
+<div class="toasts" id="toasts"></div>
+
+<!-- Commemorative certificate: everything inside the canvas is drawn from the cert JSON. -->
+<div class="certmodal" id="certModal" hidden>
+  <div class="certbox" role="dialog" aria-modal="true" aria-labelledby="certTitle" aria-describedby="certNote">
+    <canvas class="certcv" id="certCanvas" width="640" height="960" role="img" aria-label="Commemorative certificate"></canvas>
+    <div class="certside">
+      <div class="certhead">
+        <div><h2 id="certTitle">Certificate</h2><div class="certsub" id="certSub"></div></div>
+        <button type="button" class="certx" id="certClose" aria-label="Close the certificate">✕</button>
+      </div>
+      <p class="certnote" id="certNote">Drawn in your browser from your certificate JSON. The same JSON always draws the same picture, pixel for pixel. No chain, no wallet.</p>
+      <div class="certacts">
+        <button type="button" class="pxbtn" id="certPng">Save PNG</button>
+        <button type="button" class="pxbtn alt" id="certJson">Save JSON</button>
+        <button type="button" class="pxbtn alt" id="certShare" hidden>Share</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Room art (row-string sprites + drawSprite); game.js falls back to placeholders for anything missing. -->
+<script src="sprites.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
