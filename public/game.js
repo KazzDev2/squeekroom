@@ -918,7 +918,7 @@ function rgbaOf(c) { return c.getContext("2d").getImageData(0, 0, c.width, c.hei
 // floor tiles (material lanes + border ring, the equipped flooring inside), the slab. Cached per look.
 const roomBaseCache = { key: null, canvas: null };
 function roomBase(me) {
-  const wp = (me && me.wallpaper) || "wp_plain", fl = (me && me.floor) || "fl_pine", t = matTier();
+  const wp = (me && me.wallpaper) || "wp_dirt", fl = (me && me.floor) || "fl_straw", t = matTier();
   const key = `${wp}|${fl}|${t}|${hasSprite(wp)}|${hasSprite(fl)}|${hasSprite(`floor_mat_t${t}`)}`;
   if (roomBaseCache.key === key) return roomBaseCache.canvas;
   const c = roomBaseCache.canvas || canvas(LW, LH), x = c.getContext("2d");
@@ -928,25 +928,39 @@ function roomBase(me) {
   roomBaseCache.canvas = c;
   return c;
 }
+// The walls' top edge is a burrow arch, not the V of a box: a parabola from the corner's top that
+// meets the strip's top again at both cut ends. It only adds wall above the strip (the strip itself,
+// so wall decor and its rows, is unchanged).
+function archTop(px) {
+  const end = px < ISO.X0 ? WALL_X0 : WALL_X1 - 1, f = (px - ISO.X0) / (end - ISO.X0);
+  return Math.round(stripTop(ISO.X0) + (stripTop(end) - stripTop(ISO.X0)) * f * f);
+}
+let ARCH_EX = 0;
+for (let px = WALL_X0; px < WALL_X1; px++) ARCH_EX = Math.max(ARCH_EX, stripTop(px) - archTop(px));
 function paintRoomBase(c, wp, fl, t) {
-  const [hi, mid, lo] = matEdge(t), H = ISO.WALL_H;
+  const [hi, mid, lo] = matEdge(t), H = ISO.WALL_H, HT = H + ARCH_EX;
   c.fillStyle = BACKDROP; c.fillRect(0, 0, LW, LH);
-  // walls, flat: wallpaper tiled up from the floor line (seams meet the corner), wainscot, cap
-  const strip = canvas(LW, H), s = strip.getContext("2d"), sw = swatch(wp, "wallpaper");
-  for (let y = H - 16; y > -16; y -= 16) for (let px = WALL_X0; px < WALL_X1; px += 16) s.drawImage(sw, px, y);
+  // walls, flat: wallpaper tiled up from the floor line (seams meet the corner), wainscot; the strip
+  // runs ARCH_EX rows taller so the arch above the old top has wallpaper too
+  const strip = canvas(LW, HT), s = strip.getContext("2d"), sw = swatch(wp, "wallpaper");
+  for (let y = HT - 16; y > -16; y -= 16) for (let px = WALL_X0; px < WALL_X1; px += 16) s.drawImage(sw, px, y);
   for (let px = WALL_X0; px < WALL_X1; px += 16) {
-    if (!sprite(s, `wall_mat_t${t}`, 0, px, H - 32, {})) { s.fillStyle = mid; s.fillRect(px, H - 32, 16, 32); s.fillStyle = lo; s.fillRect(px, H - 32, 1, 32); }
+    if (!sprite(s, `wall_mat_t${t}`, 0, px, HT - 32, {})) { s.fillStyle = mid; s.fillRect(px, HT - 32, 16, 32); s.fillStyle = lo; s.fillRect(px, HT - 32, 1, 32); }
   }
-  s.fillStyle = "rgba(0,0,0,.18)"; s.fillRect(WALL_X0, H - 33, WALL_X1 - WALL_X0, 1); // the wainscot's shadow on the wallpaper
-  s.fillStyle = hi; s.fillRect(WALL_X0, 0, WALL_X1 - WALL_X0, 1);
-  s.fillStyle = mid; s.fillRect(WALL_X0, 1, WALL_X1 - WALL_X0, 1);
-  s.fillStyle = "rgba(0,0,0,.3)"; s.fillRect(WALL_X0, 2, WALL_X1 - WALL_X0, 1);
-  // fold onto the two back walls; the right wall sits a shade darker (light from the left)
-  for (let px = WALL_X0; px < WALL_X1; px++) c.drawImage(strip, px, 0, 1, H, px, stripTop(px), 1, H);
-  c.fillStyle = "rgba(0,0,0,.13)";
-  for (let px = ISO.X0; px < WALL_X1; px++) c.fillRect(px, stripTop(px), 1, H);
+  s.fillStyle = "rgba(0,0,0,.18)"; s.fillRect(WALL_X0, HT - 33, WALL_X1 - WALL_X0, 1); // the wainscot's shadow on the wallpaper
+  // fold onto the two back walls from the arch down, cap along the arch; the shade deepens smoothly
+  // round the corner (light from the left), so the corner reads as a curved burrow wall, not a fold
+  for (let px = WALL_X0; px < WALL_X1; px++) {
+    const top = archTop(px), len = wallBase(px) - top;
+    c.drawImage(strip, px, HT - len, 1, len, px, top, 1, len);
+    c.fillStyle = hi; c.fillRect(px, top, 1, 1);
+    c.fillStyle = mid; c.fillRect(px, top + 1, 1, 1);
+    c.fillStyle = "rgba(0,0,0,.3)"; c.fillRect(px, top + 2, 1, 1);
+    const k = clamp((px - ISO.X0) / 48 + 0.5, 0, 1);
+    c.fillStyle = `rgba(0,0,0,${(0.13 * k * k * (3 - 2 * k)).toFixed(3)})`; c.fillRect(px, top, 1, len);
+  }
   // end posts in the material (the walls' cut ends)
-  for (const [px, col] of [[WALL_X0, lo], [WALL_X0 + 1, mid], [WALL_X1 - 2, mid], [WALL_X1 - 1, lo]]) { c.fillStyle = col; c.fillRect(px, stripTop(px), 1, H); }
+  for (const [px, col] of [[WALL_X0, lo], [WALL_X0 + 1, mid], [WALL_X1 - 2, mid], [WALL_X1 - 1, lo]]) { c.fillStyle = col; c.fillRect(px, archTop(px), 1, wallBase(px) - archTop(px)); }
   paintFloor(c, fl, t, [hi, mid, lo]);
 }
 function paintFloor(c, fl, t, [hi, mid, lo]) {
@@ -1957,7 +1971,7 @@ function renderInventory() {
 }
 
 // ---------- first visit, nickname ----------
-const DEFAULT_IDS = new Set(["skin_classic", "wp_plain", "fl_pine"]);
+const DEFAULT_IDS = new Set(["skin_classic", "wp_dirt", "wp_plain", "fl_straw", "fl_pine"]);
 function renderFirstHint() {
   const me = S.me;
   const fresh = !!me && !me.wheelTier && !me.placed.length && !ls.get("sr_placed_once")

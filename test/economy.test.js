@@ -24,7 +24,7 @@ test("catalog: unique ids, schema, defaults free, wheel tiers 1..5", () => {
     assert.ok(["wheel", "bed", "room", "wallpaper", "floor", "rug", "furniture", "wall", "skin"].includes(i.cat));
   }
   const free = CATALOG.filter((i) => i.price === 0).map((i) => i.id).sort();
-  assert.deepEqual(free, ["fl_pine", "skin_classic", "wp_plain"]);
+  assert.deepEqual(free, ["fl_pine", "fl_straw", "skin_classic", "wp_dirt", "wp_plain"]);
   const wheels = CATALOG.filter((i) => i.cat === "wheel");
   assert.deepEqual(wheels.map((w) => w.tier), [1, 2, 3, 4, 5]);
   assert.deepEqual(wheels.map((w) => w.price), [5000, 18000, 50000, 140000, 400000]);
@@ -46,8 +46,9 @@ test("new player: 800 W welcome grant (a first purchase right away), tier 0, def
   assert.ok(canBuy(p, "fur_seed_bowl").ok, "the 600 W seed bowl is affordable on arrival");
   assert.equal(p.wheelTier, 0);
   assert.equal(p.skin, "skin_classic");
-  assert.equal(p.wallpaper, "wp_plain");
-  assert.equal(p.floor, "fl_pine");
+  assert.equal(p.wallpaper, "wp_dirt");
+  assert.equal(p.floor, "fl_straw");
+  for (const id of ["wp_plain", "fl_pine"]) assert.equal(p.owned[id], 1, `${id} stays free to switch back to`);
 });
 
 test("accrual: delta x 10 x tier multiplier", () => {
@@ -174,7 +175,7 @@ test("buy: skins, wallpapers, floors are single-copy; defaults already owned", (
   assert.equal(canBuy(p, "wp_polka").error, "already_owned");
   assert.ok(S.applyBuy(p, "fl_checker").ok);
   assert.equal(canBuy(p, "fl_checker").error, "already_owned");
-  for (const id of ["skin_classic", "wp_plain", "fl_pine"]) assert.equal(canBuy(p, id).error, "already_owned");
+  for (const id of ["skin_classic", "wp_dirt", "wp_plain", "fl_straw", "fl_pine"]) assert.equal(canBuy(p, id).error, "already_owned");
   assert.equal(p.watts, 100_000 - 10_000 - 1200 - 1200);
 });
 
@@ -308,7 +309,7 @@ test("claim: rejects ineligible, issues serial + seed, idempotent", () => {
   for (const k of ["version", "type", "serial", "seed", "tokenFingerprint", "nick", "claimedAt", "joinHeight", "claimHeight", "lifetimeWatts", "activeDays", "wheelTier", "skin", "itemsOwned", "room"]) assert.ok(k in c, k);
   assert.equal(c.nick, "squeaky");
   assert.equal(c.claimHeight, 9000);
-  assert.deepEqual(c.room, { wallpaper: "wp_plain", floor: "fl_pine", placed: [{ item: "fur_sofa", x: 8, y: 11, flip: true }] });
+  assert.deepEqual(c.room, { wallpaper: "wp_dirt", floor: "fl_straw", placed: [{ item: "fur_sofa", x: 8, y: 11, flip: true }] });
   assert.ok(!JSON.stringify(c).includes(TOKEN), "cert must not leak the token");
 
   // re-claim later: same cert, no new serial

@@ -150,12 +150,14 @@ const CATALOG = [
   roomMat(4, "Gold", 200_000),
   roomMat(5, "Diamond", 450_000),
   // wallpaper (equip one)
+  style("wp_dirt", "Packed Dirt", "wallpaper", 0),
   style("wp_plain", "Plain Cream", "wallpaper", 0),
   style("wp_polka", "Polka Dots", "wallpaper", 1_200),
   style("wp_forest", "Forest Mural", "wallpaper", 4_500),
   style("wp_circuit", "Circuit Board", "wallpaper", 9_000),
   style("wp_night_sky", "Night Sky", "wallpaper", 15_000),
   // flooring (equip one)
+  style("fl_straw", "Straw Bedding", "floor", 0),
   style("fl_pine", "Pine Planks", "floor", 0),
   style("fl_checker", "Checker Tile", "floor", 1_200),
   style("fl_pebble", "Pebble Stone", "floor", 4_000),
@@ -198,7 +200,8 @@ const SINGLE_COPY = new Set(["wallpaper", "floor", "skin"]);
 // Tier ladders: bought strictly in order, one copy each; buying sets the player field to the tier.
 const TIER_FIELD = { wheel: "wheelTier", bed: "bedTier", room: "roomTier" };
 const tierField = (cat) => (Object.hasOwn(TIER_FIELD, cat) ? TIER_FIELD[cat] : null);
-const DEFAULTS = { skin: "skin_classic", wallpaper: "wp_plain", floor: "fl_pine" };
+const DEFAULTS = { skin: "skin_classic", wallpaper: "wp_dirt", floor: "fl_straw" };
+const FREE_IDS = CATALOG.filter((i) => i.price === 0).map((i) => i.id); // every player owns these
 
 // ---------- fixtures: the wheel and the bed ----------
 const FIXTURES = ["wheel", "bed"];
@@ -245,7 +248,7 @@ function newPlayer(height, now = Date.now(), token = null) {
     skin: DEFAULTS.skin,
     wallpaper: DEFAULTS.wallpaper,
     floor: DEFAULTS.floor,
-    owned: { [DEFAULTS.skin]: 1, [DEFAULTS.wallpaper]: 1, [DEFAULTS.floor]: 1 },
+    owned: Object.fromEntries(FREE_IDS.map((id) => [id, 1])),
     placed: [],
     fixtures: defaultFixtures(), // where the wheel and the bed stand: {wheel: {i, j, flip}, bed: {...}}
     lastHeartbeat: 0,
@@ -276,6 +279,7 @@ function patchPlayer(p, token) {
   if (p.wallet === undefined) p.wallet = null;
   if (p.username === undefined) p.username = null;
   if (p.walletNonce === undefined) p.walletNonce = null;
+  if (p.owned && typeof p.owned === "object") for (const id of FREE_IDS) if (!p.owned[id]) p.owned[id] = 1;
   for (const k of LEGACY_FIELDS) delete p[k];
   return p;
 }
