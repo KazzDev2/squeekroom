@@ -8,6 +8,7 @@ const T0 = Date.UTC(2026, 9, 30, 22, 0, 0);
 const fresh = (over = {}) => Object.assign(S.newPlayer(1000, T0), over);
 const own = (p, id, n = 1) => ((p.owned[id] = (p.owned[id] || 0) + n), p);
 const TOKEN = "a".repeat(32);
+const W0 = BALANCE.WELCOME_WATTS; // welcome grant
 
 // ---------- exports + catalog ----------
 test("module exports the plan's six names", () => {
@@ -36,9 +37,13 @@ test("catalog: unique ids, schema, defaults free, wheel tiers 1..5", () => {
 });
 
 // ---------- accrual ----------
-test("new player: 400 W welcome grant, tier 0, defaults owned", () => {
+test("new player: 800 W welcome grant (a first purchase right away), tier 0, defaults owned", () => {
   const p = fresh();
-  assert.equal(p.watts, 400);
+  assert.equal(W0, 800);
+  assert.equal(p.watts, 800);
+  const cheapest = Math.min(...CATALOG.filter((i) => i.price > 0).map((i) => i.price));
+  assert.equal(cheapest, 600);
+  assert.ok(canBuy(p, "fur_seed_bowl").ok, "the 600 W seed bowl is affordable on arrival");
   assert.equal(p.wheelTier, 0);
   assert.equal(p.skin, "skin_classic");
   assert.equal(p.wallpaper, "wp_plain");
@@ -48,7 +53,7 @@ test("new player: 400 W welcome grant, tier 0, defaults owned", () => {
 test("accrual: delta x 10 x tier multiplier", () => {
   const p = fresh();
   assert.equal(accrue(p, 10, T0), 100);
-  assert.equal(p.watts, 500);
+  assert.equal(p.watts, W0 + 100);
   assert.equal(p.lifetimeWatts, 100);
   for (const [tier, per10] of [[1, 125], [2, 160], [3, 200], [4, 260], [5, 350]]) {
     const q = fresh({ wheelTier: tier });
@@ -81,7 +86,7 @@ test("accrual: ignores zero, negative, non-integer deltas", () => {
   assert.equal(accrue(p, 0, T0), 0);
   assert.equal(accrue(p, -5, T0), 0);
   assert.equal(accrue(p, 1.5, T0), 0);
-  assert.equal(p.watts, 400);
+  assert.equal(p.watts, W0);
   assert.equal(p.activeDays, 0);
 });
 
@@ -99,13 +104,13 @@ test("accrueAll: credits every player, catches up downtime, respects joinHeight"
   // server was down for 500 blocks
   S.accrueAll(st, 1500, T0);
   assert.equal(st.lastAccruedHeight, 1500);
-  assert.equal(st.players.a.watts, 400 + 5000);
-  assert.equal(st.players.b.watts, 400 + 8000);
-  assert.equal(st.players.late.watts, 400 + 1000); // only blocks after it joined
+  assert.equal(st.players.a.watts, W0 + 5000);
+  assert.equal(st.players.b.watts, W0 + 8000);
+  assert.equal(st.players.late.watts, W0 + 1000); // only blocks after it joined
   // no double counting
   S.accrueAll(st, 1500, T0);
   S.accrueAll(st, 1490, T0);
-  assert.equal(st.players.a.watts, 5400);
+  assert.equal(st.players.a.watts, W0 + 5000);
 });
 
 // ---------- balance targets ----------
@@ -134,10 +139,10 @@ test("buy: unknown item", () => {
 });
 
 test("buy: poor returns need", () => {
-  const r = canBuy(fresh(), "fur_seed_bowl"); // 600 > 400
+  const r = canBuy(fresh(), "fur_cactus"); // 1500 > 800
   assert.equal(r.ok, false);
   assert.equal(r.error, "poor");
-  assert.equal(r.need, 200);
+  assert.equal(r.need, 700);
 });
 
 test("buy: deducts server-side price, placeables stack", () => {
@@ -362,7 +367,7 @@ test("bed: fractional carry is exact (integers only, nothing lost)", () => {
   assert.equal(p.bedFrac, S.BED_FRAC_DEN / 2);
   assert.equal(S.bedCredit(p, 60_000, T0), 2); // 0.5 + 1.5
   assert.equal(p.bedFrac, 0);
-  assert.equal(p.watts, 400 + 3);
+  assert.equal(p.watts, W0 + 3);
   assert.equal(p.activeDays, 1);
   for (let tier = 0; tier <= 5; tier++) {
     const q = fresh({ bedTier: tier, lastHeartbeat: tier % 2 ? T0 : 0 });
@@ -376,7 +381,7 @@ test("bed: fractional carry is exact (integers only, nothing lost)", () => {
     const bonus = tier % 2 ? 120 : 100;
     const exact = (ms * 15 * BALANCE.BED_MULT_PCT[tier] * bonus) / S.BED_FRAC_DEN;
     assert.equal(q.lifetimeWatts, Math.floor(exact), `tier ${tier}`);
-    assert.equal(q.watts, 400 + q.lifetimeWatts);
+    assert.equal(q.watts, W0 + q.lifetimeWatts);
   }
 });
 
@@ -438,7 +443,7 @@ test("buy: bed tiers strictly in order, set bedTier, single copy", () => {
   assert.equal(validatePlacement(p, "bed_t1", 0, 11).error, "not_placeable");
   const r = canBuy(fresh(), "bed_t1");
   assert.equal(r.error, "poor");
-  assert.equal(r.need, 2600);
+  assert.equal(r.need, 3000 - W0);
   // the new bed raises bed income right away
   assert.equal(S.bedCredit(p, 10 * 60_000, T0), 24);
 });
@@ -1179,4 +1184,250 @@ test("wallet persistence + config: fields default to null on load, kept when pre
   assert.equal(cfg.wallet.burnerWarning, true);
   assert.equal(new RegExp(cfg.wallet.usernameRe).test("Ok_name"), true);
   assert.equal(new RegExp(cfg.wallet.usernameRe).test("no"), false);
+});
+
+// ---------- replay mode (simulated Squeektoshi on her real rhythm, sped up) ----------
+const MIN = 60_000, HOUR = 3_600_000, DAY = 86_400_000;
+const SCHED = S.replaySchedule(3);
+const EP = SCHED.epochMs;
+const segAt = (sc, label, k = 0) => sc.segments.filter((s) => s.label === label)[k];
+const replayWorld = (players = {}) => S.patchState({ players });
+
+test("replay schedule: 3x = an 8 h night of 1,078 blocks; runs 10-30 min, rests 20-60 min, alternating", () => {
+  assert.equal(SCHED.speed, 3);
+  assert.equal(SCHED.cycleMs, 8 * HOUR);
+  assert.equal(SCHED.blocksPerCycle, 1078);
+  assert.equal(SCHED.blocksPerDay, 3234);
+  assert.equal(SCHED.segments.reduce((a, s) => a + s.blocks, 0), 1078);
+  SCHED.segments.forEach((s, i) => {
+    if (i) assert.notEqual(s.kind, SCHED.segments[i - 1].kind, "runs and rests alternate");
+    if (s.kind === "run") {
+      assert.ok(s.ms >= 10 * MIN && s.ms <= 30 * MIN, `run ${s.label} ${s.ms / MIN} min`);
+      assert.ok(s.blocks >= 1);
+    } else {
+      assert.ok(s.ms >= 20 * MIN && s.ms <= 60 * MIN, `rest ${s.ms / MIN} min`);
+      assert.ok(s.ms >= BALANCE.IDLE_AFTER_MS + 10 * MIN, "every rest leaves >= 10 min of real sleep");
+      assert.equal(s.blocks, 0);
+    }
+  });
+  // the real night's shape: the 22:00-02:00 runs carry most of the work, the stirs almost none
+  const runs = SCHED.segments.filter((s) => s.kind === "run").sort((a, b) => b.blocks - a.blocks);
+  assert.deepEqual(runs.slice(0, 2).map((s) => s.label).sort(), ["after midnight", "peak"]);
+  assert.ok(runs.slice(0, 3).reduce((a, s) => a + s.blocks, 0) / 1078 > 0.75);
+  // at 1x the same night spans a real day, starting at her real 21:00 UTC
+  const one = S.replaySchedule(1);
+  assert.equal(one.cycleMs, DAY);
+  assert.equal(one.blocksPerCycle, 1078);
+  assert.equal(new Date(EP).getUTCHours(), 21);
+  // high speeds keep the rest floor (still past IDLE_AFTER_MS)
+  for (const s of S.replaySchedule(24).segments) if (s.kind === "sleep") assert.ok(s.ms >= S.REPLAY_MIN_SLEEP_MS);
+});
+
+test("cumulativeBlocks: deterministic, monotonic at the 10 s poll, 1,078 x SPEED a day (+-5%)", () => {
+  const t = EP + 3 * DAY + 12_345_678;
+  assert.equal(S.cumulativeBlocks(t, SCHED), S.cumulativeBlocks(t, S.replaySchedule(3)), "pure function of t");
+  assert.equal(S.cumulativeBlocks(t, SCHED), S.replayCumulativeBlocks(t, SCHED));
+  assert.equal(S.cumulativeBlocks(EP - DAY, SCHED), 0); // before the epoch nothing has settled
+  assert.equal(S.cumulativeBlocks(EP, SCHED), 0);
+  let prev = S.cumulativeBlocks(t, SCHED);
+  let maxStep = 0;
+  for (let x = t; x <= t + 2 * DAY; x += 10_000) {
+    const c = S.cumulativeBlocks(x, SCHED);
+    assert.ok(Number.isInteger(c) && c >= prev, `went back at ${x}`);
+    maxStep = Math.max(maxStep, c - prev);
+    prev = c;
+  }
+  assert.ok(maxStep <= 5, `at most a few blocks per poll (${maxStep})`);
+  assert.equal(S.cumulativeBlocks(EP + 5 * DAY, SCHED) - S.cumulativeBlocks(EP + 4 * DAY, SCHED), 3234);
+  for (const sp of [1, 2, 3, 6, 12]) {
+    const sc = S.replaySchedule(sp);
+    for (const start of [EP + 1_234_567, EP + 9.5 * DAY]) {
+      const perDay = (S.cumulativeBlocks(start + 4 * DAY, sc) - S.cumulativeBlocks(start, sc)) / 4;
+      const want = 1078 * sp;
+      assert.ok(Math.abs(perDay - want) <= want * 0.05, `x${sp}: ${perDay}/day vs ${want}`);
+    }
+  }
+});
+
+test("replay alternation: each day brings many run windows and sleeps that outlast IDLE_AFTER_MS", () => {
+  for (const sp of [1, 3, 6]) {
+    const sc = S.replaySchedule(sp);
+    const start = EP + 2 * DAY + 17 * MIN;
+    const spans = []; // [running, ms] of contiguous stretches, sampled every 30 s
+    let cur = null;
+    for (let x = start; x <= start + DAY; x += 30_000) {
+      const running = S.replayReading(x, sc).running;
+      if (!cur || cur[0] !== running) spans.push((cur = [running, 0]));
+      else cur[1] += 30_000;
+    }
+    const whole = spans.slice(1, -1); // drop the cut-off first and last stretch
+    const runs = whole.filter((s) => s[0]);
+    const sleeps = whole.filter((s) => !s[0]);
+    assert.ok(runs.length >= 7 * sp, `x${sp}: ${runs.length} runs a day`);
+    assert.ok(sleeps.every((s) => s[1] >= BALANCE.IDLE_AFTER_MS), `x${sp}: every sleep passes IDLE_AFTER_MS`);
+    assert.ok(sleeps.length >= 7 * sp);
+    if (sp === 3) assert.ok(Math.max(...sleeps.map((s) => s[1])) <= 60 * MIN, "no sleep past an hour at 3x");
+  }
+});
+
+test("replay tick: raids close 10 min into every sleep, reopen on a run's first poll; bed only while asleep", () => {
+  const st = replayWorld({ [TOKEN]: S.newPlayer(null, EP, TOKEN) });
+  const p = st.players[TOKEN];
+  const t0 = EP + 2 * DAY + 3 * MIN + 3_700; // off the minute grid: polls never land exactly on a boundary
+  let bed = 0;
+  let checkedOpen = 0, checkedClosed = 0;
+  let prevSeg = null;
+  for (let x = t0; x <= t0 + SCHED.cycleMs + HOUR; x += 10_000) {
+    S.replayTick(st, x, SCHED, 5204);
+    const idle = S.chainIdle(st.lastAdvanceAt, x);
+    const got = S.accrueBed(st, idle, x);
+    bed += got;
+    const loc = S.replayLocate(x, SCHED);
+    const segKey = `${loc.n}/${loc.i}`;
+    const w = S.raidWindow(st.lastAdvanceAt, x);
+    if (loc.seg.kind === "run" && loc.u > 0) {
+      assert.equal(w.open, true, `raids open in run ${loc.seg.label} at ${new Date(x).toISOString()}`);
+      if (segKey !== prevSeg) checkedOpen++; // the first poll of this run
+      assert.equal(got, 0, "no bed income while she runs");
+    } else if (loc.seg.kind === "sleep" && prevSeg !== null) {
+      const into = x - (loc.cycleStart + loc.seg.start);
+      if (into >= BALANCE.IDLE_AFTER_MS) {
+        assert.equal(idle, true, `asleep ${into / MIN} min into ${loc.seg.label}`);
+        assert.equal(w.reason, "hamster_asleep");
+        checkedClosed++;
+      } else assert.equal(w.open, true, `the first 10 min of a rest still count as running (${into / 1000} s)`);
+    }
+    prevSeg = segKey;
+  }
+  assert.ok(checkedOpen >= 8, `every run reopened raids (${checkedOpen})`);
+  assert.ok(checkedClosed > 0 && bed > 0);
+  // the books balance: 10 W per settled block since joining + the bed trickle
+  assert.equal(p.lifetimeWatts, (st.height - p.joinHeight) * 10 + bed);
+  assert.equal(p.watts, BALANCE.WELCOME_WATTS + p.lifetimeWatts);
+});
+
+test("replay restart safety: height = offset + cumulativeBlocks(t) from the persisted offset; never back, never paid twice", () => {
+  const t1 = EP + 3 * DAY + 13 * HOUR + 47 * MIN;
+  const st = replayWorld();
+  S.replayTick(st, t1, SCHED, 5204); // fresh state: height = REPLAY_START_HEIGHT + cumulativeBlocks(t)
+  assert.equal(st.height, 5204 + S.cumulativeBlocks(t1, SCHED));
+  assert.equal(st.startHeight, st.height); // first sighting is the baseline, as in live mode
+  assert.equal(st.replay.offset, 5204);
+  st.players[TOKEN] = S.newPlayer(st.height, t1, TOKEN);
+  const t2 = t1 + 2 * HOUR;
+  S.replayTick(st, t2, SCHED, 5204);
+  const w2 = st.players[TOKEN].watts;
+  assert.equal(w2, BALANCE.WELCOME_WATTS + (S.cumulativeBlocks(t2, SCHED) - S.cumulativeBlocks(t1, SCHED)) * 10);
+  // restart: state.json round trip, 5 h of downtime; a different start-height env does not matter
+  const st2 = S.patchState(JSON.parse(JSON.stringify(st)));
+  const t3 = t2 + 5 * HOUR;
+  S.replayTick(st2, t3, SCHED, 99_999);
+  assert.equal(st2.height, 5204 + S.cumulativeBlocks(t3, SCHED));
+  assert.equal(st2.players[TOKEN].watts, w2 + (S.cumulativeBlocks(t3, SCHED) - S.cumulativeBlocks(t2, SCHED)) * 10, "downtime caught up once");
+  const w3 = st2.players[TOKEN].watts;
+  S.replayTick(st2, t3, SCHED); // same t again
+  S.replayTick(st2, t3 - 90_000, SCHED); // clock stepped back
+  assert.equal(st2.height, 5204 + S.cumulativeBlocks(t3, SCHED), "never backward");
+  assert.equal(st2.players[TOKEN].watts, w3, "never paid twice");
+  // a restart into a sleep: the sleep clock starts when the last run ended, not at the boot poll
+  const sleep = segAt(SCHED, "day sleep");
+  const tSleep = EP + 12 * SCHED.cycleMs + sleep.start + 25 * MIN; // after t3
+  S.replayTick(st2, tSleep, SCHED);
+  assert.equal(st2.lastAdvanceAt, EP + 12 * SCHED.cycleMs + sleep.start);
+  assert.equal(S.chainIdle(st2.lastAdvanceAt, tSleep), true);
+  // ...and a brand-new server booting mid-sleep knows she is asleep (bed income, raids closed) at once
+  const born = replayWorld();
+  S.replayTick(born, tSleep, SCHED);
+  assert.equal(born.height, born.startHeight);
+  assert.equal(S.raidWindow(born.lastAdvanceAt, tSleep).reason, "hamster_asleep");
+  const bornRun = replayWorld();
+  const tPeak = EP + 12 * SCHED.cycleMs + segAt(SCHED, "peak").start + 5 * MIN;
+  S.replayTick(bornRun, tPeak, SCHED);
+  assert.equal(bornRun.lastAdvanceAt, tPeak); // booting mid-run: raids open
+  // from any later t, recomputing never goes backward
+  let h = st2.height;
+  for (let x = tSleep; x < tSleep + 3 * DAY; x += 7 * MIN + 13_337) {
+    S.replayTick(st2, x, SCHED);
+    assert.ok(st2.height >= h);
+    assert.equal(st2.height, 5204 + S.cumulativeBlocks(x, SCHED));
+    h = st2.height;
+  }
+});
+
+test("replay switch-over: an existing live state continues (no windfall); speed change and back to live re-anchor", () => {
+  const t = EP + 4 * DAY + 2 * HOUR;
+  const st = replayWorld({ [TOKEN]: S.newPlayer(9000, t, TOKEN) });
+  Object.assign(st, { startHeight: 8000, height: 9000, lastAccruedHeight: 9000, lastAdvanceAt: t - MIN });
+  S.replayTick(st, t, SCHED);
+  assert.equal(st.height, 9000);
+  assert.equal(st.players[TOKEN].watts, BALANCE.WELCOME_WATTS, "switching sources pays nothing");
+  S.replayTick(st, t + HOUR, SCHED);
+  assert.equal(st.height, 9000 + S.cumulativeBlocks(t + HOUR, SCHED) - S.cumulativeBlocks(t, SCHED));
+  // REPLAY_SPEED changed between boots: re-anchored where it stood
+  const h = st.height, wBefore = st.players[TOKEN].watts;
+  S.replayTick(st, t + HOUR, S.replaySchedule(6));
+  assert.equal(st.height, h);
+  assert.equal(st.players[TOKEN].watts, wBefore);
+  assert.match(st.replay.key, /x6/);
+  // back to the real chain at a lower height: fresh baseline, joinHeights clamped, no stall
+  S.leaveReplay(st, 6000, t + 2 * HOUR);
+  assert.equal(st.height, 6000);
+  assert.equal(st.replay, undefined);
+  assert.equal(st.players[TOKEN].joinHeight, 6000);
+  assert.equal(st.players[TOKEN].watts, wBefore);
+  S.advanceTo(6010, t + 2 * HOUR + MIN, st);
+  assert.equal(st.players[TOKEN].watts, wBefore + 100);
+});
+
+test("replay reading: ACTIVE at 0.8-1.6 m/s while she runs, IDLE at 0 while she sleeps; tagged as the room server's", () => {
+  const peak = segAt(SCHED, "peak");
+  const tRun = EP + 2 * SCHED.cycleMs + peak.start + 15 * MIN;
+  const r = S.replayReading(tRun, SCHED);
+  assert.equal(r.running, true);
+  assert.equal(r.hamster.coreStatus, "ACTIVE");
+  assert.equal(r.hamster.key, "running");
+  assert.equal(r.hamster.active, true);
+  assert.equal(r.hamster.source, "replay"); // not "live": the client labels it "via room server"
+  assert.ok(r.hamster.speedMmPerSecond >= 800 && r.hamster.speedMmPerSecond <= 1600);
+  assert.equal(r.hamster.speed, r.hamster.speedMmPerSecond);
+  assert.ok(r.hamster.rpm > 0 && r.hamster.freshness === "online");
+  assert.ok(r.progress >= 0 && r.progress < 1);
+  const lull = segAt(SCHED, "lull");
+  const tSleep = EP + 2 * SCHED.cycleMs + lull.start + 5 * MIN;
+  const z = S.replayReading(tSleep, SCHED);
+  assert.equal(z.running, false);
+  assert.equal(z.hamster.coreStatus, "IDLE");
+  assert.equal(z.hamster.key, "idle");
+  assert.equal(z.hamster.speedMmPerSecond, 0);
+  assert.equal(z.nextRunAt, EP + 2 * SCHED.cycleMs + lull.end);
+  const speeds = new Set();
+  for (let x = tRun - 6 * HOUR; x < tRun + 18 * HOUR; x += MIN) {
+    const q = S.replayReading(x, SCHED);
+    if (q.running) {
+      assert.ok(q.hamster.speedMmPerSecond >= 800 && q.hamster.speedMmPerSecond <= 1600);
+      speeds.add(Math.round(q.hamster.speedMmPerSecond / 50));
+    } else assert.equal(q.hamster.speedMmPerSecond, 0);
+  }
+  assert.ok(speeds.size >= 6, "speed varies");
+  // the tick publishes it as the snapshot's chain + hamster
+  const st = replayWorld();
+  S.replayTick(st, tRun, SCHED);
+  assert.equal(st.chain.rpc, "replay");
+  assert.equal(st.chain.blockHeight, st.height);
+  assert.equal(st.chain.replay.segment, "run");
+  assert.deepEqual(st.hamster, r.hamster);
+});
+
+test("replay config: api is a same-origin base without /status, so the browser keeps the server's reading", () => {
+  const live = S.configPayload();
+  assert.equal(live.replay, null);
+  assert.match(live.api, /^https:\/\//);
+  const cfg = S.configPayload({ replay: true, sched: SCHED });
+  assert.equal(cfg.api, S.REPLAY_API_SINK);
+  assert.ok(cfg.api, "truthy: the client ignores a falsy api and would keep fetching the real one");
+  assert.ok(cfg.api.startsWith("/api/"), "same origin");
+  assert.equal(cfg.replay.speed, 3);
+  assert.equal(cfg.replay.blocksPerDay, 3234);
+  assert.equal(cfg.replay.cycleMs, 8 * HOUR);
+  assert.equal(cfg.demo, false);
 });

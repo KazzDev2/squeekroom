@@ -10,10 +10,14 @@
 //
 //   node server.js            live mode: settled height from SqueekCore.state() on Sepolia
 //   node server.js --demo     adds POST /api/dev/{advance,grant,night,sleep} so you can fake blocks
+//   node server.js --replay   (or REPLAY=1) a simulated Squeektoshi on her real nightly rhythm, sped up:
+//                             no RPC/API calls at all; see "replay mode" below. Not combinable with --demo.
 //
 // Env: PORT (default 8788), SQUEEK_API (default https://api.squeekchain.com/v1),
 //      DATA_DIR (where state.json lives; mount a persistent disk here in production),
 //      CORE_ADDRESS, SEPOLIA_RPC (comma-separated)
+//      Replay only: REPLAY_SPEED (default 3), REPLAY_START_HEIGHT (default 5204),
+//      REPLAY_EPOCH (ISO time the schedule is anchored to, default 2026-10-30T21:00:00Z)
 
 const http = require("node:http");
 const fs = require("node:fs");
@@ -24,6 +28,8 @@ const ethsig = require("./lib/ethsig.js");
 const PORT = Number(process.env.PORT || 8788);
 const API = process.env.SQUEEK_API || "https://api.squeekchain.com/v1";
 const DEMO = process.argv.includes("--demo") || process.env.SQUEEK_DEMO === "1";
+const REPLAY_REQUESTED = process.argv.includes("--replay") || process.env.REPLAY === "1";
+const REPLAY = REPLAY_REQUESTED && !DEMO; // mutually exclusive: the CLI refuses both (bottom of the file)
 // Settled block height comes straight from the SqueekCore proxy on Sepolia (state()), so the
 // server works even where api.squeekchain.com sits behind a Cloudflare challenge (most cloud IPs).
 const CORE = process.env.CORE_ADDRESS || "0x980b4424c007caf7a1f3670b48c8eaef7ebc3d44";
@@ -45,7 +51,7 @@ const BALANCE = {
   LIVE_BONUS_PCT: 120,
   HEARTBEAT_WINDOW_MS: 90_000,
   HEARTBEAT_MIN_INTERVAL_MS: 20_000,
-  WELCOME_WATTS: 400,
+  WELCOME_WATTS: 800, // a first purchase in the first minute (the cheapest item is 600 W)
   CERT_LIFETIME_WATTS: 250_000,
   CERT_ACTIVE_DAYS: 7,
   // He's asleep by the chain when no settled block arrived for this long.
@@ -719,24 +725,24 @@ function save() {
 }
 
 // Height advanced: credit everyone. First reading only sets the baseline.
-function advanceTo(h, now = Date.now()) {
-  if (state.startHeight == null) {
-    state.startHeight = h;
-    state.height = h;
-    state.lastAccruedHeight = h;
-    state.born = new Date(now).toISOString();
-    state.lastAdvanceAt = now; // first sighting: we can't know how long it's been quiet
-    for (const p of Object.values(state.players)) if (p.joinHeight == null) p.joinHeight = h;
+function advanceTo(h, now = Date.now(), st = state) {
+  if (st.startHeight == null) {
+    st.startHeight = h;
+    st.height = h;
+    st.lastAccruedHeight = h;
+    st.born = new Date(now).toISOString();
+    st.lastAdvanceAt = now; // first sighting: we can't know how long it's been quiet
+    for (const p of Object.values(st.players)) if (p.joinHeight == null) p.joinHeight = h;
     return;
   }
-  if (h <= state.height) return;
-  state.height = h;
-  state.lastAdvanceAt = now;
-  accrueAll(state, h, now);
+  if (h <= st.height) return;
+  st.height = h;
+  st.lastAdvanceAt = now;
+  accrueAll(st, h, now);
 }
-// When the chain was last read successfully (live mode only; demo drives the height itself).
+// When the chain was last read successfully (live mode only; demo and replay drive the height themselves).
 function chainReadAt() {
-  if (DEMO) return null;
+  if (DEMO || REPLAY) return null;
   const t = state.chain && Date.parse(state.chain.updatedAt);
   return Number.isFinite(t) ? t : 0;
 }
@@ -777,30 +783,241 @@ async function readCoreState() {
   throw lastErr || new Error("no rpc");
 }
 
+// ---------- replay mode (REPLAY=1 or --replay) ----------
+// Before mainnet the deployed room can run on a simulated Squeektoshi instead of the Sepolia chain.
+// Nothing is fetched (no RPC, no api.squeekchain.com); the settled height is a pure function of the
+// wall clock:
+//   height(t) = offset + replayCumulativeBlocks(t)
+// so a restart neither replays nor skips a block (downtime is caught up exactly like in live mode).
+// offset is REPLAY_START_HEIGHT on a fresh state. When an existing state.json switches to replay (or
+// the speed / epoch changes) it is chosen once so the height carries on from where it stood (no
+// windfall, no stall), and stored with the schedule key in state.replay = {key, offset, since}.
+// Everything downstream (accrueAll, chainIdle, bed income, raid windows) runs unchanged: a sleep
+// segment leaves the height still, so 10 min in he counts as asleep and raids close; the first poll
+// inside a run settles a block (the per-run count rounds UP), which reopens them.
+//
+// Schedule source: Squeektoshi's real history, GET /v1/measurement/stats?range=30d (read 31 Oct
+// 2026: 5 nights, 26-30 Oct, 58,518 work units / 5,204 settled blocks = 11.25 units per block,
+// ~1,041 blocks a night). She runs only 21:00-07:30 UTC; the night's work by slice: 21:00-22:00 12%,
+// 22:00-23:30 31% (peak half-hour 22:00), 23:30-02:00 35%, 02:00-05:00 14.5%, 05:00-07:30 7.7%, and
+// not one passage 07:30-21:00 (~13.5 h asleep). A replay "night" keeps that order and work split but
+// is compressed into 24 h / SPEED (8 h at the default 3x), with runs of 10-30 min and rests of
+// 20-60 min, so every rest outlasts IDLE_AFTER_MS (bed income, raids closed) and a player who checks
+// in a few times a day sees both states. The two short daytime stirs are synthetic (the real day is
+// silent) so the day sleep never runs past an hour. Blocks per day = 1,078 x SPEED (the real rate the
+// balance is tuned on), shared out over the runs by those real work weights.
+const REPLAY_NIGHT = [
+  // [kind, minutes at the base speed, weight = real work units in the slice it stands for, label]
+  ["run", 20, 6989, "evening warm-up"], // 21:00-22:00
+  ["sleep", 20, 0, "catnap"],
+  ["run", 30, 18107, "peak"], // 22:00-23:30
+  ["sleep", 20, 0, "catnap"],
+  ["run", 30, 20441, "after midnight"], // 23:30-02:00
+  ["sleep", 45, 0, "lull"],
+  ["run", 15, 4223, "small hours"], // 02:00-03:30
+  ["sleep", 25, 0, "nap"],
+  ["run", 15, 4271, "small hours"], // 03:30-05:00
+  ["sleep", 45, 0, "nap"],
+  ["run", 15, 4487, "dawn"], // 05:00-07:30
+  ["sleep", 60, 0, "day sleep"],
+  ["run", 10, 600, "stir"], // synthetic (~1% each)
+  ["sleep", 60, 0, "day sleep"],
+  ["run", 10, 600, "stir"], // synthetic
+  ["sleep", 60, 0, "day sleep"],
+];
+const REPLAY_VERSION = 1; // bump when REPLAY_NIGHT changes (re-anchors the offset once, continuously)
+const REPLAY_BASE_SPEED = 3; // REPLAY_NIGHT minutes are written for this speed (480 min = 24 h / 3)
+const REPLAY_BLOCKS_PER_DAY = 1078; // the real rate; replay settles this x SPEED
+const REPLAY_MIN_RUN_MS = 5 * 60_000; // floors when a high SPEED shrinks the segments
+const REPLAY_MIN_SLEEP_MS = BALANCE.IDLE_AFTER_MS + 10 * 60_000; // always >= 10 min of real sleep
+const REPLAY_RAMP = 0.5; // blocks settle at 0.5x the run's mean rate at its edges, 1.5x mid-run
+const REPLAY_MM_PER_BLOCK = 9873; // real: 51,378,804 mm over 5,204 blocks
+const REPLAY_WHEEL_MM = 200; // wheel diameter used for rpm (same as the demo and the client)
+// The browser ignores a falsy config.api and would keep fetching the real api.squeekchain.com (whose
+// reading would contradict the replay). This same-origin base has no /status (404), so the client's
+// liveFetch fails, S.live stays null and it shows the server's synthesized reading ("via room server").
+const REPLAY_API_SINK = "/api/replay";
+const replayEnvNum = (v, ok, dflt) => (v != null && v !== "" && ok(Number(v)) ? Number(v) : dflt);
+const REPLAY_SPEED = replayEnvNum(process.env.REPLAY_SPEED, (n) => Number.isFinite(n) && n >= 0.5 && n <= 48, REPLAY_BASE_SPEED);
+const REPLAY_START_HEIGHT = replayEnvNum(process.env.REPLAY_START_HEIGHT, (n) => Number.isSafeInteger(n) && n >= 0, 5204);
+const REPLAY_EPOCH_MS = Number.isFinite(Date.parse(process.env.REPLAY_EPOCH || "")) ? Date.parse(process.env.REPLAY_EPOCH) : Date.parse("2026-10-30T21:00:00Z");
+
+// The cycle for one speed: segments with absolute offsets in the cycle and whole block counts
+// (largest remainder, so they sum exactly to blocksPerCycle). Pure.
+function replaySchedule(speed = REPLAY_BASE_SPEED, epochMs = REPLAY_EPOCH_MS) {
+  const k = REPLAY_BASE_SPEED / speed;
+  let at = 0;
+  const segments = REPLAY_NIGHT.map(([kind, min, weight, label]) => {
+    const ms = Math.max(Math.round(min * 60_000 * k), kind === "run" ? REPLAY_MIN_RUN_MS : REPLAY_MIN_SLEEP_MS);
+    const s = { kind, label, start: at, end: at + ms, ms, weight: kind === "run" ? weight : 0, blocks: 0, before: 0 };
+    at += ms;
+    return s;
+  });
+  const cycleMs = at;
+  const blocksPerCycle = Math.round((REPLAY_BLOCKS_PER_DAY * speed * cycleMs) / 86_400_000);
+  const runs = segments.filter((s) => s.kind === "run");
+  const W = runs.reduce((a, s) => a + s.weight, 0);
+  const exact = new Map(runs.map((s) => [s, (blocksPerCycle * s.weight) / W]));
+  let given = 0;
+  for (const s of runs) given += s.blocks = Math.floor(exact.get(s));
+  const byRemainder = runs.slice().sort((a, b) => exact.get(b) - b.blocks - (exact.get(a) - a.blocks));
+  for (let i = 0; i < blocksPerCycle - given; i++) byRemainder[i % byRemainder.length].blocks++;
+  let c = 0;
+  for (const s of segments) (s.before = c), (c += s.blocks);
+  const maxRate = Math.max(...runs.map((s) => s.blocks / s.ms));
+  return { version: REPLAY_VERSION, speed, epochMs, cycleMs, blocksPerCycle, blocksPerDay: (blocksPerCycle * 86_400_000) / cycleMs, maxRate, segments, key: `v${REPLAY_VERSION}|x${speed}|${epochMs}` };
+}
+// Where t falls: cycle number n, segment index i, progress u in [0, 1). null before the epoch.
+function replayLocate(t, sched) {
+  const dt = t - sched.epochMs;
+  if (!(dt > 0)) return null;
+  const n = Math.floor(dt / sched.cycleMs);
+  const r = dt - n * sched.cycleMs;
+  const segs = sched.segments;
+  let i = 0;
+  while (i < segs.length - 1 && r >= segs[i].end) i++;
+  const seg = segs[i];
+  return { n, i, seg, r, u: (r - seg.start) / seg.ms, cycleStart: sched.epochMs + n * sched.cycleMs };
+}
+// Settled fraction of a run at progress u: a smooth ramp (monotonic, rampF(0) = 0, rampF(1) = 1).
+const rampF = (u) => u - (REPLAY_RAMP * Math.sin(2 * Math.PI * u)) / (2 * Math.PI);
+const rampRate = (u) => 1 - REPLAY_RAMP * Math.cos(2 * Math.PI * u); // d rampF / du, in [0.5, 1.5]
+// Rounds up, so a block lands right as a run starts; the run's last block is held for its end, so
+// the sleep clock starts exactly when the run is over.
+function runBlocksAt(seg, u) {
+  if (seg.kind !== "run" || !(u > 0)) return 0;
+  if (u >= 1) return seg.blocks;
+  return Math.min(seg.blocks > 1 ? seg.blocks - 1 : 1, Math.ceil(seg.blocks * rampF(u)));
+}
+// Blocks settled from the epoch through t. Deterministic, monotonic non-decreasing in t.
+function replayCumulativeBlocks(t, sched) {
+  const p = replayLocate(t, sched);
+  if (!p) return 0;
+  return p.n * sched.blocksPerCycle + p.seg.before + runBlocksAt(p.seg, p.u);
+}
+// Absolute time of the end of the last run before a sleep at p (when the height last moved).
+function replayLastRunEnd(p, sched) {
+  const segs = sched.segments;
+  for (let j = p.i - 1; j >= 0; j--) if (segs[j].kind === "run") return p.cycleStart + segs[j].end;
+  for (let j = segs.length - 1; j >= 0; j--) if (segs[j].kind === "run") return p.cycleStart - sched.cycleMs + segs[j].end;
+  return null;
+}
+function replayNextRunAt(p, sched) {
+  if (!p) return sched.epochMs;
+  const segs = sched.segments;
+  for (let j = p.i + 1; j < segs.length; j++) if (segs[j].kind === "run") return p.cycleStart + segs[j].start;
+  return p.cycleStart + sched.cycleMs + segs.find((s) => s.kind === "run").start;
+}
+// The simulated wheel at t: segment, block progress and a hamster reading in the live API's shape
+// (the fields the client reads) plus {key, active, speed, rpm}. Speed follows the run's intensity
+// and ramp, ~0.8-1.6 m/s, with a mild deterministic wobble. Pure.
+function replayReading(t, sched) {
+  const p = replayLocate(t, sched);
+  const cum = replayCumulativeBlocks(t, sched);
+  const running = !!p && p.seg.kind === "run" && p.u > 0;
+  let speed = 0;
+  let progress = 0;
+  if (running) {
+    const settled = p.seg.blocks * rampF(p.u);
+    progress = settled - Math.floor(settled);
+    const intensity = p.seg.blocks / p.seg.ms / sched.maxRate; // 0..1 (the peak run is 1)
+    const wobble = 45 * Math.sin(t / 4700) + 25 * Math.sin(t / 1300);
+    speed = Math.round(clamp(800 + 600 * intensity * (rampRate(p.u) / 1.5) + wobble, 800, 1600));
+  }
+  const rpmMilli = Math.round((speed / (Math.PI * REPLAY_WHEEL_MM)) * 60_000);
+  const iso = new Date(t).toISOString();
+  return {
+    running,
+    cumulative: cum,
+    progress,
+    segment: p ? p.seg.kind : "sleep",
+    label: p ? p.seg.label : "before the first night",
+    segmentEndsAt: p ? p.cycleStart + p.seg.end : sched.epochMs,
+    nextRunAt: running ? null : replayNextRunAt(p, sched),
+    lastRunEndAt: p && !running ? replayLastRunEnd(p, sched) : null,
+    hamster: {
+      coreStatus: running ? "ACTIVE" : "IDLE",
+      freshness: "online",
+      speedMmPerSecond: speed,
+      rpmMilli,
+      distanceMm: cum * REPLAY_MM_PER_BLOCK,
+      observedAt: iso,
+      updatedAt: iso,
+      key: running ? "running" : "idle",
+      active: running,
+      speed, // mm/s, same as speedMmPerSecond
+      rpm: rpmMilli / 1000,
+      source: "replay", // not "live": the client labels it "via room server"
+    },
+  };
+}
+// One replay poll on state `st`: advance to the scheduled height, then publish chain + hamster.
+function replayTick(st, now = Date.now(), sched = REPLAY_SCHEDULE, startHeight = REPLAY_START_HEIGHT) {
+  const cum = replayCumulativeBlocks(now, sched);
+  if (!st.replay || st.replay.key !== sched.key || !Number.isSafeInteger(st.replay.offset)) {
+    st.replay = { key: sched.key, offset: st.height != null ? st.height - cum : startHeight, since: new Date(now).toISOString() };
+  }
+  const before = st.height;
+  advanceTo(st.replay.offset + cum, now, st);
+  const r = replayReading(now, sched);
+  // Blocks first seen while she already sleeps (the end of a run between polls, a restart after
+  // downtime, or the very first boot) settled when that run ended: start the sleep clock there.
+  if ((before == null || st.height > before) && !r.running && r.lastRunEndAt != null) st.lastAdvanceAt = Math.min(now, r.lastRunEndAt);
+  st.chain = {
+    blockHeight: st.height,
+    blockProgress: Math.floor(r.progress * 1e9),
+    paused: false,
+    rpc: "replay",
+    updatedAt: new Date(now).toISOString(),
+    replay: { speed: sched.speed, segment: r.segment, label: r.label, segmentEndsAt: r.segmentEndsAt, nextRunAt: r.nextRunAt },
+  };
+  st.hamster = r.hamster;
+  st.lastError = null;
+  st.apiError = null;
+  return st.height;
+}
+// Back from replay to the real chain: the live height becomes a fresh baseline (the jump is never
+// paid out, and a lower live height does not stall income until it catches up).
+function leaveReplay(st, h, now = Date.now()) {
+  st.height = h;
+  st.lastAccruedHeight = h;
+  st.lastAdvanceAt = now;
+  if (st.startHeight == null || st.startHeight > h) st.startHeight = h;
+  for (const p of Object.values(st.players)) if (p && Number.isFinite(p.joinHeight) && p.joinHeight > h) p.joinHeight = h;
+  delete st.replay;
+}
+const REPLAY_SCHEDULE = replaySchedule(REPLAY_SPEED, REPLAY_EPOCH_MS);
+
 async function poll() {
   // 1. Settled height from the contract (authoritative for the economy).
   //    In demo mode the chain only seeds the starting height; after that /api/dev/* drives it.
-  try {
-    const c = await readCoreState();
-    if (DEMO) {
-      if (state.height == null && c.blockHeight > 0) advanceTo(c.blockHeight);
-      state.chain = { ...c, blockHeight: state.height, rpc: "demo" };
-    } else {
-      state.chain = c;
-      if (c.blockHeight > 0) advanceTo(c.blockHeight);
+  //    In replay mode the schedule is the chain: no RPC at all.
+  if (REPLAY) replayTick(state, Date.now());
+  else {
+    try {
+      const c = await readCoreState();
+      if (DEMO) {
+        if (state.height == null && c.blockHeight > 0) advanceTo(c.blockHeight);
+        state.chain = { ...c, blockHeight: state.height, rpc: "demo" };
+      } else {
+        if (state.replay && c.blockHeight > 0) leaveReplay(state, c.blockHeight);
+        state.chain = c;
+        if (c.blockHeight > 0) advanceTo(c.blockHeight);
+      }
+      state.lastError = null;
+    } catch (e) {
+      state.lastError = `rpc: ${String(e.message || e)}`;
     }
-    state.lastError = null;
-  } catch (e) {
-    state.lastError = `rpc: ${String(e.message || e)}`;
   }
   // 2. Bed income: while he sleeps (by the chain), every room earns for the time since the last tick.
   const now = Date.now();
   accrueBed(state, chainIdle(state.lastAdvanceAt, now, chainReadAt()), now);
-  // 3. Live hamster reading. Demo mode fakes it (and lets a fake run go back to sleep).
+  // 3. Live hamster reading. Demo mode fakes it (and lets a fake run go back to sleep); replay
+  //    already synthesized it in replayTick().
   if (DEMO) {
     const h = state.hamster;
     if (!night && (!h || (h.coreStatus === "ACTIVE" && Date.now() - Date.parse(h.updatedAt) > 30_000))) setDemoHamster("IDLE");
-  } else {
+  } else if (!REPLAY) {
     // Optional; the browser also fetches it directly, which passes Cloudflare where a
     // datacenter IP may not.
     try {
@@ -977,9 +1194,12 @@ function snapshot(token) {
 }
 // Static rules and catalog: fetched once per page load (GET /api/config), never polled.
 // Every BALANCE key is public tuning (nothing secret lives there), so it ships whole.
-function configPayload() {
+// Replay: `api` points at REPLAY_API_SINK (see there) so the browser uses the server's synthesized
+// reading, and `replay` describes the schedule; null outside replay.
+function configPayload({ replay = REPLAY, sched = REPLAY_SCHEDULE } = {}) {
   return {
-    demo: DEMO, core: CORE, api: API, balance: BALANCE, room: ROOM, catalog: CATALOG,
+    demo: DEMO, core: CORE, api: replay ? REPLAY_API_SINK : API, balance: BALANCE, room: ROOM, catalog: CATALOG,
+    replay: replay ? { speed: sched.speed, blocksPerDay: sched.blocksPerDay, cycleMs: sched.cycleMs, epoch: new Date(sched.epochMs).toISOString() } : null,
     wallet: { enabled: true, usernameRe: WALLET.USERNAME_RE.source, burnerWarning: true, nonceTtlMs: WALLET.NONCE_TTL_MS },
   };
 }
@@ -1166,7 +1386,9 @@ async function handle(req, res) {
 function listen() {
   const server = http.createServer(handle);
   server.listen(PORT, () => {
-    console.log(`Squeekroom on http://localhost:${PORT}  (${DEMO ? "DEMO mode: POST /api/dev/advance|grant|night|sleep" : "live mode"})`);
+    const S = REPLAY_SCHEDULE;
+    const mode = DEMO ? "DEMO mode: POST /api/dev/advance|grant|night|sleep" : REPLAY ? `REPLAY mode: ${S.speed}x, ${Math.round(S.blocksPerDay)} blocks/day, ${S.cycleMs / 60_000} min cycle, no chain reads` : "live mode";
+    console.log(`Squeekroom on http://localhost:${PORT}  (${mode})`);
   });
   const flush = () => {
     try {
@@ -1184,9 +1406,15 @@ Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, apply
   accrueBed, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
   raidChance, resolveRaid, raidOdds, wealthTilt, stakeBounds, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS,
-  WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername });
+  WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername,
+  REPLAY_NIGHT, REPLAY_API_SINK, REPLAY_MIN_SLEEP_MS, replaySchedule, replayLocate, replayCumulativeBlocks, cumulativeBlocks: replayCumulativeBlocks,
+  replayReading, replayTick, leaveReplay, advanceTo });
 
 if (require.main === module) {
+  if (DEMO && REPLAY_REQUESTED) {
+    console.error("--replay (REPLAY=1) and --demo are mutually exclusive.");
+    process.exit(1);
+  }
   load();
   playerCount = Object.keys(state.players).length;
   poll();
