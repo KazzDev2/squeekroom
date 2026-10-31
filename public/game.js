@@ -944,7 +944,7 @@ function rgbaOf(c) { return c.getContext("2d").getImageData(0, 0, c.width, c.hei
 // floor tiles (material lanes + border ring, the equipped flooring inside), the slab. Cached per look.
 const roomBaseCache = { key: null, canvas: null };
 function roomBase(me) {
-  const wp = (me && me.wallpaper) || "wp_dirt", fl = (me && me.floor) || "fl_straw", t = matTier();
+  const wp = (me && me.wallpaper) || "wp_plain", fl = (me && me.floor) || "fl_straw", t = matTier();
   const key = `${wp}|${fl}|${t}|${hasSprite(wp)}|${hasSprite(fl)}|${hasSprite(`floor_mat_t${t}`)}`;
   if (roomBaseCache.key === key) return roomBaseCache.canvas;
   const c = roomBaseCache.canvas || canvas(LW, LH), x = c.getContext("2d");
@@ -2956,7 +2956,7 @@ const tutCv = $("tutCv"), tutCtx = tutCv.getContext("2d");
 tutCtx.imageSmoothingEnabled = false;
 const tutSkin = () => (S.me && S.me.skin) || "skin_classic";
 function tutBg(c, night) {
-  const wp = wallpaperCanvas("wp_dirt"), fl = floorCanvas("fl_straw");
+  const wp = wallpaperCanvas("wp_plain"), fl = floorCanvas("fl_straw");
   c.drawImage(wp, 0, wp.height - TUT_FLOOR, TUT_W, TUT_FLOOR, 0, 0, TUT_W, TUT_FLOOR);
   c.drawImage(fl, 0, 0, TUT_W, fl.height, 0, TUT_FLOOR, TUT_W, fl.height);
   for (let y = TUT_FLOOR + fl.height; y < TUT_H; y += fl.height - 1) c.drawImage(fl, 0, 1, TUT_W, fl.height - 1, 0, y, TUT_W, fl.height - 1); // the flat floor is shorter than the stage: tile it (minus its seam row)

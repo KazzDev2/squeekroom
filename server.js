@@ -218,7 +218,7 @@ const SINGLE_COPY = new Set(["wallpaper", "floor", "skin"]);
 // Tier ladders: bought strictly in order, one copy each; buying sets the player field to the tier.
 const TIER_FIELD = { wheel: "wheelTier", bed: "bedTier", room: "roomTier" };
 const tierField = (cat) => (Object.hasOwn(TIER_FIELD, cat) ? TIER_FIELD[cat] : null);
-const DEFAULTS = { skin: "skin_classic", wallpaper: "wp_dirt", floor: "fl_straw" };
+const DEFAULTS = { skin: "skin_classic", wallpaper: "wp_plain", floor: "fl_straw" };
 const FREE_IDS = CATALOG.filter((i) => i.price === 0).map((i) => i.id); // every player owns these
 
 // ---------- fixtures: the wheel and the bed ----------

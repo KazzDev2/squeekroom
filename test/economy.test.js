@@ -46,9 +46,9 @@ test("new player: 10,000 W welcome grant (a first purchase right away), tier 0, 
   assert.ok(canBuy(p, "fur_seed_bowl").ok, "the 1,200 W seed bowl is affordable on arrival");
   assert.equal(p.wheelTier, 0);
   assert.equal(p.skin, "skin_classic");
-  assert.equal(p.wallpaper, "wp_dirt");
+  assert.equal(p.wallpaper, "wp_plain");
   assert.equal(p.floor, "fl_straw");
-  for (const id of ["wp_plain", "fl_pine"]) assert.equal(p.owned[id], 1, `${id} stays free to switch back to`);
+  for (const id of ["wp_dirt", "fl_pine"]) assert.equal(p.owned[id], 1, `${id} stays free to switch to`);
 });
 
 test("accrual: delta x 10 x tier multiplier", () => {
@@ -319,7 +319,7 @@ test("claim: rejects ineligible, issues serial + seed, idempotent", () => {
   for (const k of ["version", "type", "serial", "seed", "tokenFingerprint", "nick", "claimedAt", "joinHeight", "claimHeight", "lifetimeWatts", "activeDays", "wheelTier", "skin", "itemsOwned", "room"]) assert.ok(k in c, k);
   assert.equal(c.nick, "squeaky");
   assert.equal(c.claimHeight, 9000);
-  assert.deepEqual(c.room, { wallpaper: "wp_dirt", floor: "fl_straw", placed: [{ item: "fur_sofa", x: 8, y: 11, flip: true }] });
+  assert.deepEqual(c.room, { wallpaper: "wp_plain", floor: "fl_straw", placed: [{ item: "fur_sofa", x: 8, y: 11, flip: true }] });
   assert.ok(!JSON.stringify(c).includes(TOKEN), "cert must not leak the token");
 
   // re-claim later: same cert, no new serial
