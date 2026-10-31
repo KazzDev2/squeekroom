@@ -2999,7 +2999,7 @@ function tutArrowUp(c, x, y, col) {
 const TUT_MULT = ["1X", "1.25X", "1.6X", "2X", "2.6X", "3.5X"];
 
 const TUT = [
-  { title: "He runs, you earn", text: "Squeektoshi is a real hamster. Every Squeek block he runs pays your Den Watts, even while you're away.",
+  { title: "He runs, you earn", text: "Squeektoshi is a real hamster. Every Squeek block he runs pays your den Watts, even while you're away.",
     draw(c, t) {
       tutBg(c, false);
       const f = Math.floor(t * 12) % 4;
@@ -3021,7 +3021,7 @@ const TUT = [
       c.globalAlpha = 1;
       tutPops(c, t, "+5W", b.sx - 22, b.sy - 22, 2, 2.6, 14);
     } },
-  { title: "Upgrade", text: "A better wheel and a better bed make more Watts. Spend the rest on decorating your Den.",
+  { title: "Upgrade", text: "A better wheel and a better bed make more Watts. Spend the rest on decorating your den.",
     draw(c, t) {
       tutBg(c, false);
       const step = t / 1.1, tier = Math.floor(step) % 6, ph = step % 1, f = Math.floor(t * 14) % 4;
@@ -3034,7 +3034,7 @@ const TUT = [
         for (let k = 0; k < 5; k++) { c.fillStyle = OUTLINE; c.fillRect(x - 12 + k * 5, 6, 4, 4); c.fillStyle = k < tier ? "#22c55e" : "#4b5563"; c.fillRect(x - 11 + k * 5, 7, 2, 2); }
       }
     } },
-  { title: "Raid richer Dens", text: "While he runs, wager Watts to rob a Den worth at least 0.7x yours. The richer the target, the better your odds.",
+  { title: "Raid richer dens", text: "While he runs, wager Watts to rob a den worth at least 0.7x yours. The richer the target, the better your odds.",
     draw(c, t) {
       tutBg(c, false);
       const P = 2.6, moved = Math.floor(t / P) % 4, p = (t % P) / P, f = Math.floor(t * 14) % 4;
@@ -3047,7 +3047,7 @@ const TUT = [
       if (!go) tutCoin(c, x, TUT_FLOOR - 24 - (f % 2));
       if (Math.floor(t * 2) % 2) tutText(c, "RAIDS OPEN", 96, 8, "#22c55e");
     } },
-  { title: "Guard your spot", text: "Getting raided always costs you, and the top of the leaderboard is the juiciest target. Upgrade your Den so raids on you fail more often.",
+  { title: "Guard your spot", text: "Getting raided always costs you, and the top of the leaderboard is the juiciest target. Upgrade your den so raids on you fail more often.",
     draw(c, t) {
       tutBg(c, false);
       for (const [x, h, n, col] of [[44, 26, "#2", "#9ca3af"], [96, 40, "#1", "#ffd166"], [148, 16, "#3", "#c2410c"]]) {
