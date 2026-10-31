@@ -159,6 +159,7 @@ details summary{cursor:pointer;color:var(--ink)}
 /* lifetime progress: a button (click = what's left, or claim / open the certificate) */
 .life{all:unset;display:flex;flex-direction:column;cursor:pointer;border-radius:3px}
 .life:focus-visible{outline:2px solid var(--chain);outline-offset:2px}
+.life[hidden]{display:none}
 .life .bar{display:block}
 .life.locked .sub{opacity:.85}
 .life.locked .bar i{background:color-mix(in srgb,var(--squeek) 45%,var(--muted))}
@@ -432,7 +433,7 @@ body.modal-open{overflow:hidden}
   <div class="stat meter" id="meter">
     <span class="lbl">Watts</span>
     <span class="val big"><span id="watts">—</span><small>W</small><span class="gain" id="gain"></span></span>
-    <button type="button" class="life locked" id="life" title="Progress toward the commemorative certificate">
+    <button type="button" class="life locked" id="life" hidden title="Progress toward the commemorative certificate">
       <span class="sub" id="lifeLine">lifetime —</span>
       <span class="bar thin"><i id="lifeProg"></i></span>
     </button>
