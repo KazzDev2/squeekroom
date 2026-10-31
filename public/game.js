@@ -716,7 +716,7 @@ function moveTo(name) {
   if (Math.abs(to.x - from.x) > 0.5) ham.face = to.x < from.x ? -1 : 1;
   ham.mode = "move";
 }
-function settle(mode) { ham.mode = mode; ham.face = mode === "run" ? (fixture("wheel").flip ? 1 : -1) : mode === "sleep" ? -1 : ham.face; }
+function settle(mode) { ham.mode = mode; ham.face = mode === "run" ? (fixture("wheel").flip ? -1 : 1) : mode === "sleep" ? -1 : ham.face; }
 function stepHamster(dt, st) {
   const want = wantMode(st);
   if (!ham.init && S.loaded && S.me) { // first reading: start in place, no transition
@@ -745,7 +745,7 @@ function stepHamster(dt, st) {
     if (ham.mode === "rest") moveTo(want); // already at the sit spot
     else moveTo("sit");
   } else if (ham.mode === "run") {
-    ham.x = SPOT.wheel.x; ham.y = ham.gy = SPOT.wheel.y; ham.face = fixture("wheel").flip ? 1 : -1; // the wheel may have moved (he runs facing left unless it is flipped)
+    ham.x = SPOT.wheel.x; ham.y = ham.gy = SPOT.wheel.y; ham.face = fixture("wheel").flip ? -1 : 1; // the wheel may have moved
     if (st.active) ham.runPhase += (dt / 1000) * (4 + 10 * clamp(st.speed / 1600, 0, 1)); // run-cycle steps per second scale with speed (frozen while he pauses)
   } else if (ham.mode === "sleep") {
     const s = spotFor("sleep"); ham.x = s.x; ham.y = ham.gy = s.y; // a bed upgrade (or a moved bed) moves the pillow
