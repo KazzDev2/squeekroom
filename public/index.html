@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Squeek Den</title>
+<link rel="icon" type="image/svg+xml" href="logo.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
@@ -26,7 +27,8 @@
 html,body{height:100%;margin:0}
 body{background:var(--bg);color:var(--ink);font:14px/1.45 var(--mono);display:flex;flex-direction:column;min-height:100%}
 button,input,textarea{font:inherit;color:inherit}
-h1{font-family:var(--display);font-weight:700;font-size:18px;letter-spacing:.5px;margin:0}
+h1{font-family:var(--display);font-weight:700;font-size:18px;letter-spacing:.5px;margin:0;display:flex;align-items:center;gap:8px}
+h1 .logo{width:40px;height:40px;image-rendering:pixelated;flex:none}
 .strip{display:flex;flex-wrap:wrap;align-items:center;gap:10px 22px;padding:10px max(16px,env(safe-area-inset-right,0px)) 10px max(16px,env(safe-area-inset-left,0px));border-bottom:1px solid var(--line);background:var(--panel)}
 .strip .stat{display:flex;flex-direction:column;min-width:0}
 .strip .lbl{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
@@ -424,7 +426,7 @@ body.modal-open{overflow:hidden}
 </head>
 <body>
 <header class="strip">
-  <h1>SQUEEK DEN</h1>
+  <h1><img class="logo" src="logo.svg" alt="" width="40" height="40">SQUEEK DEN</h1>
   <div class="stat" title="Live reading of the real hamster">
     <span class="lbl">Squeektoshi</span>
     <span class="val"><span class="dot" id="dot"></span><span id="status">connecting…</span></span>
