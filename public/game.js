@@ -2346,20 +2346,32 @@ $("certShare").onclick = async () => {
 // ---------- raids: header chip, leaderboard, raid modal, result, feed ----------
 // The server rolls and re-validates every raid (window, daily allowance, eligibility, stake); the
 // client mirrors the maths so each option shows its odds and loot. EV is never shown on purpose.
-const RAID_DEFAULTS = { EDGE_PCT: 110, MULT_PCT: [150, 200, 300, 500, 1000], DEFENSE_PCT: [0, 5, 10, 15, 20, 25], TILT_EXP: 0.25, TILT_MIN_PCT: 75, TILT_MAX_PCT: 150,
-  P_MIN_PCT: 2, P_MAX_PCT: 90, LOOT_U_MIN_PCT: 75, LOOT_U_MAX_PCT: 125, CRIT_CHANCE_PCT: 5, CRIT_MULT_PCT: 150, LOOT_MAX_DEF_PCT: 25, STAKE_MIN: 50,
+const RAID_DEFAULTS = { EDGE_PCT: 110, MULT_PCT: [150, 200, 300, 500, 1000], DEFENSE_PCT: [0, 5, 10, 15, 20, 25], DEF_SHARE_PCT: [0, 5, 10, 15, 20, 25], TILT_EXP: 0.25, TILT_MIN_PCT: 75, TILT_MAX_PCT: 175,
+  P_MIN_PCT: 2, P_MAX_PCT: 90, LOOT_U_MIN_PCT: 75, LOOT_U_MAX_PCT: 125, CRIT_CHANCE_PCT: 5, CRIT_MULT_PCT: 150, LOOT_MAX_DEF_PCT: 25, STAKE_MIN: 50, STAKE_MIN_BAL_PCT: 5,
   ELIGIBLE_MIN_PCT: 70, REVENGE_WINDOW_MS: 86_400_000, PER_DAY: 10 };
 const RB = () => ({ ...RAID_DEFAULTS, ...((S.balance && S.balance.RAID) || {}) });
-// p = clamp((EDGE / M) x (1 - d) x clamp((def / me) ^ 0.25, 0.75, 1.5), 0.02, 0.90), M as a percentage
+// p = clamp((EDGE / M) x (1 - d) x clamp((def / me) ^ 0.25, 0.75, 1.75), 0.02, 0.90), M as a percentage,
+// and at least 1/M when the target holds at least my watts
 function raidP(multPct, defTier, myWatts, defWatts) {
   const R = RB();
   const ratio = defWatts / myWatts;
   const tilt = clamp(Number.isNaN(ratio) ? 1 : Math.pow(ratio, R.TILT_EXP), R.TILT_MIN_PCT / 100, R.TILT_MAX_PCT / 100);
   const d = R.DEFENSE_PCT[defTier | 0] ?? R.DEFENSE_PCT[0];
-  return clamp((R.EDGE_PCT / multPct) * (1 - d / 100) * tilt, R.P_MIN_PCT / 100, R.P_MAX_PCT / 100);
+  let p = (R.EDGE_PCT / multPct) * (1 - d / 100) * tilt;
+  if (defWatts >= myWatts) p = Math.max(p, 100 / multPct);
+  return clamp(p, R.P_MIN_PCT / 100, R.P_MAX_PCT / 100);
 }
-function raidStakeBounds(watts) { return { min: RB().STAKE_MIN, max: Math.max(0, Math.floor(watts)) }; }
 const lootCap = (defWatts) => Math.floor((Math.max(0, defWatts) * RB().LOOT_MAX_DEF_PCT) / 100);
+// [max(50, 5% of my watts), min(my watts, the target's loot cap / ((M - 1) x 1.25))], as the server
+// computes it; limit says which bound set max. max < min: no raid at this multiplier.
+function raidStakeBounds(watts, defWatts = null, multPct = null) {
+  const R = RB(), bal = Math.max(0, Math.floor(watts));
+  const min = Math.max(R.STAKE_MIN, Math.ceil((bal * R.STAKE_MIN_BAL_PCT) / 100));
+  if (defWatts == null || multPct == null) return { min, max: bal, limit: "balance" };
+  const top = Math.floor((lootCap(defWatts) * 10_000) / ((multPct - 100) * R.LOOT_U_MAX_PCT));
+  return top < bal ? { min, max: top, limit: "target" } : { min, max: bal, limit: "balance" };
+}
+const sharePct = (t) => RB().DEF_SHARE_PCT[t | 0] ?? 0;
 function lootRange(multPct, stake, defWatts) {
   const R = RB(), cap = lootCap(defWatts), base = (multPct - 100) * stake;
   return [Math.min(Math.floor((base * R.LOOT_U_MIN_PCT) / 10_000), cap), Math.min(Math.floor((base * R.LOOT_U_MAX_PCT) / 10_000), cap)];
@@ -2420,7 +2432,7 @@ const defensePct = (t) => RB().DEFENSE_PCT[t | 0] ?? 0;
 // display name: the server's `name` (wallet username, else the room nick); nick for older payloads
 const rowName = (r) => (r && (r.name || r.nick)) || "anon";
 function verifiedBadge() { const b = elx("span", "vbadge", "✓"); b.title = "Wallet-verified username"; b.setAttribute("aria-label", "wallet verified"); return b; }
-const rowMatLine = (r) => `${roomMaterial(r.roomTier | 0)} room${defensePct(r.roomTier) ? ` · −${defensePct(r.roomTier)}% odds` : ""}`;
+const rowMatLine = (r) => `${roomMaterial(r.roomTier | 0)} room${defensePct(r.roomTier) ? ` · −${defensePct(r.roomTier)}% odds` : ""}${sharePct(r.roomTier) ? ` · keeps ${sharePct(r.roomTier)}% of failed raids` : ""}`;
 // recomputed against my live watts (the server's flag uses the same rule; it re-checks on raid)
 function rowRaidable(r) {
   const me = S.me;
@@ -2529,7 +2541,11 @@ function raidTarget() { // the freshest copy of the target's row
   const d = LB.data, pid = RU.row && RU.row.publicId;
   return (d && d.rows.find((x) => x.publicId === pid)) || RU.row;
 }
-function stakeNow() { const b = raidStakeBounds(S.me ? S.me.watts : 0); return { ...b, v: clamp(Math.round(RU.stake) || b.min, b.min, Math.max(b.min, b.max)) }; }
+// bounds for my watts against the current target at the chosen multiplier; v = the stake to send
+function stakeNow(mult = RU.mult) {
+  const t = raidTarget(), b = raidStakeBounds(S.me ? S.me.watts : 0, t ? t.watts : null, t ? mult : null);
+  return { ...b, v: clamp(Math.round(RU.stake) || b.min, b.min, Math.max(b.min, b.max)) };
+}
 function openRaid(row) {
   if (!row || !S.me) return;
   if (!RU.open) RU.back = document.activeElement;
@@ -2580,9 +2596,15 @@ function raidBlock(t, sb) {
   const ph = raidPhase();
   if (ph === "locked") return { lock: true, msg: S.idle ? "Squeektoshi is asleep. Raids open when he runs." : "Waiting for a fresh block." };
   if (ph === "spent") return { lock: true, msg: `No raids left today. More in ${durText(resetIn())}.` };
-  if (sb.max < sb.min) return { lock: true, msg: `You need at least ${fmt(sb.min)} W to raid.` };
   if (!rowRaidable(t)) return { lock: true, msg: `${escapeHtml(rowName(t))} has under 70% of your watts now.` };
+  if (sb.max < sb.min) return { lock: true, msg: stakeLockWords(sb) };
   return null;
+}
+function stakeLockWords(sb) {
+  if (sb.limit === "balance") return `You need at least ${fmt(sb.min)} W to raid.`;
+  return RB().MULT_PCT.some((m) => { const b = stakeNow(m); return b.max >= b.min; })
+    ? `Their room is too small for a ${multLabel(RU.mult)} raid at your size. Pick a lower multiplier.`
+    : `Their room is too small to raid with your minimum stake of ${fmt(sb.min)} W.`;
 }
 function renderRaid(force = false) {
   if (!RU.open || !S.me) return;
@@ -2603,13 +2625,14 @@ function renderRaid(force = false) {
   $("raidTitle").textContent = rev ? "Revenge" : "Raid";
   if (RU.result) return; // the result view is showing
   const sb = stakeNow(), S0 = sb.v, myW = me.watts;
-  // multiplier choices: odds only
+  // multiplier choices: odds only; dimmed where the target's loot cap leaves no stake in range
   for (const b of $("raidMults").children) {
-    const m = Number(b.dataset.m), p = raidP(m, t.roomTier, myW, t.watts);
+    const m = Number(b.dataset.m), p = raidP(m, t.roomTier, myW, t.watts), mb = stakeNow(m), off = mb.max < mb.min;
     b.setAttribute("aria-checked", String(m === RU.mult));
     b.tabIndex = m === RU.mult ? 0 : -1;
+    b.classList.toggle("off", off);
     b.querySelector(".pc").textContent = pctText(p);
-    b.setAttribute("aria-label", `${multLabel(m)}, ${pctText(p)} chance to win`);
+    b.setAttribute("aria-label", `${multLabel(m)}, ${pctText(p)} chance to win${off ? ", not available against this room" : ""}`);
   }
   // stake controls (left alone while being typed in)
   const num = $("stakeNum"), rng2 = $("stakeRange"), maxShown = Math.max(sb.min, sb.max);
@@ -2619,7 +2642,9 @@ function renderRaid(force = false) {
   rng2.disabled = num.disabled = sb.max < sb.min;
   // what's at stake, one line
   const m = RU.mult, [lo, hi] = lootRange(m, S0, t.watts);
-  $("raidSum").innerHTML = `<span><small>win</small><b class="pos">+${lo === hi ? fmt(hi) : `${fmt(lo)}–${fmt(hi)}`} W</b></span><span><small>lose</small><b class="neg">−${fmt(S0)} W</b></span>`;
+  $("raidSum").innerHTML = sb.max < sb.min
+    ? `<span><small>win</small><b>—</b></span><span><small>lose</small><b>—</b></span>`
+    : `<span><small>win</small><b class="pos">+${lo === hi ? fmt(hi) : `${fmt(lo)}–${fmt(hi)}`} W</b></span><span><small>lose</small><b class="neg">−${fmt(S0)} W</b></span>`;
   // lock banner + button
   const blk = raidBlock(t, sb), lock = $("raidLock");
   lock.hidden = !blk;
@@ -2666,7 +2691,7 @@ function raidErrorWords(j) {
     case "not_eligible": return `${t ? rowName(t) : "They"} dropped under 70% of your watts.`;
     case "self_target": return "That's your own room.";
     case "bad_mult": return "Pick a multiplier.";
-    case "bad_stake": case "stake_out_of_range": return j.max < j.min ? `You need at least ${fmt(j.min)} W to raid.` : `Stake ${fmt(j.min)} to ${fmt(j.max)} W.`;
+    case "bad_stake": case "stake_out_of_range": return j.max < j.min ? stakeLockWords(j) : `Stake ${fmt(j.min)} to ${fmt(j.max)} W${j.limit === "target" ? ` against this room at ${multLabel(RU.mult)}` : ""}.`;
     default: return errorWords(j);
   }
 }
@@ -2730,7 +2755,7 @@ function showRaidResult(res, t, before) {
   } else {
     $("resBig").textContent = "You lost";
     $("resAmt").textContent = `−${fmt(res.stakeLost || res.stake)} W`;
-    $("resDet").textContent = `stake burned at ${multLabel(m)}`;
+    $("resDet").textContent = res.defShare > 0 ? `at ${multLabel(m)}. ${fmt(res.defShare)} W went to ${rowName(t)}, the rest burned` : `stake burned at ${multLabel(m)}`;
     for (let i = 0; i < 28; i++) {
       const p = elx("i", "fxp ember");
       p.style.left = `${5 + Math.random() * 90}%`;
@@ -2820,7 +2845,7 @@ function applyFeed(list) {
 // someone raided me between two polls: make sure I notice
 function raidedMe(e) {
   const w = !!e.win;
-  toast(w ? `${e.atk} raided you: −${fmt(e.amount)} W` : `${e.atk} tried to raid you and lost ${fmt(e.amount)} W`, w ? "err" : undefined);
+  toast(w ? `${e.atk} raided you: −${fmt(e.amount)} W` : `${e.atk} tried to raid you and lost ${fmt(e.amount)} W${e.share > 0 ? `. Your room kept ${fmt(e.share)} W of it` : ""}`, w ? "err" : e.share > 0 ? "ok" : undefined);
   for (const id of ["feed", "stage"]) { const n = $(id); n.classList.remove("hit"); void n.offsetWidth; n.classList.add("hit"); setTimeout(() => n.classList.remove("hit"), 1600); }
   if (w) { const m = $("meter"); m.classList.remove("poor"); void m.offsetWidth; m.classList.add("poor"); setTimeout(() => m.classList.remove("poor"), 900); }
   raidFx("hit");
@@ -2843,6 +2868,7 @@ function feedLine(e, mine) {
   } else {
     parts.push(atkMe ? name("You") : name(e.atk), " failed on ", defMe ? name("you") : name(e.def), " ");
     parts.push(elx("span", "b", `−${amt} W`));
+    if (defMe && e.share > 0) parts.push(" ", elx("span", "w kept", `+${fmt(e.share)} W kept`));
   }
   for (const p of parts) tx.append(p);
   li.appendChild(tx);

@@ -250,6 +250,9 @@ body.modal-open{overflow:hidden}
 .mult[aria-checked="true"]{border-color:var(--amber);background:color-mix(in srgb,var(--amber) 12%,var(--dk-card))}
 .mult[aria-checked="true"] .mx{color:var(--amber)}
 .mult[aria-checked="true"] .pc{color:var(--dk-ink)}
+.mult.off{opacity:.4}
+.mult.off[aria-checked="true"]{border-color:var(--dk-mute);background:var(--dk-card)}
+.mult.off[aria-checked="true"] .mx{color:var(--dk-mute)}
 .pos{color:var(--win)}.neg{color:var(--lose)}
 .stake{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px}
 .stake input[type=number]{width:100%;background:var(--dk-in);border:1px solid var(--dk-line);border-radius:8px;color:var(--dk-ink);padding:8px 10px;font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
@@ -310,6 +313,7 @@ body.modal-open{overflow:hidden}
 .feedlist li .b{color:var(--lose);font-weight:600;white-space:nowrap}
 .feedlist li.me{background:color-mix(in srgb,var(--raid) 22%,transparent);box-shadow:inset 2px 0 0 var(--raid)}
 .feedlist li.me .w{color:#ffd5d9}
+.feedlist li.me .w.kept{color:var(--win)}
 .feedlist li.mine{background:color-mix(in srgb,var(--amber) 12%,transparent);box-shadow:inset 2px 0 0 var(--amber)}
 .feedlist li.fresh{animation:feedin 1.2s ease-out}
 .feedlist .empty{color:var(--dk-mute)}
@@ -525,7 +529,7 @@ body.modal-open{overflow:hidden}
       <div class="mults" id="raidMults" role="radiogroup" aria-label="Multiplier"></div>
       <div class="stake">
         <input type="number" id="stakeNum" inputmode="numeric" step="1" aria-label="Stake in watts">
-        <div class="stakeq"><button type="button" class="q" data-q="10">10%</button><button type="button" class="q" data-q="50">50%</button><button type="button" class="q" data-q="100">ALL</button></div>
+        <div class="stakeq"><button type="button" class="q" data-q="10">10%</button><button type="button" class="q" data-q="50">50%</button><button type="button" class="q" data-q="100">MAX</button></div>
         <input type="range" id="stakeRange" step="1" aria-label="Stake">
       </div>
       <div class="rsum" id="raidSum"></div>

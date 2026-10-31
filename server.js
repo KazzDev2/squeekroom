@@ -3,7 +3,8 @@
 // he sleeps (no settled block for a while) every room earns a slower trickle from its bed.
 // Watts buy cosmetics; wheel and bed upgrades are the only items that raise generation.
 // While he runs, players may raid richer rooms (POST /api/raid): a won raid moves watts, a lost
-// stake is burned. GET /api/leaderboard lists every room by balance.
+// stake is burned, less a share paid to the defender by room tier. GET /api/leaderboard lists every
+// room by balance.
 // Optional wallet sign-in (POST /api/wallet/{nonce,verify,username}): a gasless personal_sign proof
 // binds an EVM address, which unlocks a unique username shown on the leaderboard.
 // Zero dependencies. Node 18+ (uses global fetch).
@@ -67,25 +68,30 @@ const BALANCE = {
   // Less than WARMUP_MS of history (restart, cadence unknown) -> 100. Bed income is not affected.
   SPEED: { WINDOW_MS: 600_000, BASE_BPM: 4, MAX_PCT: 150, WARMUP_MS: 120_000 },
   // Raids: wager a stake on a multiplier against a richer room while he RUNS. Win chance
-  // p = clamp((EDGE / M) x (1 - defense) x tilt, P_MIN, P_MAX), so attacker EV = S x (p x M - 1)
-  // does not depend on M (the multiplier only dials variance) until the loot cap bites: past
-  // stake ~ cap / (M - 1), a bigger stake only risks more. A loss burns the stake (nobody gets it).
+  // p = clamp((EDGE / M) x (1 - defense) x tilt, P_MIN, P_MAX), raised to at least 1/M when the target
+  // holds at least the attacker's watts, so attacker EV = S x (p x M - 1) does not depend on M (the
+  // multiplier only dials variance). Punching up is never -EV; peer raids into strong rooms and
+  // revenge on poorer rooms can be. Stakes stop at the point where the loot cap would cut the loot
+  // roll (only a crit can hit the cap), so no stake is a trap. A loss pays the defender a share by
+  // room tier and burns the rest; the share stays far below the loot risk, so being raided is -EV.
   // The UI shows odds and loot, never EV: working that out is part of the game.
   RAID: {
     EDGE_PCT: 110,
     MULT_PCT: [150, 200, 300, 500, 1000], // M = 1.5, 2, 3, 5, 10 ("Heist")
     DEFENSE_PCT: [0, 5, 10, 15, 20, 25], // by the DEFENDER's roomTier 0..5
+    DEF_SHARE_PCT: [0, 5, 10, 15, 20, 25], // of a failed stake, paid to the DEFENDER by roomTier 0..5
     TILT_EXP: 0.25, // tilt = (defenderWatts / attackerWatts) ^ TILT_EXP, clamped below
     TILT_MIN_PCT: 75,
-    TILT_MAX_PCT: 150,
+    TILT_MAX_PCT: 175, // reached at ~9.4x the attacker's watts
     P_MIN_PCT: 2,
     P_MAX_PCT: 90,
     LOOT_U_MIN_PCT: 75, // win: loot = (M - 1) x stake x U, U uniform in [0.75, 1.25], <= defender balance
     LOOT_U_MAX_PCT: 125,
     CRIT_CHANCE_PCT: 5,
     CRIT_MULT_PCT: 150,
-    LOOT_MAX_DEF_PCT: 25, // one raid takes at most 25% of the defender's balance (stakes are uncapped)
-    STAKE_MIN: 50, // no maximum: a player may stake anything up to their whole balance
+    LOOT_MAX_DEF_PCT: 25, // one raid takes at most 25% of the defender's balance
+    STAKE_MIN: 50, // stake >= max(STAKE_MIN, STAKE_MIN_BAL_PCT of the attacker's balance)
+    STAKE_MIN_BAL_PCT: 5, // stake <= min(balance, cap / ((M - 1) x LOOT_U_MAX)): see stakeBounds()
     ELIGIBLE_MIN_PCT: 70, // targets must hold >= 70% of the attacker's balance (punch-up only)...
     REVENGE_WINDOW_MS: 86_400_000, // ...unless they raided the attacker within 24 h (once per provocation)
     RAIDED_BY_MAX: 20,
@@ -593,7 +599,7 @@ function claimCommemorative(st, token, now = Date.now()) {
 // state object. Raid transfers never touch lifetimeWatts/activeDays: lifetime is earn-only (it
 // gates the certificate), so loot is moved on the balances directly, never through creditWatts().
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
-// tilt = clamp((defenderWatts / attackerWatts) ^ 0.25, 0.75, 1.5): punching up pays better.
+// tilt = clamp((defenderWatts / attackerWatts) ^ 0.25, 0.75, 1.75): punching up pays better.
 function wealthTilt(attackerWatts, defenderWatts) {
   const R = BALANCE.RAID;
   const ratio = defenderWatts / attackerWatts;
@@ -602,22 +608,28 @@ function wealthTilt(attackerWatts, defenderWatts) {
 }
 const raidDefensePct = (defender) => BALANCE.RAID.DEFENSE_PCT[defender.roomTier | 0] ?? BALANCE.RAID.DEFENSE_PCT[0];
 // p = clamp((1.10 / M) x (1 - d) x T, 0.02, 0.90), with M given as a percentage (150 = 1.5x).
-function raidOdds(multPct, defensePct, tilt) {
+// punchUp: the target holds at least the attacker's watts, so p is at least 1/M (break-even before
+// the loot roll's crits, which keep it just above).
+function raidOdds(multPct, defensePct, tilt, punchUp = false) {
   const R = BALANCE.RAID;
-  const p = (R.EDGE_PCT / multPct) * (1 - defensePct / 100) * tilt;
+  let p = (R.EDGE_PCT / multPct) * (1 - defensePct / 100) * tilt;
+  if (punchUp) p = Math.max(p, 100 / multPct);
   return clamp(p, R.P_MIN_PCT / 100, R.P_MAX_PCT / 100);
 }
+const isPunchUp = (attackerWatts, defenderWatts) => defenderWatts >= attackerWatts;
 function raidChance(attacker, defender, multPct) {
   if (!BALANCE.RAID.MULT_PCT.includes(multPct)) return 0;
-  return raidOdds(multPct, raidDefensePct(defender), wealthTilt(attacker.watts, defender.watts));
+  return raidOdds(multPct, raidDefensePct(defender), wealthTilt(attacker.watts, defender.watts), isPunchUp(attacker.watts, defender.watts));
 }
+const raidSharePct = (defender) => BALANCE.RAID.DEF_SHARE_PCT[defender.roomTier | 0] ?? BALANCE.RAID.DEF_SHARE_PCT[0];
 // One resolution, rolls in a fixed order: win, then loot U, then crit (a loss uses one roll).
 // Loot is capped at LOOT_MAX_DEF_PCT of the defender's balance, crit included, so no single roll can
-// empty a room however big the stake. Pure: returns the outcome, mutates nothing.
+// empty a room however big the stake. A loss loses the whole stake; defShare of it goes to the
+// defender (by their room tier), the rest burns. Pure: returns the outcome, mutates nothing.
 function resolveRaid(attacker, defender, stake, multPct, rng = Math.random) {
   const R = BALANCE.RAID;
   const p = raidChance(attacker, defender, multPct);
-  if (!(rng() < p)) return { win: false, p, stakeLost: stake };
+  if (!(rng() < p)) return { win: false, p, stakeLost: stake, defShare: Math.floor((stake * raidSharePct(defender)) / 100) };
   const uPct = R.LOOT_U_MIN_PCT + (R.LOOT_U_MAX_PCT - R.LOOT_U_MIN_PCT) * rng();
   const cap = lootCap(defender.watts);
   let loot = Math.min(Math.floor(((multPct - 100) * stake * uPct) / 10_000), cap);
@@ -626,9 +638,17 @@ function resolveRaid(attacker, defender, stake, multPct, rng = Math.random) {
   return { win: true, p, loot: Math.max(0, loot), crit };
 }
 const lootCap = (defWatts) => Math.floor((Math.max(0, defWatts) * BALANCE.RAID.LOOT_MAX_DEF_PCT) / 100);
-// Stake bounds for a balance: [50, the whole balance] (max < min: can't raid).
-function stakeBounds(watts) {
-  return { min: BALANCE.RAID.STAKE_MIN, max: Math.max(0, Math.floor(watts)) };
+// Stake bounds: min = max(50, 5% of the balance); max = the balance, and with a target and a
+// multiplier also the largest stake whose top loot roll (M - 1) x S x 1.25 fits under the target's
+// loot cap. Past it a crit-free win could not grow while the loss would, so it would be a trap.
+// limit: which bound sets max ("balance" | "target"). max < min: can't raid (at this multiplier).
+function stakeBounds(watts, defWatts = null, multPct = null) {
+  const R = BALANCE.RAID;
+  const bal = Math.max(0, Math.floor(watts));
+  const min = Math.max(R.STAKE_MIN, Math.ceil((bal * R.STAKE_MIN_BAL_PCT) / 100));
+  if (defWatts == null || multPct == null) return { min, max: bal, limit: "balance" };
+  const top = Math.floor((lootCap(defWatts) * 10_000) / ((multPct - 100) * R.LOOT_U_MAX_PCT));
+  return top < bal ? { min, max: top, limit: "target" } : { min, max: bal, limit: "balance" };
 }
 // The multiplier as shown (1.5, 2, 3, 5, 10) or as its percentage (150 .. 1000). null if neither.
 function parseMultPct(v) {
@@ -710,9 +730,9 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
   if (!el.ok) return fail(el.error);
   const multPct = parseMultPct(b.mult);
   if (multPct == null) return fail("bad_mult");
-  const { min, max } = stakeBounds(atk.watts);
-  if (!Number.isInteger(b.stake)) return { ok: false, error: "bad_stake", min, max };
-  if (b.stake < min || b.stake > max) return { ok: false, error: "stake_out_of_range", min, max };
+  const { min, max, limit } = stakeBounds(atk.watts, def.watts, multPct);
+  if (!Number.isInteger(b.stake)) return { ok: false, error: "bad_stake", min, max, limit };
+  if (b.stake < min || b.stake > max) return { ok: false, error: "stake_out_of_range", min, max, limit };
   const stake = b.stake;
 
   const r = resolveRaid(atk, def, stake, multPct, rng);
@@ -721,7 +741,8 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
     atk.watts += r.loot;
   } else {
     atk.watts -= stake;
-    st.burned = (Number.isFinite(st.burned) ? st.burned : 0) + stake;
+    def.watts += r.defShare;
+    st.burned = (Number.isFinite(st.burned) ? st.burned : 0) + stake - r.defShare;
   }
   atk.lastRaidAt = now;
   const day = utcDay(now);
@@ -731,7 +752,7 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
   if (!Array.isArray(def.raidedBy)) def.raidedBy = [];
   def.raidedBy = def.raidedBy.filter((e) => e && now - e.at < R.REVENGE_WINDOW_MS);
   pushRing(def.raidedBy, { pid: atk.publicId, at: now, avenged: false }, R.RAIDED_BY_MAX);
-  const feed = { at: now, atk: displayName(atk), atkId: atk.publicId, def: displayName(def), defId: def.publicId, win: r.win, amount: r.win ? r.loot : stake, crit: r.win ? r.crit : false };
+  const feed = { at: now, atk: displayName(atk), atkId: atk.publicId, def: displayName(def), defId: def.publicId, win: r.win, amount: r.win ? r.loot : stake, crit: r.win ? r.crit : false, share: r.win ? 0 : r.defShare };
   if (!Array.isArray(st.raidFeed)) st.raidFeed = [];
   pushRing(st.raidFeed, feed, R.FEED_MAX);
   invalidateLeaderboard(st);

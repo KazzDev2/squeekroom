@@ -563,10 +563,11 @@ test("raid: balance knobs", () => {
   assert.equal(RA.EDGE_PCT, 110);
   assert.deepEqual(RA.MULT_PCT, [150, 200, 300, 500, 1000]);
   assert.deepEqual(RA.DEFENSE_PCT, [0, 5, 10, 15, 20, 25]);
-  assert.deepEqual([RA.TILT_EXP, RA.TILT_MIN_PCT, RA.TILT_MAX_PCT, RA.P_MIN_PCT, RA.P_MAX_PCT], [0.25, 75, 150, 2, 90]);
+  assert.deepEqual(RA.DEF_SHARE_PCT, [0, 5, 10, 15, 20, 25]);
+  assert.deepEqual([RA.TILT_EXP, RA.TILT_MIN_PCT, RA.TILT_MAX_PCT, RA.P_MIN_PCT, RA.P_MAX_PCT], [0.25, 75, 175, 2, 90]);
   assert.deepEqual([RA.LOOT_U_MIN_PCT, RA.LOOT_U_MAX_PCT, RA.CRIT_CHANCE_PCT, RA.CRIT_MULT_PCT], [75, 125, 5, 150]);
-  assert.deepEqual([RA.STAKE_MIN, RA.LOOT_MAX_DEF_PCT, RA.ELIGIBLE_MIN_PCT], [50, 25, 70]);
-  assert.equal(RA.STAKE_MAX, undefined); // no stake cap
+  assert.deepEqual([RA.STAKE_MIN, RA.STAKE_MIN_BAL_PCT, RA.LOOT_MAX_DEF_PCT, RA.ELIGIBLE_MIN_PCT], [50, 5, 25, 70]);
+  assert.equal(RA.STAKE_MAX, undefined); // the max comes from the balance and the target's loot cap
   assert.equal(RA.PER_DAY, 10);
   assert.equal(RA.REVENGE_WINDOW_MS, 24 * 3600_000);
 });
@@ -581,25 +582,49 @@ test("raidChance: base 1.10/M at equal wealth in a wood room", () => {
 
 test("raidChance: defense ladder by the defender's room tier", () => {
   const a = fresh({ watts: 10_000, roomTier: 5 }); // the attacker's own room does not matter
+  const tilt = S.wealthTilt(10_000, 8000); // a poorer target: no punch-up floor
   for (let tier = 0; tier <= 5; tier++) {
-    const d = fresh({ watts: 10_000, roomTier: tier });
-    near(S.raidChance(a, d, 200), 0.55 * (1 - [0, 0.05, 0.1, 0.15, 0.2, 0.25][tier]), `tier ${tier}`);
+    const d = fresh({ watts: 8000, roomTier: tier });
+    near(S.raidChance(a, d, 200), 0.55 * (1 - [0, 0.05, 0.1, 0.15, 0.2, 0.25][tier]) * tilt, `tier ${tier}`);
   }
 });
 
-test("raidChance: wealth tilt (def/atk)^0.25, capped to [0.75, 1.5]", () => {
+test("raidChance: punching up (target >= your watts) never drops below 1/M", () => {
+  const a = fresh({ watts: 10_000 });
+  for (const m of RA.MULT_PCT) {
+    for (let tier = 0; tier <= 5; tier++) {
+      const raw = (1.1 / (m / 100)) * (1 - RA.DEFENSE_PCT[tier] / 100);
+      near(S.raidChance(a, fresh({ watts: 10_000, roomTier: tier }), m), Math.max(raw, 100 / m), `equal M=${m} T${tier}`);
+      // one watt poorer: a peer raid, the floor is off
+      const peer = S.raidChance(a, fresh({ watts: 9999, roomTier: tier }), m);
+      near(peer, raw * S.wealthTilt(10_000, 9999), `peer M=${m} T${tier}`);
+    }
+  }
+  // a diamond room at equal wealth: the floor wins at every multiplier
+  for (const m of RA.MULT_PCT) near(S.raidChance(a, fresh({ watts: 10_000, roomTier: 5 }), m), 100 / m);
+  // revenge on a much poorer diamond room stays below 1/M
+  near(S.raidChance(a, fresh({ watts: 100, roomTier: 5 }), 200), 0.55 * 0.75 * 0.75);
+  // a rich wood target is already above the floor: unchanged
+  near(S.raidChance(a, fresh({ watts: 20_000 }), 300), (1.1 / 3) * Math.pow(2, 0.25));
+  // raidOdds without the flag is the plain formula
+  near(S.raidOdds(1000, 25, 1), 0.0825);
+  near(S.raidOdds(1000, 25, 1, true), 0.1);
+});
+
+test("raidChance: wealth tilt (def/atk)^0.25, capped to [0.75, 1.75]", () => {
   near(S.wealthTilt(1000, 1000), 1);
   near(S.wealthTilt(1000, 2000), Math.pow(2, 0.25));
   near(S.wealthTilt(2000, 1000), Math.pow(0.5, 0.25));
-  assert.equal(S.wealthTilt(1000, 16_000), 1.5); // 16^.25 = 2 -> cap
-  assert.equal(S.wealthTilt(1000, 1e12), 1.5);
+  near(S.wealthTilt(1000, 9000), Math.pow(9, 0.25)); // 1.732: just under the cap
+  assert.equal(S.wealthTilt(1000, 16_000), 1.75); // 16^.25 = 2 -> cap
+  assert.equal(S.wealthTilt(1000, 1e12), 1.75);
   assert.equal(S.wealthTilt(16_000, 1000), 0.75); // 0.5 -> floor
   assert.equal(S.wealthTilt(1e12, 1), 0.75);
-  assert.equal(S.wealthTilt(0, 500), 1.5); // broke attacker: Infinity -> cap
+  assert.equal(S.wealthTilt(0, 500), 1.75); // broke attacker: Infinity -> cap
   assert.equal(S.wealthTilt(500, 0), 0.75);
   assert.equal(S.wealthTilt(0, 0), 1);
-  // through raidChance: a 10x punch-up at M=10 in a wood room = 0.11 x 1.5
-  near(S.raidChance(fresh({ watts: 1000 }), fresh({ watts: 10_000 }), 1000), 0.165);
+  // through raidChance: a 10x punch-up at M=10 in a wood room = 0.11 x 1.75
+  near(S.raidChance(fresh({ watts: 1000 }), fresh({ watts: 10_000 }), 1000), 0.1925);
 });
 
 test("raidChance: clamped to [0.02, 0.90]", () => {
@@ -632,8 +657,12 @@ test("resolveRaid: a loss uses one roll and loses the whole stake", () => {
   const a = fresh({ watts: 10_000 }), d = fresh({ watts: 10_000 });
   const rng = seq(LOSE);
   const r = S.resolveRaid(a, d, 1000, 300, rng);
-  assert.deepEqual(r, { win: false, p: S.raidChance(a, d, 300), stakeLost: 1000 });
+  assert.deepEqual(r, { win: false, p: S.raidChance(a, d, 300), stakeLost: 1000, defShare: 0 }); // wood: no share
   assert.equal(rng.used(), 1);
+  for (let tier = 0; tier <= 5; tier++) {
+    const loss = S.resolveRaid(a, fresh({ watts: 10_000, roomTier: tier }), 999, 300, seq(LOSE));
+    assert.deepEqual([loss.stakeLost, loss.defShare], [999, Math.floor((999 * 5 * tier) / 100)], `tier ${tier}`);
+  }
   // a roll exactly at p loses (a win needs roll < p)
   const p = S.raidChance(a, d, 200);
   assert.equal(S.resolveRaid(a, d, 100, 200, seq(p)).win, false);
@@ -690,30 +719,113 @@ test("applyRaid: a win moves the loot defender -> attacker; lifetime/activeDays 
   assert.equal(supply(st), before);
   assert.equal(a.lastRaidAt, T0);
   assert.deepEqual(d.raidedBy, [{ pid: a.publicId, at: T0, avenged: false }]);
-  assert.deepEqual(r.feed, { at: T0, atk: "atk", atkId: a.publicId, def: "def", defId: d.publicId, win: true, amount: 2000, crit: false });
+  assert.deepEqual(r.feed, { at: T0, atk: "atk", atkId: a.publicId, def: "def", defId: d.publicId, win: true, amount: 2000, crit: false, share: 0 });
   assert.deepEqual(st.raidFeed, [r.feed]);
 });
 
-test("applyRaid: a loss burns the stake (the defender gets nothing)", () => {
-  const st = raidWorld({ atk: { lifetimeWatts: 5000, activeDays: 3 } });
+test("applyRaid: a loss burns the stake (a wood room gets nothing)", () => {
+  const st = raidWorld({ atk: { lifetimeWatts: 5000, activeDays: 3 }, def: { watts: 100_000 } });
   const before = supply(st);
   const r = raid(st, TA, TB, 2000, 10, T0, seq(LOSE));
   assert.equal(r.ok, true);
-  assert.deepEqual(r.result, { win: false, p: S.raidChance(fresh({ watts: 10_000 }), fresh({ watts: 10_000 }), 1000), stakeLost: 2000, stake: 2000, multPct: 1000, revenge: false, raidsLeft: RA.PER_DAY - 1 });
+  assert.deepEqual(r.result, { win: false, p: S.raidChance(fresh({ watts: 10_000 }), fresh({ watts: 100_000 }), 1000), stakeLost: 2000, defShare: 0, stake: 2000, multPct: 1000, revenge: false, raidsLeft: RA.PER_DAY - 1 });
   assert.equal(st.players[TA].watts, 8000);
-  assert.equal(st.players[TB].watts, 10_000);
+  assert.equal(st.players[TB].watts, 100_000);
   assert.equal(st.burned, 2000);
   assert.equal(supply(st), before);
   assert.deepEqual([st.players[TA].lifetimeWatts, st.players[TA].activeDays], [5000, 3]);
-  assert.deepEqual([r.feed.win, r.feed.amount, r.feed.crit], [false, 2000, false]);
+  assert.deepEqual([r.feed.win, r.feed.amount, r.feed.crit, r.feed.share], [false, 2000, false, 0]);
   assert.equal(st.players[TB].raidedBy.length, 1); // a failed raid still counts as a provocation
   // a state object without the raid fields still works (burned/raidFeed start lazily)
   const bare = raidWorld();
   delete bare.burned;
   delete bare.raidFeed;
-  assert.ok(raid(bare, TA, TB, 100, 2).ok);
-  assert.equal(bare.burned, 100);
+  assert.ok(raid(bare, TA, TB, 500, 2).ok);
+  assert.equal(bare.burned, 500);
   assert.equal(bare.raidFeed.length, 1);
+});
+
+test("applyRaid: a loss pays the defender 5% per room tier, the rest burns", () => {
+  for (let tier = 0; tier <= 5; tier++) {
+    const st = raidWorld({ def: { watts: 100_000, roomTier: tier, lifetimeWatts: 700 } });
+    const before = supply(st);
+    const r = raid(st, TA, TB, 2001, 3, T0, seq(LOSE));
+    const share = Math.floor((2001 * 5 * tier) / 100);
+    assert.equal(r.ok, true);
+    assert.deepEqual([r.result.stakeLost, r.result.defShare, r.feed.share, r.feed.amount], [2001, share, share, 2001], `tier ${tier}`);
+    assert.equal(st.players[TA].watts, 10_000 - 2001);
+    assert.equal(st.players[TB].watts, 100_000 + share);
+    assert.equal(st.burned, 2001 - share);
+    assert.equal(supply(st), before);
+    assert.equal(st.players[TB].lifetimeWatts, 700); // the share is a transfer, not earnings
+  }
+  // a won raid pays no share
+  const st = raidWorld({ def: { watts: 100_000, roomTier: 5 } });
+  const w = raid(st, TA, TB, 1000, 3, T0, seq(WIN, 0.5, 0.99));
+  assert.deepEqual([w.result.win, w.result.loot, w.feed.share], [true, 2000, 0]);
+  assert.equal(w.result.defShare, undefined);
+});
+
+// Expected value of one raid, through the real resolveRaid: the win roll forced, the loot roll U
+// integrated at N midpoints (the floor() steps included), crit and no-crit weighted by their odds.
+function raidEV(atkW, defW, tier, stake, m, N = 2000) {
+  const a = fresh({ watts: atkW }), d = fresh({ watts: defW, roomTier: tier });
+  const p = S.raidChance(a, d, m);
+  const crit = RA.CRIT_CHANCE_PCT / 100;
+  let loot = 0;
+  for (let k = 0; k < N; k++) {
+    const u = (k + 0.5) / N;
+    loot += (1 - crit) * S.resolveRaid(a, d, stake, m, seq(WIN, u, 0.99)).loot + crit * S.resolveRaid(a, d, stake, m, seq(WIN, u, 0)).loot;
+  }
+  loot /= N;
+  const share = S.resolveRaid(a, d, stake, m, seq(LOSE)).defShare;
+  return { atk: p * loot - (1 - p) * stake, def: -p * loot + (1 - p) * share, p };
+}
+// every allowed stake shape: the minimum, the middle, the maximum, and odd values near both
+const stakesFor = (b) => (b.max < b.min ? [] : [...new Set([b.min, b.min + 1, Math.floor((b.min + b.max) / 2), b.max - 1, b.max].filter((s) => s >= b.min && s <= b.max))]);
+
+test("raid EV: punching up is never -EV for the attacker, whatever the tier, multiplier or stake", () => {
+  let checked = 0;
+  for (const atkW of [1000, 10_000, 1_000_000]) {
+    for (const ratio of [1, 1.0001, 1.2, 1.5, 2, 4, 9.4, 50]) {
+      const defW = Math.ceil(atkW * ratio);
+      for (let tier = 0; tier <= 5; tier++) {
+        for (const m of RA.MULT_PCT) {
+          for (const s of stakesFor(S.stakeBounds(atkW, defW, m))) {
+            const ev = raidEV(atkW, defW, tier, s, m, s < 200 ? 4000 : 400);
+            assert.ok(ev.atk > 0, `atk=${atkW} def=${defW} T${tier} M=${m} S=${s}: EV ${ev.atk}`);
+            checked++;
+          }
+        }
+      }
+    }
+  }
+  assert.ok(checked > 500, `${checked} cases`);
+  // the worst spot (the floor binds, smallest stake, 1.5x) is still just above break-even
+  const worst = raidEV(1000, 1000, 5, 50, 150, 20_000);
+  assert.ok(worst.atk > 0 && worst.atk < 0.2, `worst ${worst.atk}`);
+  // below your own watts the floor is off: a strong peer room or a poor revenge target can cost you
+  assert.ok(raidEV(10_000, 9000, 5, 1000, 300).atk < 0);
+  assert.ok(raidEV(10_000, 3000, 0, 500, 150).atk < 0);
+});
+
+test("raid EV: being raided is never +EV for the defender (the tier share stays below the loot risk)", () => {
+  let checked = 0;
+  for (const atkW of [1000, 10_000, 1_000_000]) {
+    for (const ratio of [0.13, 0.3, 0.7, 1, 2, 9.4, 50]) { // below 0.7 = revenge raids
+      const defW = Math.ceil(atkW * ratio);
+      for (let tier = 0; tier <= 5; tier++) {
+        for (const m of RA.MULT_PCT) {
+          for (const s of stakesFor(S.stakeBounds(atkW, defW, m))) {
+            const ev = raidEV(atkW, defW, tier, s, m, 400);
+            assert.ok(ev.def < 0, `atk=${atkW} def=${defW} T${tier} M=${m} S=${s}: defender EV ${ev.def}`);
+            checked++;
+          }
+        }
+      }
+    }
+  }
+  assert.ok(checked > 500, `${checked} cases`);
 });
 
 test("applyRaid fuzz: watts + burned conserved, integers only, lifetime never moves", () => {
@@ -728,9 +840,10 @@ test("applyRaid fuzz: watts + burned conserved, integers only, lifetime never mo
     const atk = tokens[Math.floor(rng() * tokens.length)];
     const def = tokens[Math.floor(rng() * tokens.length)];
     st.players[atk].raidsToday = 0; // skip the daily allowance for the fuzz
-    const { max } = S.stakeBounds(st.players[atk].watts);
-    const stake = 50 + Math.floor(rng() * Math.max(1, max / 5 - 49)); // mostly modest stakes keep the rooms solvent
     const mult = RA.MULT_PCT[Math.floor(rng() * 5)];
+    const { min, max } = S.stakeBounds(st.players[atk].watts, st.players[def].watts, mult);
+    // mostly in range (some at either bound); every 10th draw is anywhere, so refusals get fuzzed too
+    const stake = n % 10 === 9 ? Math.floor(rng() * 3 * (max + 1)) : min + Math.floor(rng() * Math.max(1, max - min + 1));
     const r = S.applyRaid(st, atk, { target: pidOf(def), stake, mult }, T0, { rng });
     if (r.ok) r.result.win ? wins++ : losses++;
     assert.equal(supply(st), supply0, `raid ${n}`);
@@ -742,50 +855,75 @@ test("applyRaid fuzz: watts + burned conserved, integers only, lifetime never mo
   assert.equal(st.raidFeed.length, RA.FEED_MAX);
 });
 
-test("raid stake bounds: any integer from 50 up to your whole balance", () => {
-  assert.deepEqual(S.stakeBounds(10_000), { min: 50, max: 10_000 });
-  assert.deepEqual(S.stakeBounds(10_004.7), { min: 50, max: 10_004 }); // floor
-  assert.deepEqual(S.stakeBounds(1e9), { min: 50, max: 1e9 });
-  assert.deepEqual(S.stakeBounds(49), { min: 50, max: 49 }); // too poor to raid
-  const st = raidWorld();
-  for (const s of [49, 0, -100, 10_001]) {
-    const r = raid(st, TA, TB, s, 2);
-    assert.deepEqual([r.ok, r.error, r.min, r.max], [false, "stake_out_of_range", 50, 10_000], `stake ${s}`);
+test("raid stake bounds: min max(50, 5% of balance); max the balance or the target's loot cap", () => {
+  // balance only
+  assert.deepEqual(S.stakeBounds(10_000), { min: 500, max: 10_000, limit: "balance" });
+  assert.deepEqual(S.stakeBounds(10_004.7), { min: 501, max: 10_004, limit: "balance" }); // floor, then 5% rounded up
+  assert.deepEqual(S.stakeBounds(1e9), { min: 5e7, max: 1e9, limit: "balance" });
+  assert.deepEqual(S.stakeBounds(999), { min: 50, max: 999, limit: "balance" }); // 5% < 50
+  assert.deepEqual(S.stakeBounds(1001), { min: 51, max: 1001, limit: "balance" });
+  assert.deepEqual(S.stakeBounds(49), { min: 50, max: 49, limit: "balance" }); // too poor to raid
+  // with a target: cap 25k (100k room) / ((M - 1) x 1.25)
+  assert.deepEqual(S.stakeBounds(10_000, 100_000, 1000), { min: 500, max: 2222, limit: "target" });
+  assert.deepEqual(S.stakeBounds(10_000, 100_000, 500), { min: 500, max: 5000, limit: "target" });
+  assert.deepEqual(S.stakeBounds(10_000, 100_000, 300), { min: 500, max: 10_000, limit: "balance" }); // exactly 10k
+  assert.deepEqual(S.stakeBounds(10_000, 100_000, 150), { min: 500, max: 10_000, limit: "balance" });
+  assert.deepEqual(S.stakeBounds(10_000, 10_000, 1000), { min: 500, max: 222, limit: "target" }); // no 10x into a peer
+  assert.deepEqual(S.stakeBounds(10_000, 0, 200), { min: 500, max: 0, limit: "target" });
+  // at max the top loot roll fits under the cap; one more watt would not
+  for (const defW of [1, 199, 4800, 10_000, 77_777, 1e6, 123_456_789]) {
+    for (const m of RA.MULT_PCT) {
+      const { max } = S.stakeBounds(1e12, defW, m), cap = S.lootCap(defW);
+      assert.ok((m - 100) * max * RA.LOOT_U_MAX_PCT <= cap * 10_000, `fits def=${defW} M=${m}`);
+      assert.ok((m - 100) * (max + 1) * RA.LOOT_U_MAX_PCT > cap * 10_000, `tight def=${defW} M=${m}`);
+      if (max > 0) assert.ok(S.resolveRaid(fresh({ watts: 1e12 }), fresh({ watts: defW }), max, m, seq(WIN, 0.999999999, 0.99)).loot <= cap);
+    }
   }
-  for (const s of [100.5, "100", null, undefined, NaN, Infinity]) assert.equal(raid(st, TA, TB, s, 2).error, "bad_stake", `stake ${s}`);
+  const st = raidWorld(); // 10k vs 10k at 2x: [500, 2000]
+  for (const s of [499, 0, -100, 2001, 10_001]) {
+    const r = raid(st, TA, TB, s, 2);
+    assert.deepEqual([r.ok, r.error, r.min, r.max, r.limit], [false, "stake_out_of_range", 500, 2000, "target"], `stake ${s}`);
+  }
+  for (const s of [500.5, "500", null, undefined, NaN, Infinity]) {
+    const r = raid(st, TA, TB, s, 2);
+    assert.deepEqual([r.error, r.min, r.max, r.limit], ["bad_stake", 500, 2000, "target"], `stake ${s}`);
+  }
+  assert.deepEqual([raid(st, TA, TB, 500, 10).error, raid(st, TA, TB, 500, 10).max], ["stake_out_of_range", 222]); // 10x is out of reach here
   assert.equal(st.players[TA].watts, 10_000); // nothing moved on a refusal
   assert.equal(st.players[TA].raidsToday, 0);
-  assert.ok(raid(st, TA, TB, 10_000, 2).ok); // all in
-  assert.equal(st.players[TA].watts, 0);
+  assert.ok(raid(st, TA, TB, 500, 2).ok); // the minimum
+  assert.ok(raid(st, TA, TB, 2000, 2).ok); // the target-limited maximum
+  const rich = raidWorld({ def: { watts: 1e9 } });
+  assert.ok(raid(rich, TA, TB, 10_000, 2).ok); // all in, when the target is rich enough
+  assert.equal(rich.players[TA].watts, 0);
   const broke = raidWorld({ atk: { watts: 40 }, def: { watts: 200 } });
-  assert.equal(raid(broke, TA, TB, 50, 2).error, "stake_out_of_range");
+  assert.deepEqual([raid(broke, TA, TB, 50, 2).error, raid(broke, TA, TB, 50, 2).limit], ["stake_out_of_range", "balance"]);
 });
 
 test("raid multiplier: 1.5/2/3/5/10 or their percentages, nothing else", () => {
   for (const [v, pct] of [[1.5, 150], [2, 200], [3, 300], [5, 500], [10, 1000], [150, 150], [1000, 1000]]) assert.equal(S.parseMultPct(v), pct, `${v}`);
   for (const v of [1, 4, 1.25, 100, 2.0001, "2", null, NaN, Infinity, -2]) assert.equal(S.parseMultPct(v), null, `${v}`);
   const st = raidWorld();
-  assert.equal(raid(st, TA, TB, 100, 4).error, "bad_mult");
-  assert.equal(raid(st, TA, TB, 100, "3").error, "bad_mult");
-  assert.equal(raid(st, TA, TB, 100, 1.5).result.multPct, 150);
+  assert.equal(raid(st, TA, TB, 500, 4).error, "bad_mult");
+  assert.equal(raid(st, TA, TB, 500, "3").error, "bad_mult");
+  assert.equal(raid(st, TA, TB, 500, 1.5).result.multPct, 150);
 });
 
 test("raid allowance: 10 per attacker per UTC day, being raided is unlimited", () => {
   const st = raidWorld({ def: { watts: 1e9 } });
   const day = Date.UTC(2026, 9, 31, 10, 0, 0);
   const at = (t) => ((st.lastAdvanceAt = t - 1000), t); // keep him running
-  for (let n = 0; n < RA.PER_DAY; n++) assert.ok(raid(st, TA, TB, 100, 2, at(day + n)).ok, `raid ${n}`);
-  const r = raid(st, TA, TB, 100, 2, at(day + 20));
+  for (let n = 0; n < RA.PER_DAY; n++) assert.ok(raid(st, TA, TB, 500, 2, at(day + n)).ok, `raid ${n}`);
+  const r = raid(st, TA, TB, 500, 2, at(day + 20));
   assert.deepEqual([r.ok, r.error, r.resetMs], [false, "no_raids_left", 14 * 3600_000 - 20]);
   assert.deepEqual(S.raidStatus(st, st.players[TA], day + 60_000), { open: true, raidsLeft: 0, perDay: RA.PER_DAY, resetMs: 14 * 3600_000 - 60_000 });
   // others can still raid the same room
-  st.players[TC].watts = 1e9;
   for (let n = 0; n < 3; n++) assert.ok(raid(st, TC, TB, 100, 2, at(day + 100 + n)).ok);
   // the count resets at 00:00 UTC
   const next = Date.UTC(2026, 10, 1, 0, 0, 0);
   assert.equal(S.raidsLeft(st.players[TA], next - 1), 0);
   assert.equal(S.raidsLeft(st.players[TA], next), RA.PER_DAY);
-  const ok = raid(st, TA, TB, 100, 2, at(next));
+  const ok = raid(st, TA, TB, 250, 2, at(next)); // 10 lost stakes left 5000: the 5% minimum is now 250
   assert.ok(ok.ok);
   assert.equal(ok.result.raidsLeft, RA.PER_DAY - 1);
   assert.deepEqual([st.players[TA].raidDay, st.players[TA].raidsToday], ["2026-11-01", 1]);
@@ -809,7 +947,7 @@ test("raid window: only while he runs (idle -> hamster_asleep), fresh chain read
   const r = raid(st, TA, TB, 100, 2);
   assert.deepEqual([r.ok, r.error], [false, "hamster_asleep"]);
   assert.deepEqual(S.raidStatus(st, st.players[TA], T0), { open: false, raidsLeft: RA.PER_DAY, perDay: RA.PER_DAY, resetMs: 86_400_000 - (T0 % 86_400_000) });
-  const body = { target: pidOf(TB), stake: 100, mult: 2 };
+  const body = { target: pidOf(TB), stake: 500, mult: 2 };
   assert.equal(S.applyRaid(st, TA, body, T0, { chainReadAt: T0 - 600_000 }).error, "chain_stale");
   st.lastAdvanceAt = T0 - 5000; // a block settles: the window opens (given a fresh chain read)
   assert.equal(S.applyRaid(st, TA, body, T0, { chainReadAt: T0 - 600_000 }).error, "chain_stale");
@@ -833,59 +971,68 @@ test("raid eligibility: punch-up only (target >= 70% of your balance), never you
   const late = "d".repeat(32);
   st.players[late] = Object.assign(S.newPlayer(1000, T0, late), { watts: 50_000 });
   assert.equal(S.tokenForPublicId(st, pidOf(late)), late);
-  assert.ok(raid(st, TB, late, 100, 2).ok);
+  assert.ok(raid(st, TB, late, 500, 2).ok);
 });
 
 test("raid revenge: waives the 70% rule once per provocation, expires after 24 h", () => {
-  const st = raidWorld();
+  const st = raidWorld({ poor: { watts: 5000 } }); // under 70% of 10k, big enough for a 500 W revenge at 2x
   const [rich, poor] = [st.players[TA], st.players[TC]];
   const at = (t) => ((st.lastAdvanceAt = t - 1000), t);
-  assert.equal(raid(st, TA, TC, 100, 2, at(T0)).error, "not_eligible");
-  assert.ok(raid(st, TC, TA, 100, 2, at(T0), seq(LOSE)).ok); // poor provokes (and fails)
+  assert.equal(raid(st, TA, TC, 500, 2, at(T0)).error, "not_eligible");
+  assert.ok(raid(st, TC, TA, 500, 2, at(T0), seq(LOSE)).ok); // poor provokes (and fails)
   assert.deepEqual(rich.raidedBy, [{ pid: poor.publicId, at: T0, avenged: false }]);
   const row = S.leaderboard(st, TA, T0 + 1000).rows.find((r) => r.publicId === poor.publicId);
   assert.deepEqual([row.raidable, row.revenge], [true, true]);
-  const r = raid(st, TA, TC, 100, 2, at(T0 + 1000), seq(LOSE));
+  const r = raid(st, TA, TC, 500, 2, at(T0 + 1000), seq(LOSE));
   assert.equal(r.ok, true);
   assert.equal(r.result.revenge, true);
   assert.equal(rich.raidedBy[0].avenged, true); // consumed
   rich.lastRaidAt = 0;
-  assert.equal(raid(st, TA, TC, 100, 2, at(T0 + 2000)).error, "not_eligible"); // only once
+  assert.equal(raid(st, TA, TC, 500, 2, at(T0 + 2000)).error, "not_eligible"); // only once
   // a fresh provocation grants a fresh revenge
   poor.lastRaidAt = 0;
-  assert.ok(raid(st, TC, TA, 100, 2, at(T0 + 3000), seq(LOSE)).ok);
+  assert.ok(raid(st, TC, TA, 500, 2, at(T0 + 3000), seq(LOSE)).ok);
   rich.lastRaidAt = 0;
-  assert.equal(raid(st, TA, TC, 100, 2, at(T0 + 4000), seq(LOSE)).result.revenge, true);
+  assert.equal(raid(st, TA, TC, 500, 2, at(T0 + 4000), seq(LOSE)).result.revenge, true);
   // expiry: 24 h after the provocation it is gone
-  const st2 = raidWorld();
+  const st2 = raidWorld({ poor: { watts: 5000 } });
   const at2 = (t) => ((st2.lastAdvanceAt = t - 1000), t);
-  assert.ok(raid(st2, TC, TA, 100, 2, at2(T0), seq(LOSE)).ok);
-  assert.equal(raid(st2, TA, TC, 100, 2, at2(T0 + RA.REVENGE_WINDOW_MS)).error, "not_eligible");
+  assert.ok(raid(st2, TC, TA, 500, 2, at2(T0), seq(LOSE)).ok);
+  assert.equal(raid(st2, TA, TC, 500, 2, at2(T0 + RA.REVENGE_WINDOW_MS)).error, "not_eligible");
   assert.equal(S.leaderboard(st2, TA, T0 + RA.REVENGE_WINDOW_MS).rows.find((x) => x.publicId === pidOf(TC)).raidable, false);
-  assert.equal(raid(st2, TA, TC, 100, 2, at2(T0 + RA.REVENGE_WINDOW_MS - 1), seq(LOSE)).result.revenge, true);
+  assert.equal(raid(st2, TA, TC, 500, 2, at2(T0 + RA.REVENGE_WINDOW_MS - 1), seq(LOSE)).result.revenge, true);
   // a raid that didn't need the waiver leaves the provocation pending
   const st3 = raidWorld();
-  assert.ok(raid(st3, TB, TA, 100, 2, T0, seq(LOSE)).ok);
-  const plain = raid(st3, TA, TB, 100, 2, T0, seq(LOSE));
+  assert.ok(raid(st3, TB, TA, 500, 2, T0, seq(LOSE)).ok);
+  const plain = raid(st3, TA, TB, 500, 2, T0, seq(LOSE));
   assert.equal(plain.result.revenge, false);
   assert.equal(st3.players[TA].raidedBy[0].avenged, false);
+  // revenge on a far poorer room: eligible, but its loot cap leaves no stake at or above your minimum
+  const st4 = raidWorld(); // poor: 900 W after its failed raid, cap 225, so even 1.5x stops at 360 W (< 500 W min)
+  assert.ok(raid(st4, TC, TA, 100, 2, T0, seq(LOSE)).ok);
+  assert.equal(S.raidEligibility(st4.players[TA], st4.players[TC], T0).ok, true);
+  for (const m of RA.MULT_PCT) {
+    const b = S.stakeBounds(st4.players[TA].watts, st4.players[TC].watts, m);
+    assert.ok(b.max < b.min && b.limit === "target", `M=${m}`);
+  }
+  assert.deepEqual([raid(st4, TA, TC, 500, 1.5).error, st4.players[TA].raidedBy[0].avenged], ["stake_out_of_range", false]); // not used up
 });
 
 test("raid ring buffers: raidedBy keeps 20 (24 h), the feed keeps 50", () => {
   const st = raidWorld({ def: { watts: 1e9 } });
   for (let i = 0; i < 60; i++) {
     st.players[TA].raidsToday = 0;
-    assert.ok(raid(st, TA, TB, 100 + i, 2, T0 + i, seq(LOSE)).ok);
+    st.players[TA].watts = 10_000; // keep the 5% minimum at 500
+    assert.ok(raid(st, TA, TB, 500 + i, 2, T0 + i, seq(LOSE)).ok);
   }
   const d = st.players[TB];
   assert.equal(d.raidedBy.length, RA.RAIDED_BY_MAX);
   assert.equal(d.raidedBy.at(-1).at, T0 + 59);
   assert.equal(st.raidFeed.length, RA.FEED_MAX);
-  assert.equal(st.raidFeed.at(-1).amount, 159); // newest last
-  assert.equal(st.raidFeed[0].amount, 110); // the oldest 10 dropped
-  for (const e of st.raidFeed) assert.deepEqual(Object.keys(e).sort(), ["amount", "at", "atk", "atkId", "crit", "def", "defId", "win"]);
+  assert.equal(st.raidFeed.at(-1).amount, 559); // newest last
+  assert.equal(st.raidFeed[0].amount, 510); // the oldest 10 dropped
+  for (const e of st.raidFeed) assert.deepEqual(Object.keys(e).sort(), ["amount", "at", "atk", "atkId", "crit", "def", "defId", "share", "win"]);
   // entries older than the revenge window are pruned on the next raid
-  st.players[TC].watts = 1e9;
   const later = T0 + RA.REVENGE_WINDOW_MS + 100;
   st.lastAdvanceAt = later;
   assert.ok(raid(st, TC, TB, 100, 2, later, seq(LOSE)).ok);
@@ -916,7 +1063,7 @@ test("leaderboard: by balance, shape, per-viewer raidable/you flags, 10 s cache,
   st.players[TC].watts = 8000;
   S.invalidateLeaderboard(st);
   S.leaderboard(st, TA, T0);
-  assert.ok(raid(st, TA, TB, 2000, 10, T0 + 1, seq(WIN, 0.999999, 0.01)).ok); // 9 x 2000 x 1.25 x 1.5 -> capped at 25% of 20k
+  assert.ok(raid(st, TA, TB, 1000, 5, T0 + 1, seq(WIN, 0.999999, 0.01)).ok); // 4 x 1000 x 1.25 x 1.5 -> capped at 25% of 20k
   const after = S.leaderboard(st, TA, T0 + 2);
   assert.deepEqual(after.rows.map((r) => [r.nick, r.watts]), [["atk", 15_000], ["def", 15_000], ["poor", 8000]]);
   assert.equal(after.raid.raidsLeft, RA.PER_DAY - 1);
@@ -1169,16 +1316,16 @@ test("raid feed: records display names at raid time", () => {
   const st = walletWorld();
   assert.ok(signIn(st, TA, KEY_A).ok);
   assert.ok(S.setUsername(st, TA, { username: "Raider" }).ok);
-  const r = raid(st, TA, TB, 100, 2, T0, seq(LOSE));
+  const r = raid(st, TA, TB, 500, 2, T0, seq(LOSE));
   assert.ok(r.ok);
   assert.deepEqual([r.feed.atk, r.feed.def], ["Raider", "def"]);
   assert.ok(signIn(st, TB, KEY_B).ok);
   assert.ok(S.setUsername(st, TB, { username: "Guard" }).ok);
   st.players[TA].lastRaidAt = 0;
-  const r2 = raid(st, TA, TB, 100, 2, T0 + 1, seq(LOSE));
+  const r2 = raid(st, TA, TB, 500, 2, T0 + 1, seq(LOSE));
   assert.deepEqual([r2.feed.atk, r2.feed.def], ["Raider", "Guard"]);
   assert.deepEqual([st.raidFeed[0].atk, st.raidFeed[0].def], ["Raider", "def"]); // older entries keep the old name
-  for (const e of st.raidFeed) assert.deepEqual(Object.keys(e).sort(), ["amount", "at", "atk", "atkId", "crit", "def", "defId", "win"]);
+  for (const e of st.raidFeed) assert.deepEqual(Object.keys(e).sort(), ["amount", "at", "atk", "atkId", "crit", "def", "defId", "share", "win"]);
 });
 
 test("wallet persistence + config: fields default to null on load, kept when present; rules published", () => {
