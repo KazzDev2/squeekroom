@@ -2652,7 +2652,7 @@ function stakeLockWords(sb) {
   if (sb.limit === "balance") return `You need at least ${fmt(sb.min)} W to raid.`;
   return RB().MULT_PCT.some((m) => { const b = stakeNow(m); return b.max >= b.min; })
     ? `Their den is too small for a ${multLabel(RU.mult)} raid at your size. Pick a lower multiplier.`
-    : `Their den is too small to raid with your minimum stake of ${fmt(sb.min)} W.`;
+    : `Their den is too small to raid with your minimum wager of ${fmt(sb.min)} W.`;
 }
 function renderRaid(force = false) {
   if (!RU.open || !S.me) return;
@@ -2739,7 +2739,7 @@ function raidErrorWords(j) {
     case "not_eligible": return `${t ? rowName(t) : "They"} dropped under 70% of your watts.`;
     case "self_target": return "That's your own den.";
     case "bad_mult": return "Pick a multiplier.";
-    case "bad_stake": case "stake_out_of_range": return j.max < j.min ? stakeLockWords(j) : `Stake ${fmt(j.min)} to ${fmt(j.max)} W${j.limit === "target" ? ` against this den at ${multLabel(RU.mult)}` : ""}.`;
+    case "bad_stake": case "stake_out_of_range": return j.max < j.min ? stakeLockWords(j) : `Wager ${fmt(j.min)} to ${fmt(j.max)} W${j.limit === "target" ? ` against this den at ${multLabel(RU.mult)}` : ""}.`;
     default: return errorWords(j);
   }
 }
@@ -2803,7 +2803,7 @@ function showRaidResult(res, t, before) {
   } else {
     $("resBig").textContent = "You lost";
     $("resAmt").textContent = `−${fmt(res.stakeLost || res.stake)} W`;
-    $("resDet").textContent = res.defShare > 0 ? `at ${multLabel(m)}. ${fmt(res.defShare)} W went to ${rowName(t)}, the rest burned` : `stake burned at ${multLabel(m)}`;
+    $("resDet").textContent = res.defShare > 0 ? `at ${multLabel(m)}. ${fmt(res.defShare)} W went to ${rowName(t)}, the rest burned` : `wager burned at ${multLabel(m)}`;
     for (let i = 0; i < 28; i++) {
       const p = elx("i", "fxp ember");
       p.style.left = `${5 + Math.random() * 90}%`;

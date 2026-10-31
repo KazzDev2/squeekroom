@@ -559,7 +559,7 @@ body.modal-open{overflow:hidden}
   <p class="lbnote">You can raid dens with at least 70% of your watts, or anyone who raided you in the last 24 hours. 10 raids a day, only while Squeektoshi runs.</p>
 </aside>
 
-<!-- Raid: pick a multiplier and a stake, then roll once on the server. -->
+<!-- Raid: pick a multiplier and a wager, then roll once on the server. -->
 <div class="raidmodal" id="raidModal" hidden>
   <div class="raidbox" id="raidBox" role="dialog" aria-modal="true" aria-labelledby="raidTitle">
     <div class="rhead">
@@ -572,9 +572,9 @@ body.modal-open{overflow:hidden}
     <div id="raidForm" style="display:flex;flex-direction:column;gap:14px">
       <div class="mults" id="raidMults" role="radiogroup" aria-label="Multiplier"></div>
       <div class="stake">
-        <input type="number" id="stakeNum" inputmode="numeric" step="1" aria-label="Stake in watts">
+        <input type="number" id="stakeNum" inputmode="numeric" step="1" aria-label="Wager in watts">
         <div class="stakeq"><button type="button" class="q" data-q="10">10%</button><button type="button" class="q" data-q="50">50%</button><button type="button" class="q" data-q="100">MAX</button></div>
-        <input type="range" id="stakeRange" step="1" aria-label="Stake">
+        <input type="range" id="stakeRange" step="1" aria-label="Wager">
       </div>
       <div class="rsum" id="raidSum"></div>
       <p class="rerr" id="raidErr" role="alert"></p>
