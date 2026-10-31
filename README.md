@@ -50,7 +50,7 @@ All rooms live in one JSON file, so the host needs a persistent disk mounted at 
   - `GET /api/state?token=…` the dynamic data the page polls every 5 s: height, chain, live reading, `idle` (asleep by the chain: bed income is flowing), and `me` (created on first visit with a 400 W welcome grant).
   - `POST /api/buy {token, itemId}` price checked on the server. Wheel, bed and room-material upgrades each go strictly in order (one copy each; buying sets `wheelTier` / `bedTier` / `roomTier`); wallpaper, flooring and skins are single-copy; placeables are unlimited. Errors: `unknown_item`, `poor` (+ `need`), `wrong_tier`, `already_owned`.
   - `POST /api/place {token, itemId, x, y, flip}`, `/api/move {token, pid, x, y, flip}`, `/api/remove {token, pid}` every placement is re-validated: zone, bounds, overlap, and the reserved burrow (floor cols 16–18).
-  - `POST /api/fixture {token, which: "wheel"|"bed", i, j, flip?}` stands the wheel or the bed on open floor tile (i, j): off the wall lanes, on screen, and at least 2 tiles from the other one.
+  - `POST /api/fixture {token, which: "wheel"|"bed", i, j, flip?}` stands the wheel or the bed on floor tile (i, j): anywhere on screen (against the walls too), off furniture, and at least 2 tiles from the other one.
   - `POST /api/skin {token, skinId}`, `POST /api/style {token, wallpaper?, floor?}` equip something you own.
   - `POST /api/nick {token, nick}` your room's name (20 chars).
   - `POST /api/heartbeat {token}` the page sends this while it is visible; rate-limited to one stamp per 20 s.

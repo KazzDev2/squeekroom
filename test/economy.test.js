@@ -1726,7 +1726,8 @@ test("fixtures: the wheel and the bed move on open floor tiles, 2 tiles apart", 
   assert.deepEqual(S.moveFixture(p, { which: "bed", i: 2, j: 8 }).fixture, { i: 2, j: 8, flip: false }); // flip optional
   assert.equal(S.moveFixture(p, { which: "bed", i: 5, j: 5 }).error, "too_close"); // diagonal neighbour of the wheel
   assert.equal(S.moveFixture(p, { which: "bed", i: 6, j: 4 }).ok, true); // two tiles off
-  for (const [i, j] of [[0, 3], [3, 0], [11, 2], [2, 10], [10, 5], [1.5, 2], ["2", 3]]) assert.equal(S.moveFixture(p, { which: "wheel", i, j }).error, "out_of_bounds", `${i},${j}`);
+  for (const [i, j] of [[-1, 3], [3, -1], [11, 2], [2, 10], [10, 5], [1.5, 2], ["2", 3]]) assert.equal(S.moveFixture(p, { which: "wheel", i, j }).error, "out_of_bounds", `${i},${j}`);
+  for (const [i, j] of [[0, 3], [0, 0]]) assert.ok(S.validFixtures({ ...p.fixtures, wheel: { i, j, flip: false } }), `against the wall ${i},${j}`);
   assert.equal(S.moveFixture(p, { which: "sofa", i: 2, j: 2 }).error, "bad_fixture");
   assert.equal(S.moveFixture(p, { which: "wheel", i: 2, j: 2, flip: "yes" }).error, "bad_flip");
   // older saves (and broken ones) get the defaults

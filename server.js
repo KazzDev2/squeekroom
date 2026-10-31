@@ -117,8 +117,8 @@ const ROOM = {
   WALL_TOP: 2,
   WALL_BOTTOM: 7,
   RESERVED: {}, // inclusive floor-column ranges by name; the burrow mound (16..18) was removed 1 Nov 2026
-  // The wheel and the bed stand on open floor tiles (i, j) of the iso room, away from the wall lanes
-  // (i = 0 / j = 0). Tiles with i + j > FIX_MAX_SUM fall off the bottom of the view. The two fixtures
+  // The wheel and the bed stand on any floor tile (i, j) of the iso room, against the walls too.
+  // Tiles with i + j > FIX_MAX_SUM fall off the bottom of the view. The two fixtures
   // keep FIX_GAP tiles apart (Chebyshev) so neither hides the other or the hamster.
   ISO_NI: 11,
   ISO_NJ: 10,
@@ -224,7 +224,7 @@ const FREE_IDS = CATALOG.filter((i) => i.price === 0).map((i) => i.id); // every
 // ---------- fixtures: the wheel and the bed ----------
 const FIXTURES = ["wheel", "bed"];
 const defaultFixtures = () => ({ wheel: { ...ROOM.FIXTURE_DEFAULTS.wheel }, bed: { ...ROOM.FIXTURE_DEFAULTS.bed } });
-const fixtureTileOk = (i, j) => Number.isInteger(i) && Number.isInteger(j) && i >= 1 && i < ROOM.ISO_NI && j >= 1 && j < ROOM.ISO_NJ && i + j <= ROOM.FIX_MAX_SUM;
+const fixtureTileOk = (i, j) => Number.isInteger(i) && Number.isInteger(j) && i >= 0 && i < ROOM.ISO_NI && j >= 0 && j < ROOM.ISO_NJ && i + j <= ROOM.FIX_MAX_SUM;
 const fixturesApart = (a, b) => Math.max(Math.abs(a.i - b.i), Math.abs(a.j - b.j)) >= ROOM.FIX_GAP;
 function validFixtures(f) {
   if (!f || typeof f !== "object") return false;

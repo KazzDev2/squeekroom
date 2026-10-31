@@ -81,9 +81,9 @@ function fixture(k) {
   const f = myFixtures && myFixtures[k];
   return f && Number.isInteger(f.i) && Number.isInteger(f.j) ? f : ROOM.FIXTURE_DEFAULTS[k];
 }
-// same rules as server.js moveFixture(): open floor (off the wall lanes, on screen), FIX_GAP apart
+// same rules as server.js moveFixture(): on the floor (walls included, on screen), FIX_GAP apart, off furniture
 function checkFixture(k, i, j) {
-  if (!(Number.isInteger(i) && Number.isInteger(j) && i >= 1 && i < ROOM.ISO_NI && j >= 1 && j < ROOM.ISO_NJ && i + j <= ROOM.FIX_MAX_SUM)) return { ok: false, error: "out_of_bounds" };
+  if (!(Number.isInteger(i) && Number.isInteger(j) && i >= 0 && i < ROOM.ISO_NI && j >= 0 && j < ROOM.ISO_NJ && i + j <= ROOM.FIX_MAX_SUM)) return { ok: false, error: "out_of_bounds" };
   const o = fixture(k === "wheel" ? "bed" : "wheel");
   if (Math.max(Math.abs(o.i - i), Math.abs(o.j - j)) < ROOM.FIX_GAP) return { ok: false, error: "too_close", which: k };
   for (const p of (S.me && S.me.placed) || []) { // not onto furniture (rugs are flat: fine)
@@ -1499,9 +1499,9 @@ function toFlat(L, zone) {
     return { x: L.x - colLeft(0), y: L.y - stripTop(px) - wallRowY(0) };
   }
 }
-function fixtureCell(x, y) { // screen point -> the open-floor tile under it, clamped off the wall lanes
+function fixtureCell(x, y) { // screen point -> the floor tile under it, clamped onto the floor
   const [i, j] = screenToTile(x, y);
-  return { x: clamp(Math.floor(i), 1, ROOM.ISO_NI - 1), y: clamp(Math.floor(j), 1, ROOM.ISO_NJ - 1) };
+  return { x: clamp(Math.floor(i), 0, ROOM.ISO_NI - 1), y: clamp(Math.floor(j), 0, ROOM.ISO_NJ - 1) };
 }
 function floorCell(it, fi, fj, flip) { // tile under the pointer -> back tile, the chain centred on it
   const back = Math.floor((it.w - 1) / 2), along = flip ? [0, back] : [back, 0];
@@ -1730,7 +1730,7 @@ function drawPlacement() {
   const now = performance.now();
   if (P.mode && P.it && P.it.zone === "fixture") { // open-floor tiles, the target tile, a ghost of the fixture
     const it = P.it, k = it.fixture;
-    for (let i = 1; i < ROOM.ISO_NI; i++) for (let j = 1; j < ROOM.ISO_NJ; j++) if (i + j <= ROOM.FIX_MAX_SUM) drawTileOverlay(g, i, j, OV.lane());
+    for (let i = 0; i < ROOM.ISO_NI; i++) for (let j = 0; j < ROOM.ISO_NJ; j++) if (i + j <= ROOM.FIX_MAX_SUM) drawTileOverlay(g, i, j, OV.lane());
     if (P.cell) {
       const ok = !!(P.valid && P.valid.ok) && P.flashUntil < now, { x: ci, y: cj } = P.cell;
       drawTileOverlay(g, ci, cj, ok ? OV.ok() : OV.bad());
