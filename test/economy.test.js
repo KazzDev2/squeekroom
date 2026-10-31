@@ -1721,7 +1721,7 @@ test("speed: bed income ignores it; a state other than the server's own never ge
 
 test("fixtures: the wheel and the bed move on open floor tiles, 2 tiles apart", () => {
   const p = S.newPlayer(1000, T0, TA);
-  assert.deepEqual(p.fixtures, { wheel: { i: 1, j: 5, flip: false }, bed: { i: 7, j: 2, flip: false } });
+  assert.deepEqual(p.fixtures, { wheel: { i: 1, j: 5, flip: true }, bed: { i: 7, j: 2, flip: false } });
   assert.deepEqual(S.moveFixture(p, { which: "wheel", i: 4, j: 4, flip: true }), { ok: true, fixture: { i: 4, j: 4, flip: true } });
   assert.deepEqual(S.moveFixture(p, { which: "bed", i: 2, j: 8 }).fixture, { i: 2, j: 8, flip: false }); // flip optional
   assert.equal(S.moveFixture(p, { which: "bed", i: 5, j: 5 }).error, "too_close"); // diagonal neighbour of the wheel

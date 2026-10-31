@@ -12,7 +12,7 @@ const $ = (id) => document.getElementById(id);
 // (renderPortrait) still paints the flat view, so the FLAT_* geometry stays alongside.
 const FLAT_W = 320, FLAT_H = 192;
 let ROOM = { COLS: 20, ROWS: 12, CELL: 16, FLOOR_ROW: 11, WALL_TOP: 2, WALL_BOTTOM: 7, RESERVED: {},
-  ISO_NI: 11, ISO_NJ: 10, FIX_MAX_SUM: 14, FIX_GAP: 2, FIXTURE_DEFAULTS: { wheel: { i: 1, j: 5, flip: false }, bed: { i: 7, j: 2, flip: false } } };
+  ISO_NI: 11, ISO_NJ: 10, FIX_MAX_SUM: 14, FIX_GAP: 2, FIXTURE_DEFAULTS: { wheel: { i: 1, j: 5, flip: true }, bed: { i: 7, j: 2, flip: false } } };
 const CERT_WHEEL_COLS = [3, 6]; // the certificate's flat room keeps the wheel where it always stood
 let CELL = 16, FLOOR_Y = 176; // flat view: furniture bottoms stand on this line; the floor band is below it
 const BASEBOARD = 6; // flat view: wall trim height just above the floor line

@@ -124,7 +124,7 @@ const ROOM = {
   ISO_NJ: 10,
   FIX_MAX_SUM: 14,
   FIX_GAP: 2,
-  FIXTURE_DEFAULTS: { wheel: { i: 1, j: 5, flip: false }, bed: { i: 7, j: 2, flip: false } },
+  FIXTURE_DEFAULTS: { wheel: { i: 1, j: 5, flip: true }, bed: { i: 7, j: 2, flip: false } },
 };
 // Floor furniture and rugs stand on floor tiles: placement (x, y) = (i, j) is the BACK tile of a
 // w-tile chain that runs along i (flip false: parallel to the right wall, the iso art's canonical
