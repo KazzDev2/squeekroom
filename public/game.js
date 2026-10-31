@@ -595,7 +595,7 @@ function renderHud() {
   const me = S.me;
   if (me) {
     $("tier").textContent = `T${me.wheelTier} · ${(me.multPct / 100).toFixed(2)}×`;
-    const goal = (S.balance && S.balance.CERT_LIFETIME_WATTS) || 250_000, days = (S.balance && S.balance.CERT_ACTIVE_DAYS) || 7;
+    const goal = (S.balance && S.balance.CERT_LIFETIME_WATTS) || 500_000, days = (S.balance && S.balance.CERT_ACTIVE_DAYS) || 7;
     const pct = clamp((me.lifetimeWatts / goal) * 100, 0, 100);
     $("lifeLine").textContent = `lifetime ${fmt(me.lifetimeWatts)} W · ${pct < 10 ? pct.toFixed(1) : Math.floor(pct)}% of ${fmt(goal)} · day ${Math.min(me.activeDays, days)}/${days}`;
     $("lifeProg").style.width = pct.toFixed(2) + "%";
@@ -2169,9 +2169,9 @@ function renderCert(cert) {
   for (let i = 12; i < 308; i += 2) { U(i, 11, 1, 1, dot); U(i, 468, 1, 1, dot); }
   for (let i = 12; i < 468; i += 2) { U(11, i, 1, 1, dot); U(308, i, 1, 1, dot); }
   // 4. header
-  const tw = certTextW("SQUEEKROOM", 6);
-  certText(c, "SQUEEKROOM", Math.round((CERT_W - tw) / 2) + 6, 46, OUTLINE, 6);
-  certText(c, "SQUEEKROOM", Math.round((CERT_W - tw) / 2), 40, [sch.light, sch.light, sch.main, sch.main, sch.deep], 6);
+  const tw = certTextW("SQUEEK DEN", 6);
+  certText(c, "SQUEEK DEN", Math.round((CERT_W - tw) / 2) + 6, 46, OUTLINE, 6);
+  certText(c, "SQUEEK DEN", Math.round((CERT_W - tw) / 2), 40, [sch.light, sch.light, sch.main, sch.main, sch.deep], 6);
   const sub = "A ROOM POWERED BY A REAL HAMSTER";
   certTextShadow(c, sub, Math.round((CERT_W - certTextW(sub)) / 2), 86, CREAM);
   // 5. the room portrait (cols 0 and 19 lose 10 px each to the frame), 2x
@@ -2186,7 +2186,7 @@ function renderCert(cert) {
   c.fillStyle = shade(sch.deep, -0.75); c.fillRect(PX + 4, PY + 4, PW - 8, PH - 8);
   c.fillStyle = sch.light; for (const [x, y] of [[PX + 8, PY + 8], [PX + PW - 12, PY + 8], [PX + 8, PY + PH - 12], [PX + PW - 12, PY + PH - 12]]) c.fillRect(x, y, 4, 4); // rivets
   const serial = Number(cert.serial) || 0;
-  const title = `SQUEEKROOM CERTIFICATE Nº ${serial}`;
+  const title = `SQUEEK DEN CERTIFICATE Nº ${serial}`;
   certTextShadow(c, title, Math.round((CERT_W - certTextW(title)) / 2), PY + 18, sch.light);
   c.fillStyle = sch.deep; c.fillRect(PX + 24, PY + 47, PW - 48, 2);
   const fh = (n) => (Number.isFinite(Number(n)) && n !== null ? fmt(Number(n)) : "?");
@@ -2230,7 +2230,7 @@ function renderCert(cert) {
 
 // what's left, in words
 function certLeftWords(me) {
-  const goal = (S.balance && S.balance.CERT_LIFETIME_WATTS) || 250_000, days = (S.balance && S.balance.CERT_ACTIVE_DAYS) || 7;
+  const goal = (S.balance && S.balance.CERT_LIFETIME_WATTS) || 500_000, days = (S.balance && S.balance.CERT_ACTIVE_DAYS) || 7;
   const w = Math.max(0, goal - (me.lifetimeWatts | 0)), d = Math.max(0, days - (me.activeDays | 0));
   const parts = [];
   if (w) parts.push(`${fmt(w)} watt${w === 1 ? "" : "s"}`);
@@ -2326,17 +2326,17 @@ $("certModal").addEventListener("click", (e) => { if (e.target === e.currentTarg
 $("certPng").onclick = () => {
   const { cert, src } = certUi;
   if (!src) return;
-  src.toBlob((b) => (b ? saveBlob(b, `squeekroom-cert-${cert.serial}.png`) : toast("Could not make the PNG here", "err")), "image/png");
+  src.toBlob((b) => (b ? saveBlob(b, `squeek-den-cert-${cert.serial}.png`) : toast("Could not make the PNG here", "err")), "image/png");
 };
 $("certJson").onclick = () => {
   const { cert } = certUi;
-  if (cert) saveBlob(new Blob([JSON.stringify(cert, null, 2) + "\n"], { type: "application/json" }), `squeekroom-cert-${cert.serial}.json`);
+  if (cert) saveBlob(new Blob([JSON.stringify(cert, null, 2) + "\n"], { type: "application/json" }), `squeek-den-cert-${cert.serial}.json`);
 };
 $("certShare").onclick = async () => {
   const { cert, blob } = certUi;
   if (!cert) return;
-  const data = { title: `Squeekroom certificate Nº ${cert.serial}`, text: `My Squeekroom certificate Nº ${cert.serial}: ${fmt(cert.lifetimeWatts)} watts over ${cert.activeDays} active days, powered by a real hamster.` };
-  const file = blob && new File([blob], `squeekroom-cert-${cert.serial}.png`, { type: "image/png" });
+  const data = { title: `Squeek Den certificate Nº ${cert.serial}`, text: `My Squeek Den certificate Nº ${cert.serial}: ${fmt(cert.lifetimeWatts)} watts over ${cert.activeDays} active days, powered by a real hamster.` };
+  const file = blob && new File([blob], `squeek-den-cert-${cert.serial}.png`, { type: "image/png" });
   if (file && navigator.canShare && navigator.canShare({ files: [file] })) data.files = [file];
   else data.url = location.origin + "/";
   try { await navigator.share(data); }

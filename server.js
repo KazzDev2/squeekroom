@@ -52,14 +52,16 @@ const BALANCE = {
   LIVE_BONUS_PCT: 120,
   HEARTBEAT_WINDOW_MS: 90_000,
   HEARTBEAT_MIN_INTERVAL_MS: 20_000,
-  WELCOME_WATTS: 800, // a first purchase in the first minute (the cheapest item is 600 W)
-  CERT_LIFETIME_WATTS: 250_000,
+  WELCOME_WATTS: 1_600, // a first purchase in the first minute (the cheapest item is 1,200 W)
+  CERT_LIFETIME_WATTS: 500_000, // bed and wheel both count: ~7 days at tier 0 in replay, like CERT_ACTIVE_DAYS
   CERT_ACTIVE_DAYS: 7,
   // He's asleep by the chain when no settled block arrived for this long.
   IDLE_AFTER_MS: 600_000,
-  // Bed income: while he sleeps, every room earns BED_RATE_PER_MIN x bed tier multiplier x watching
-  // bonus, online or not. Credited from the poller by elapsed time (exact integers via a carry).
-  BED_RATE_PER_MIN: 1.5, // tier 0 (must be a multiple of 0.1: the math runs in tenths of a watt)
+  // Bed income: while he sleeps, every room earns BED_AWAKE_PCT of the base awake rate
+  // (BASE_WATTS_PER_BLOCK x the speed baseline's blocks/min, so live and replay both scale) x bed tier
+  // multiplier x watching bonus, online or not. Credited from the poller by elapsed time (exact
+  // integers via a carry). Replay at 3x: 37.2 W/min at tier 0 (awake ~74), live: 20 W/min.
+  BED_AWAKE_PCT: 50,
   BED_MULT_PCT: [100, 125, 160, 200, 260, 350], // bedTier 0..5
   BED_TICK_MAX_MS: 60_000, // one poller tick credits at most this much time (no catch-up after downtime)
   // Speed bonus: wheel income x speedPct/100, where speedPct = clamp(100 x blocks/min over the last
@@ -138,68 +140,68 @@ const place = (id, name, cat, price, w, h, zone, animated) => ({ id, name, cat, 
 
 const CATALOG = [
   // wheel upgrades (strictly in order; with beds, the only items that change generation)
-  wheel(1, "Oiled Bearings", 5_000),
-  wheel(2, "Copper Dynamo", 18_000),
-  wheel(3, "Flywheel Hub", 50_000),
-  wheel(4, "Superconductor Rim", 140_000),
-  wheel(5, "Squeektoshi Prime Wheel", 400_000),
+  wheel(1, "Oiled Bearings", 10_000),
+  wheel(2, "Copper Dynamo", 36_000),
+  wheel(3, "Flywheel Hub", 100_000),
+  wheel(4, "Superconductor Rim", 280_000),
+  wheel(5, "Squeektoshi Prime Wheel", 800_000),
   // beds (strictly in order; raise the income while he sleeps). Tier 0 is the free straw mat.
-  bed(1, "Teacup Nest", 3_000),
-  bed(2, "Memory Foam Pad", 10_000),
-  bed(3, "Canopy Bed", 30_000),
-  bed(4, "Heated Bunk", 80_000),
-  bed(5, "Zero-G Pod", 200_000),
+  bed(1, "Teacup Nest", 6_000),
+  bed(2, "Memory Foam Pad", 20_000),
+  bed(3, "Canopy Bed", 60_000),
+  bed(4, "Heated Bunk", 160_000),
+  bed(5, "Zero-G Pod", 400_000),
   // room material (strictly in order). Tier 0 is wood.
-  roomMat(1, "Stone", 10_000),
-  roomMat(2, "Iron", 30_000),
-  roomMat(3, "Silver", 80_000),
-  roomMat(4, "Gold", 200_000),
-  roomMat(5, "Diamond", 450_000),
+  roomMat(1, "Stone", 20_000),
+  roomMat(2, "Iron", 60_000),
+  roomMat(3, "Silver", 160_000),
+  roomMat(4, "Gold", 400_000),
+  roomMat(5, "Diamond", 900_000),
   // wallpaper (equip one)
   style("wp_dirt", "Packed Dirt", "wallpaper", 0),
   style("wp_plain", "Plain Cream", "wallpaper", 0),
-  style("wp_polka", "Polka Dots", "wallpaper", 1_200),
-  style("wp_forest", "Forest Mural", "wallpaper", 4_500),
-  style("wp_circuit", "Circuit Board", "wallpaper", 9_000),
-  style("wp_night_sky", "Night Sky", "wallpaper", 15_000),
+  style("wp_polka", "Polka Dots", "wallpaper", 2_400),
+  style("wp_forest", "Forest Mural", "wallpaper", 9_000),
+  style("wp_circuit", "Circuit Board", "wallpaper", 18_000),
+  style("wp_night_sky", "Night Sky", "wallpaper", 30_000),
   // flooring (equip one)
   style("fl_straw", "Straw Bedding", "floor", 0),
   style("fl_pine", "Pine Planks", "floor", 0),
-  style("fl_checker", "Checker Tile", "floor", 1_200),
-  style("fl_pebble", "Pebble Stone", "floor", 4_000),
-  style("fl_cloud", "Cloud Carpet", "floor", 12_000),
+  style("fl_checker", "Checker Tile", "floor", 2_400),
+  style("fl_pebble", "Pebble Stone", "floor", 8_000),
+  style("fl_cloud", "Cloud Carpet", "floor", 24_000),
   // rugs (flat layer, collide only with rugs)
-  place("rug_rag", "Round Rag Rug", "rug", 800, 2, 1, "rug"),
-  place("rug_cheese", "Cheese Wedge Rug", "rug", 2_500, 3, 1, "rug"),
-  place("rug_persian", "Pixel Persian", "rug", 7_000, 4, 1, "rug"),
+  place("rug_rag", "Round Rag Rug", "rug", 1_600, 2, 1, "rug"),
+  place("rug_cheese", "Cheese Wedge Rug", "rug", 5_000, 3, 1, "rug"),
+  place("rug_persian", "Pixel Persian", "rug", 14_000, 4, 1, "rug"),
   // floor furniture
-  place("fur_seed_bowl", "Seed Bowl", "furniture", 600, 1, 1, "floor"),
-  place("fur_cactus", "Cactus Pot", "furniture", 1_500, 1, 2, "floor"),
-  place("fur_bookshelf", "Tiny Bookshelf", "furniture", 1_800, 2, 2, "floor"),
-  place("fur_teacup_bed", "Teacup Bed", "furniture", 3_500, 2, 1, "floor"),
-  place("fur_sofa", "Mini Sofa", "furniture", 6_000, 3, 2, "floor"),
-  place("fur_lava_lamp", "Lava Lamp", "furniture", 8_000, 1, 2, "floor", true),
-  place("fur_arcade", "Arcade Cabinet", "furniture", 14_000, 2, 3, "floor", true),
-  place("fur_grandfather_clock", "Grandfather Clock", "furniture", 20_000, 1, 4, "floor", true),
-  place("fur_jukebox", "Jukebox", "furniture", 25_000, 2, 3, "floor", true),
-  place("fur_trophy_case", "Trophy Case", "furniture", 40_000, 2, 3, "floor"),
-  place("fur_golden_statue", "Golden Seed Statue", "furniture", 75_000, 2, 3, "floor"),
+  place("fur_seed_bowl", "Seed Bowl", "furniture", 1_200, 1, 1, "floor"),
+  place("fur_cactus", "Cactus Pot", "furniture", 3_000, 1, 2, "floor"),
+  place("fur_bookshelf", "Tiny Bookshelf", "furniture", 3_600, 2, 2, "floor"),
+  place("fur_teacup_bed", "Teacup Bed", "furniture", 7_000, 2, 1, "floor"),
+  place("fur_sofa", "Mini Sofa", "furniture", 12_000, 3, 2, "floor"),
+  place("fur_lava_lamp", "Lava Lamp", "furniture", 16_000, 1, 2, "floor", true),
+  place("fur_arcade", "Arcade Cabinet", "furniture", 28_000, 2, 3, "floor", true),
+  place("fur_grandfather_clock", "Grandfather Clock", "furniture", 40_000, 1, 4, "floor", true),
+  place("fur_jukebox", "Jukebox", "furniture", 50_000, 2, 3, "floor", true),
+  place("fur_trophy_case", "Trophy Case", "furniture", 80_000, 2, 3, "floor"),
+  place("fur_golden_statue", "Golden Seed Statue", "furniture", 150_000, 2, 3, "floor"),
   // wall decor (rows 2..7)
-  place("wall_pennant", "Pennant", "wall", 700, 1, 1, "wall"),
-  place("wall_photo", "Family Photo", "wall", 900, 1, 1, "wall"),
-  place("wall_shelf", "Book Shelf", "wall", 2_200, 2, 1, "wall"),
-  place("wall_window", "Window", "wall", 5_000, 2, 2, "wall", true),
-  place("wall_neon", "Neon SQUEEK Sign", "wall", 10_000, 3, 1, "wall", true),
-  place("wall_cuckoo", "Cuckoo Clock", "wall", 12_000, 1, 2, "wall"),
-  place("wall_tv", "Wall TV", "wall", 18_000, 2, 2, "wall", true),
-  place("wall_plaque", "Speed Record Plaque", "wall", 30_000, 2, 1, "wall"),
+  place("wall_pennant", "Pennant", "wall", 1_400, 1, 1, "wall"),
+  place("wall_photo", "Family Photo", "wall", 1_800, 1, 1, "wall"),
+  place("wall_shelf", "Book Shelf", "wall", 4_400, 2, 1, "wall"),
+  place("wall_window", "Window", "wall", 10_000, 2, 2, "wall", true),
+  place("wall_neon", "Neon SQUEEK Sign", "wall", 20_000, 3, 1, "wall", true),
+  place("wall_cuckoo", "Cuckoo Clock", "wall", 24_000, 1, 2, "wall"),
+  place("wall_tv", "Wall TV", "wall", 36_000, 2, 2, "wall", true),
+  place("wall_plaque", "Speed Record Plaque", "wall", 60_000, 2, 1, "wall"),
   // hamster skins (palette remaps of one sprite set)
   style("skin_classic", "Classic", "skin", 0),
-  style("skin_albino", "Albino", "skin", 10_000),
-  style("skin_caramel", "Caramel", "skin", 12_000),
-  style("skin_panda", "Panda", "skin", 15_000),
-  style("skin_shadow", "Shadow", "skin", 25_000),
-  style("skin_golden", "Golden", "skin", 60_000),
+  style("skin_albino", "Albino", "skin", 20_000),
+  style("skin_caramel", "Caramel", "skin", 24_000),
+  style("skin_panda", "Panda", "skin", 30_000),
+  style("skin_shadow", "Shadow", "skin", 50_000),
+  style("skin_golden", "Golden", "skin", 120_000),
 ];
 const CATALOG_BY_ID = new Map(CATALOG.map((i) => [i.id, i]));
 const SINGLE_COPY = new Set(["wallpaper", "floor", "skin"]);
@@ -405,14 +407,15 @@ function chainIdle(lastAdvanceAt, now = Date.now(), chainReadAt = null) {
 // While he sleeps the poller credits every room for real elapsed time (never an amount from a
 // client): ms x rate x bed mult x watching bonus. The rate runs in tenths of a watt per minute so
 // the whole product is an exact integer; the remainder carries in player.bedFrac.
-const BED_RATE_TENTHS = Math.round(BALANCE.BED_RATE_PER_MIN * 10); // 1.5 W/min -> 15
+// tier-0 rate in tenths of a watt per minute (SPEED_BASE_BPM is fixed at boot, below REPLAY_SCHEDULE)
+const bedRateTenths = () => Math.round((BALANCE.BASE_WATTS_PER_BLOCK * SPEED_BASE_BPM * BALANCE.BED_AWAKE_PCT) / 10);
 const BED_FRAC_DEN = 60_000 * 10 * 100 * 100; // ms/min x tenths x multPct x bonusPct
 const bedMultPct = (player) => BALANCE.BED_MULT_PCT[player.bedTier | 0] ?? BALANCE.BED_MULT_PCT[0];
-const bedWattsPerMin = (player) => (BED_RATE_TENTHS * bedMultPct(player)) / 1000; // before the watching bonus
+const bedWattsPerMin = (player) => (bedRateTenths() * bedMultPct(player)) / 1000; // before the watching bonus
 // Credit one player `ms` of bed time. Returns whole watts credited.
 function bedCredit(player, ms, now = Date.now()) {
   if (!Number.isFinite(ms) || ms <= 0) return 0;
-  const total = (Number.isFinite(player.bedFrac) ? player.bedFrac : 0) + ms * BED_RATE_TENTHS * bedMultPct(player) * liveBonusPct(player, now);
+  const total = (Number.isFinite(player.bedFrac) ? player.bedFrac : 0) + ms * bedRateTenths() * bedMultPct(player) * liveBonusPct(player, now);
   const watts = Math.floor(total / BED_FRAC_DEN);
   player.bedFrac = total - watts * BED_FRAC_DEN;
   if (watts > 0) creditWatts(player, watts, now);

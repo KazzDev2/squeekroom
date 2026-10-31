@@ -27,23 +27,23 @@ test("catalog: unique ids, schema, defaults free, wheel tiers 1..5", () => {
   assert.deepEqual(free, ["fl_pine", "fl_straw", "skin_classic", "wp_dirt", "wp_plain"]);
   const wheels = CATALOG.filter((i) => i.cat === "wheel");
   assert.deepEqual(wheels.map((w) => w.tier), [1, 2, 3, 4, 5]);
-  assert.deepEqual(wheels.map((w) => w.price), [5000, 18000, 50000, 140000, 400000]);
+  assert.deepEqual(wheels.map((w) => w.price), [10000, 36000, 100000, 280000, 800000]);
   assert.deepEqual(wheels.map((w) => w.multPct), [125, 160, 200, 260, 350]);
   const seed = S.CATALOG_BY_ID.get("fur_seed_bowl");
-  assert.equal(seed.price, 600);
+  assert.equal(seed.price, 1200);
   assert.equal(seed.w, 1);
   assert.equal(seed.h, 1);
   assert.equal(S.CATALOG_BY_ID.get("wall_tv").animated, true);
 });
 
 // ---------- accrual ----------
-test("new player: 800 W welcome grant (a first purchase right away), tier 0, defaults owned", () => {
+test("new player: 1,600 W welcome grant (a first purchase right away), tier 0, defaults owned", () => {
   const p = fresh();
-  assert.equal(W0, 800);
-  assert.equal(p.watts, 800);
+  assert.equal(W0, 1600);
+  assert.equal(p.watts, 1600);
   const cheapest = Math.min(...CATALOG.filter((i) => i.price > 0).map((i) => i.price));
-  assert.equal(cheapest, 600);
-  assert.ok(canBuy(p, "fur_seed_bowl").ok, "the 600 W seed bowl is affordable on arrival");
+  assert.equal(cheapest, 1200);
+  assert.ok(canBuy(p, "fur_seed_bowl").ok, "the 1,200 W seed bowl is affordable on arrival");
   assert.equal(p.wheelTier, 0);
   assert.equal(p.skin, "skin_classic");
   assert.equal(p.wallpaper, "wp_dirt");
@@ -140,17 +140,17 @@ test("buy: unknown item", () => {
 });
 
 test("buy: poor returns need", () => {
-  const r = canBuy(fresh(), "fur_cactus"); // 1500 > 800
+  const r = canBuy(fresh(), "fur_cactus"); // 3000 > 1600
   assert.equal(r.ok, false);
   assert.equal(r.error, "poor");
-  assert.equal(r.need, 700);
+  assert.equal(r.need, 1400);
 });
 
 test("buy: deducts server-side price, placeables stack", () => {
-  const p = fresh({ watts: 2000 });
+  const p = fresh({ watts: 4000 });
   assert.ok(S.applyBuy(p, "fur_seed_bowl").ok);
   assert.ok(S.applyBuy(p, "fur_seed_bowl").ok);
-  assert.equal(p.watts, 800);
+  assert.equal(p.watts, 1600);
   assert.equal(p.owned.fur_seed_bowl, 2);
 });
 
@@ -163,7 +163,7 @@ test("buy: wheel tiers strictly in order", () => {
   assert.equal(canBuy(p, "wheel_t1").error, "already_owned");
   assert.ok(S.applyBuy(p, "wheel_t2").ok);
   assert.equal(p.wheelTier, 2);
-  assert.equal(p.watts, 1_000_000 - 5000 - 18000);
+  assert.equal(p.watts, 1_000_000 - 10_000 - 36_000);
   assert.equal(canBuy(p, "wheel_t4").error, "wrong_tier");
 });
 
@@ -176,7 +176,7 @@ test("buy: skins, wallpapers, floors are single-copy; defaults already owned", (
   assert.ok(S.applyBuy(p, "fl_checker").ok);
   assert.equal(canBuy(p, "fl_checker").error, "already_owned");
   for (const id of ["skin_classic", "wp_dirt", "wp_plain", "fl_straw", "fl_pine"]) assert.equal(canBuy(p, id).error, "already_owned");
-  assert.equal(p.watts, 100_000 - 10_000 - 1200 - 1200);
+  assert.equal(p.watts, 100_000 - 20_000 - 2400 - 2400);
 });
 
 // ---------- placement ----------
@@ -280,9 +280,9 @@ test("heartbeat: 20 s minimum interval, early calls do not stamp", () => {
 
 // ---------- commemorative ----------
 test("cert eligibility thresholds", () => {
-  assert.equal(certEligible(fresh({ lifetimeWatts: 249_999, activeDays: 30 })), false);
+  assert.equal(certEligible(fresh({ lifetimeWatts: 499_999, activeDays: 30 })), false);
   assert.equal(certEligible(fresh({ lifetimeWatts: 1_000_000, activeDays: 6 })), false);
-  assert.equal(certEligible(fresh({ lifetimeWatts: 250_000, activeDays: 7 })), true);
+  assert.equal(certEligible(fresh({ lifetimeWatts: 500_000, activeDays: 7 })), true);
 });
 
 test("claim: rejects ineligible, issues serial + seed, idempotent", () => {
@@ -295,7 +295,7 @@ test("claim: rejects ineligible, issues serial + seed, idempotent", () => {
   assert.equal(S.claimCommemorative(st, "b".repeat(32), T0).error, "unknown_player");
 
   const p = st.players[TOKEN];
-  Object.assign(p, { lifetimeWatts: 300_000, activeDays: 9, wheelTier: 3 });
+  Object.assign(p, { lifetimeWatts: 600_000, activeDays: 9, wheelTier: 3 });
   own(p, "fur_sofa");
   p.placed.push({ pid: "x", item: "fur_sofa", x: 8, y: 11, flip: true });
   const r = S.claimCommemorative(st, TOKEN, T0);
@@ -339,37 +339,37 @@ test("chainIdle: asleep after IDLE_AFTER_MS without a settled block; stale reads
 
 // ---------- bed income ----------
 test("bed: balance constants", () => {
-  assert.equal(BALANCE.BED_RATE_PER_MIN, 1.5);
+  assert.equal(BALANCE.BED_AWAKE_PCT, 50);
   assert.deepEqual(BALANCE.BED_MULT_PCT, [100, 125, 160, 200, 260, 350]);
   assert.equal(BALANCE.BED_TICK_MAX_MS, 60_000);
-  assert.equal(S.bedWattsPerMin(fresh()), 1.5);
-  assert.equal(S.bedWattsPerMin(fresh({ bedTier: 5 })), 5.25);
+  assert.equal(S.bedWattsPerMin(fresh()), 20); // 50% of 10 W/block x the 4 blocks/min live baseline
+  assert.equal(S.bedWattsPerMin(fresh({ bedTier: 5 })), 70);
   assert.equal(S.bedMultPct(fresh({ bedTier: 3 })), 200);
 });
 
-test("bed: 1.5 W/min x bed multiplier x watching bonus", () => {
+test("bed: 20 W/min (live baseline) x bed multiplier x watching bonus", () => {
   const ten = 10 * 60_000;
-  assert.equal(S.bedCredit(fresh(), ten, T0), 15);
-  for (const [tier, per10] of [[1, 18], [2, 24], [3, 30], [4, 39], [5, 52]]) {
+  assert.equal(S.bedCredit(fresh(), ten, T0), 200);
+  for (const [tier, per10] of [[1, 250], [2, 320], [3, 400], [4, 520], [5, 700]]) {
     const p = fresh({ bedTier: tier });
-    assert.equal(S.bedCredit(p, ten, T0), per10, `tier ${tier}`); // 18.75 and 52.5 floor, the rest carries
+    assert.equal(S.bedCredit(p, ten, T0), per10, `tier ${tier}`);
     assert.equal(p.lifetimeWatts, per10);
   }
   const w = fresh({ lastHeartbeat: T0 - 30_000 }); // watching: 1.2x
-  assert.equal(S.bedCredit(w, ten, T0), 18);
+  assert.equal(S.bedCredit(w, ten, T0), 240);
   const w5 = fresh({ bedTier: 5, lastHeartbeat: T0 });
-  assert.equal(S.bedCredit(w5, ten, T0), 63); // 1.5 x 3.5 x 1.2 x 10
+  assert.equal(S.bedCredit(w5, ten, T0), 840); // 20 x 3.5 x 1.2 x 10
   assert.equal(S.bedCredit(fresh(), 0, T0), 0);
   assert.equal(S.bedCredit(fresh(), -5, T0), 0);
 });
 
 test("bed: fractional carry is exact (integers only, nothing lost)", () => {
   const p = fresh();
-  assert.equal(S.bedCredit(p, 60_000, T0), 1); // 1.5 W -> 1 now, 0.5 carried
+  assert.equal(S.bedCredit(p, 1_500, T0), 0); // 0.5 W -> nothing now, 0.5 carried
   assert.equal(p.bedFrac, S.BED_FRAC_DEN / 2);
-  assert.equal(S.bedCredit(p, 60_000, T0), 2); // 0.5 + 1.5
+  assert.equal(S.bedCredit(p, 1_500, T0), 1); // 0.5 + 0.5
   assert.equal(p.bedFrac, 0);
-  assert.equal(p.watts, W0 + 3);
+  assert.equal(p.watts, W0 + 1);
   assert.equal(p.activeDays, 1);
   for (let tier = 0; tier <= 5; tier++) {
     const q = fresh({ bedTier: tier, lastHeartbeat: tier % 2 ? T0 : 0 });
@@ -381,7 +381,7 @@ test("bed: fractional carry is exact (integers only, nothing lost)", () => {
       assert.ok(Number.isInteger(q.watts) && Number.isInteger(q.lifetimeWatts), `tier ${tier}`);
     }
     const bonus = tier % 2 ? 120 : 100;
-    const exact = (ms * 15 * BALANCE.BED_MULT_PCT[tier] * bonus) / S.BED_FRAC_DEN;
+    const exact = (ms * 200 * BALANCE.BED_MULT_PCT[tier] * bonus) / S.BED_FRAC_DEN;
     assert.equal(q.lifetimeWatts, Math.floor(exact), `tier ${tier}`);
     assert.equal(q.watts, W0 + q.lifetimeWatts);
   }
@@ -392,18 +392,18 @@ test("accrueBed: every player while asleep, 60 s cap per tick, nothing while awa
   assert.equal(S.accrueBed(st, true, T0), 0); // first tick only starts the clock
   assert.equal(st.lastBedTickAt, T0);
   S.accrueBed(st, true, T0 + 60_000);
-  assert.equal(st.players.a.lifetimeWatts, 1); // 1.5
-  assert.equal(st.players.b.lifetimeWatts, 3); // 1.5 x 2
-  assert.equal(st.players.live.lifetimeWatts, 1); // 1.8
+  assert.equal(st.players.a.lifetimeWatts, 20);
+  assert.equal(st.players.b.lifetimeWatts, 40); // 20 x 2
+  assert.equal(st.players.live.lifetimeWatts, 24); // 20 x 1.2
   // a 10-minute gap credits only 60 s
   S.accrueBed(st, true, T0 + 11 * 60_000);
-  assert.equal(st.players.b.lifetimeWatts, 6);
+  assert.equal(st.players.b.lifetimeWatts, 80);
   assert.equal(st.lastBedTickAt, T0 + 11 * 60_000);
   // awake: no watts, but the clock moves (the awake stretch is never paid later)
   assert.equal(S.accrueBed(st, false, T0 + 20 * 60_000), 0);
-  assert.equal(st.players.b.lifetimeWatts, 6);
+  assert.equal(st.players.b.lifetimeWatts, 80);
   S.accrueBed(st, true, T0 + 20 * 60_000 + 30_000); // asleep again: only the last 30 s count
-  assert.equal(st.players.b.lifetimeWatts, 7); // + 1.5
+  assert.equal(st.players.b.lifetimeWatts, 100); // + 20
   // a clock that steps backwards credits nothing
   const before = st.players.b.lifetimeWatts;
   assert.equal(S.accrueBed(st, true, T0), 0);
@@ -414,16 +414,16 @@ test("accrueBed: every player while asleep, 60 s cap per tick, nothing while awa
 test("catalog: bed and room ladders (tiers 1..5, not placeable); teacup bed stays a cosmetic", () => {
   const beds = CATALOG.filter((i) => i.cat === "bed");
   assert.deepEqual(beds.map((b) => b.id), ["bed_t1", "bed_t2", "bed_t3", "bed_t4", "bed_t5"]);
-  assert.deepEqual(beds.map((b) => b.price), [3000, 10000, 30000, 80000, 200000]);
+  assert.deepEqual(beds.map((b) => b.price), [6000, 20000, 60000, 160000, 400000]);
   assert.deepEqual(beds.map((b) => b.multPct), [125, 160, 200, 260, 350]);
   const rooms = CATALOG.filter((i) => i.cat === "room");
   assert.deepEqual(rooms.map((r) => r.tier), [1, 2, 3, 4, 5]);
-  assert.deepEqual(rooms.map((r) => r.price), [10000, 30000, 80000, 200000, 450000]);
+  assert.deepEqual(rooms.map((r) => r.price), [20000, 60000, 160000, 400000, 900000]);
   assert.deepEqual(rooms.map((r) => r.material), ["Stone", "Iron", "Silver", "Gold", "Diamond"]);
   for (const i of [...beds, ...rooms]) assert.equal(i.zone, null);
   const teacup = S.CATALOG_BY_ID.get("fur_teacup_bed");
   assert.equal(teacup.cat, "furniture");
-  assert.equal(teacup.price, 3500);
+  assert.equal(teacup.price, 7000);
 });
 
 test("buy: bed tiers strictly in order, set bedTier, single copy", () => {
@@ -439,15 +439,15 @@ test("buy: bed tiers strictly in order, set bedTier, single copy", () => {
   assert.equal(p.bedTier, 2);
   assert.equal(canBuy(p, "bed_t1").error, "already_owned");
   assert.equal(canBuy(p, "bed_t4").error, "wrong_tier");
-  assert.equal(p.watts, 1_000_000 - 3000 - 10000);
+  assert.equal(p.watts, 1_000_000 - 6000 - 20000);
   assert.equal(p.wheelTier, 0); // ladders are independent
   assert.equal(p.roomTier, 0);
   assert.equal(validatePlacement(p, "bed_t1", 0, 11).error, "not_placeable");
   const r = canBuy(fresh(), "bed_t1");
   assert.equal(r.error, "poor");
-  assert.equal(r.need, 3000 - W0);
+  assert.equal(r.need, 6000 - W0);
   // the new bed raises bed income right away
-  assert.equal(S.bedCredit(p, 10 * 60_000, T0), 24);
+  assert.equal(S.bedCredit(p, 10 * 60_000, T0), 320);
 });
 
 test("buy: room material tiers strictly in order, set roomTier, single copy", () => {
@@ -460,7 +460,7 @@ test("buy: room material tiers strictly in order, set roomTier, single copy", ()
   assert.equal(canBuy(p, "room_t3").error, "wrong_tier");
   assert.ok(S.applyBuy(p, "room_t2").ok);
   assert.equal(p.roomTier, 2);
-  assert.equal(p.watts, 1_000_000 - 10000 - 30000);
+  assert.equal(p.watts, 1_000_000 - 20000 - 60000);
   assert.equal(p.bedTier, 0);
   assert.equal(p.wheelTier, 0);
   assert.equal(validatePlacement(p, "room_t1", 0, 11).error, "not_placeable");
@@ -480,7 +480,7 @@ test("new player: publicId from the token, bed + room tiers at 0, no wheel-duty 
   assert.equal(pub.publicId, p.publicId);
   assert.equal(pub.bedTier, 2);
   assert.equal(pub.bedMultPct, 160);
-  assert.equal(pub.bedWattsPerMin, 2.4);
+  assert.equal(pub.bedWattsPerMin, 32);
   assert.equal(pub.roomTier, 4);
   assert.ok(!("manual" in pub));
   assert.ok(!JSON.stringify(pub).includes(TOKEN), "public view must not leak the token");
@@ -1695,11 +1695,11 @@ test("accrue: scales with speedPct (wheel only), defaults to 100", () => {
 });
 
 test("speed: bed income ignores it; a state other than the server's own never gets it; snapshot reports it", () => {
-  // bed: 1.5 W/min whatever the cadence (bedCredit/accrueBed take no speed input)
+  // bed: 20 W/min whatever the cadence (bedCredit/accrueBed take no speed input)
   const p = fresh();
-  assert.equal(S.bedCredit(p, 120_000, T0), 3);
+  assert.equal(S.bedCredit(p, 120_000, T0), 40);
   const st = { lastAccruedHeight: 1000, height: 1000, lastBedTickAt: T0 - 60_000, players: { a: fresh() } };
-  assert.equal(S.accrueBed(st, true, T0), 1); // 1.5 W (carry .5)
+  assert.equal(S.accrueBed(st, true, T0), 20);
   // advanceTo on a test state: plain income however fast the height moves
   const own = { startHeight: 1000, height: 1000, lastAccruedHeight: 1000, players: { a: fresh() } };
   for (let i = 1; i <= 12; i++) S.advanceTo(1000 + 100 * i, T0 + i * 60_000, own);
