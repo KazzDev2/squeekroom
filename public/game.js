@@ -851,15 +851,37 @@ const view = $("room"), vctx = view.getContext("2d");
 const buf = canvas(LW, LH), g = buf.getContext("2d");
 const stage = $("stage");
 let dimLevel = 0; // eased 0..1 IDLE dimming
+// The player's own size: whole steps (device pixels per art pixel) above or below the automatic size,
+// remembered per browser. 0 = automatic. Never past what fits the stage, never below 1.
+const ZOOM_KEY = "sd_room_zoom";
+let zoomStep = clamp(parseInt(ls.get(ZOOM_KEY) || "0", 10) || 0, -8, 8), zoomNow = { s: 1, auto: 1, max: 1 };
 function fit() {
+  stage.style.minHeight = ""; // measure the stage at its natural size (a zoom-in may have stretched it)
   const r = stage.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
   const scaleAt = (pad) => Math.floor(Math.min(((r.width - pad * 2) * dpr) / LW, ((r.height - pad * 2) * dpr) / LH));
   const capH = Math.floor((innerHeight * 0.7 * dpr) / LH); // the room may take at most ~70% of the window height (2x, not 3x, on 1080p)
-  const s = Math.max(1, Math.min(capH, Math.max(scaleAt(12), scaleAt(0)))); // drop the margin when it alone costs a whole scale step (375-px phones)
+  const fits = Math.max(1, scaleAt(12), scaleAt(0)); // drop the margin when it alone costs a whole scale step (375-px phones)
+  // zooming in may go as wide as the stage (and as tall as the window); the stage then grows to hold it
+  const max = Math.max(fits, Math.floor(Math.min(((r.width - 24) * dpr) / LW, ((innerHeight - 24) * dpr) / LH)));
+  const auto = Math.max(1, Math.min(capH, fits)), s = clamp(auto + zoomStep, 1, max);
+  zoomNow = { s, auto, max };
+  if ((LH * s) / dpr + 24 > r.height) stage.style.minHeight = Math.ceil((LH * s) / dpr + 24) + "px";
+  $("zoomOut").disabled = s <= 1;
+  $("zoomIn").disabled = s >= max;
+  $("zoomFit").hidden = s === auto;
   if (view.width !== LW * s) { view.width = LW * s; view.height = LH * s; }
   view.style.width = (LW * s) / dpr + "px";
   view.style.height = (LH * s) / dpr + "px";
 }
+function zoomTo(s) {
+  zoomStep = s - zoomNow.auto;
+  ls.set(ZOOM_KEY, String(zoomStep));
+  fit();
+  positionTool();
+}
+$("zoomIn").addEventListener("click", () => zoomTo(Math.min(zoomNow.max, zoomNow.s + 1)));
+$("zoomOut").addEventListener("click", () => zoomTo(Math.max(1, zoomNow.s - 1)));
+$("zoomFit").addEventListener("click", () => zoomTo(zoomNow.auto));
 new ResizeObserver(() => { fit(); positionTool(); }).observe(stage);
 addEventListener("resize", () => { fit(); positionTool(); });
 (function watchDpr() { const mq = matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`); mq.addEventListener("change", () => { fit(); watchDpr(); }, { once: true }); })();

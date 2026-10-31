@@ -65,6 +65,12 @@ h1{font-family:var(--display);font-weight:700;font-size:18px;letter-spacing:.5px
 .stage canvas{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:block;image-rendering:pixelated;image-rendering:crisp-edges;box-shadow:0 0 0 1px var(--line),0 12px 32px rgba(0,0,0,.35)}
 @media (max-width:860px){.stage{min-height:0;height:auto;aspect-ratio:352/254}}
 .stage .note{position:absolute;left:12px;bottom:10px;font-size:11px;color:#a39b8d;pointer-events:none}
+.zoomctl{position:absolute;right:10px;bottom:10px;display:flex;gap:4px;z-index:3}
+.zoomctl button{font-family:var(--display);font-size:12px;line-height:1;min-width:28px;height:28px;padding:0 7px;border:2px solid #000;border-radius:0;background:var(--dk-card);color:var(--dk-ink);cursor:pointer;box-shadow:inset -2px -2px 0 #000,inset 2px 2px 0 var(--dk-hi)}
+.zoomctl button:hover:not(:disabled){background:var(--dk-hover)}
+.zoomctl button:disabled{opacity:.4;cursor:default}
+.zoomctl button[hidden]{display:none}
+.zoomctl button:focus-visible{outline:2px solid var(--chain);outline-offset:2px}
 .panel{border-left:1px solid var(--line);background:var(--panel);padding:14px max(16px,env(safe-area-inset-right,0px)) 24px 16px;overflow:auto;display:flex;flex-direction:column;gap:12px}
 @media (max-width:860px){.panel{border-left:0;border-top:1px solid var(--line);padding-left:max(16px,env(safe-area-inset-left,0px))}}
 .panel h2{font-family:var(--display);font-size:13px;margin:0;letter-spacing:.3px}
@@ -455,6 +461,11 @@ body.modal-open{overflow:hidden}
     <section class="stage" id="stage">
       <canvas id="room" width="352" height="240" aria-label="Isometric pixel den with a hamster wheel and a bed"></canvas>
       <div class="firsthint" id="firstHint" hidden>The wheel earns your watts. Spend them in the shop.</div>
+      <div class="zoomctl" role="group" aria-label="Den size">
+        <button type="button" id="zoomFit" hidden title="Back to the automatic size">fit</button>
+        <button type="button" id="zoomOut" title="Smaller" aria-label="Make the den smaller">−</button>
+        <button type="button" id="zoomIn" title="Bigger" aria-label="Make the den bigger">+</button>
+      </div>
       <div class="itemtool" id="itemTool" hidden role="toolbar" aria-label="Selected item">
         <span class="tname" id="toolName"></span>
         <button data-act="move" title="Move (or drag it)">Move</button>
