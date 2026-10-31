@@ -52,7 +52,7 @@ const BALANCE = {
   LIVE_BONUS_PCT: 120,
   HEARTBEAT_WINDOW_MS: 90_000,
   HEARTBEAT_MIN_INTERVAL_MS: 20_000,
-  WELCOME_WATTS: 1_600, // a first purchase in the first minute (the cheapest item is 1,200 W)
+  WELCOME_WATTS: 10_000, // a generous start: the tier-1 wheel (10,000 W) or a few cosmetics right away
   CERT_LIFETIME_WATTS: 500_000, // bed and wheel both count: ~7 days at tier 0 in replay, like CERT_ACTIVE_DAYS
   CERT_ACTIVE_DAYS: 7,
   // He's asleep by the chain when no settled block arrived for this long.

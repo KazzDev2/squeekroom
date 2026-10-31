@@ -37,10 +37,10 @@ test("catalog: unique ids, schema, defaults free, wheel tiers 1..5", () => {
 });
 
 // ---------- accrual ----------
-test("new player: 1,600 W welcome grant (a first purchase right away), tier 0, defaults owned", () => {
+test("new player: 10,000 W welcome grant (a first purchase right away), tier 0, defaults owned", () => {
   const p = fresh();
-  assert.equal(W0, 1600);
-  assert.equal(p.watts, 1600);
+  assert.equal(W0, 10_000);
+  assert.equal(p.watts, W0);
   const cheapest = Math.min(...CATALOG.filter((i) => i.price > 0).map((i) => i.price));
   assert.equal(cheapest, 1200);
   assert.ok(canBuy(p, "fur_seed_bowl").ok, "the 1,200 W seed bowl is affordable on arrival");
@@ -140,10 +140,10 @@ test("buy: unknown item", () => {
 });
 
 test("buy: poor returns need", () => {
-  const r = canBuy(fresh(), "fur_cactus"); // 3000 > 1600
+  const r = canBuy(fresh(), "fur_golden_statue"); // 150,000 > 10,000
   assert.equal(r.ok, false);
   assert.equal(r.error, "poor");
-  assert.equal(r.need, 1400);
+  assert.equal(r.need, 140_000);
 });
 
 test("buy: deducts server-side price, placeables stack", () => {
@@ -443,9 +443,9 @@ test("buy: bed tiers strictly in order, set bedTier, single copy", () => {
   assert.equal(p.wheelTier, 0); // ladders are independent
   assert.equal(p.roomTier, 0);
   assert.equal(validatePlacement(p, "bed_t1", 0, 11).error, "not_placeable");
-  const r = canBuy(fresh(), "bed_t1");
-  assert.equal(r.error, "poor");
-  assert.equal(r.need, 6000 - W0);
+  const r = canBuy(fresh(), "bed_t3");
+  assert.equal(r.error, "wrong_tier"); // tier order is checked before price
+  assert.equal(canBuy(fresh({ bedTier: 2 }), "bed_t3").need, 60_000 - W0);
   // the new bed raises bed income right away
   assert.equal(S.bedCredit(p, 10 * 60_000, T0), 320);
 });
