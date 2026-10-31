@@ -126,8 +126,18 @@ const ROOM = {
   FIX_GAP: 2,
   FIXTURE_DEFAULTS: { wheel: { i: 1, j: 5, flip: false }, bed: { i: 7, j: 2, flip: false } },
 };
-const RESERVED_COLS = new Set();
-for (const [a, b] of Object.values(ROOM.RESERVED)) for (let c = a; c <= b; c++) RESERVED_COLS.add(c);
+// Floor furniture and rugs stand on floor tiles: placement (x, y) = (i, j) is the BACK tile of a
+// w-tile chain that runs along i (flip false: parallel to the right wall, the iso art's canonical
+// SW face) or along j (flip true: parallel to the left wall, mirrored). Rugs lie RUG_DEPTH tiles deep
+// across the chain. Every tile must be on the visible floor (i + j <= FIX_MAX_SUM, like the fixtures).
+const RUG_DEPTH = 2;
+function footprint(item, i, j, flip) {
+  const out = [], deep = item.zone === "rug" ? RUG_DEPTH : 1;
+  for (let a = 0; a < item.w; a++) for (let d = 0; d < deep; d++) out.push(flip ? [i + d, j + a] : [i + a, j + d]);
+  return out;
+}
+const tileOnFloor = ([i, j]) => i >= 0 && j >= 0 && i < ROOM.ISO_NI && j < ROOM.ISO_NJ && i + j <= ROOM.FIX_MAX_SUM;
+const tileKey = ([i, j]) => i * 100 + j;
 
 // ---------- catalog ----------
 // {id, name, cat, price, w, h, zone, sprite, tier?, multPct?, animated?}
@@ -229,6 +239,10 @@ function moveFixture(player, body) {
   if (b.flip != null && typeof b.flip !== "boolean") return fail("bad_flip");
   const other = player.fixtures[b.which === "wheel" ? "bed" : "wheel"];
   if (!fixturesApart({ i: b.i, j: b.j }, other)) return fail("too_close");
+  for (const o of player.placed || []) { // not onto furniture (rugs are flat: fine)
+    const oi = CATALOG_BY_ID.get(o.item);
+    if (oi && oi.zone === "floor" && footprint(oi, o.x, o.y, !!o.flip).some(([i, j]) => i === b.i && j === b.j)) return { ok: false, error: "occupied", with: oi.id };
+  }
   const f = player.fixtures[b.which];
   f.i = b.i;
   f.j = b.j;
@@ -544,7 +558,7 @@ const spanHits = (ax, aw, bx, bw) => ax < bx + bw && bx < ax + aw;
 // Validate putting one copy of itemId at cell (x, y). For floor/rug items x is the left column
 // and y is normalised to the floor row; for wall items (x, y) is the top-left cell.
 // ignorePid: the placement being moved (excluded from overlap + ownership counts).
-function validatePlacement(player, itemId, x, y, ignorePid = null) {
+function validatePlacement(player, itemId, x, y, ignorePid = null, flip = false) {
   const item = typeof itemId === "string" ? CATALOG_BY_ID.get(itemId) : undefined;
   if (!item) return fail("unknown_item");
   if (!item.zone) return fail("not_placeable");
@@ -552,10 +566,9 @@ function validatePlacement(player, itemId, x, y, ignorePid = null) {
   const others = (player.placed || []).filter((p) => p.pid !== ignorePid);
   const placedCount = others.filter((p) => p.item === item.id).length;
   if (placedCount >= ((player.owned && player.owned[item.id]) || 0)) return fail("unowned");
-  if (x < 0 || x + item.w > ROOM.COLS || y < 0 || y >= ROOM.ROWS) return fail("out_of_bounds");
 
   if (item.zone === "wall") {
-    if (y < ROOM.WALL_TOP || y + item.h - 1 > ROOM.WALL_BOTTOM) return fail("out_of_bounds");
+    if (x < 0 || x + item.w > ROOM.COLS || y < ROOM.WALL_TOP || y + item.h - 1 > ROOM.WALL_BOTTOM) return fail("out_of_bounds");
     for (const o of others) {
       const oi = CATALOG_BY_ID.get(o.item);
       if (oi && oi.zone === "wall" && spanHits(x, item.w, o.x, oi.w) && spanHits(y, item.h, o.y, oi.h)) return fail("overlap");
@@ -563,13 +576,20 @@ function validatePlacement(player, itemId, x, y, ignorePid = null) {
     return { ok: true, item, x, y };
   }
 
-  // floor furniture and rugs: 1-D over the 20 floor columns
-  for (let c = x; c < x + item.w; c++) if (RESERVED_COLS.has(c)) return fail("reserved");
+  // floor furniture and rugs: tiles anywhere on the floor; furniture overlaps furniture, rugs rugs,
+  // and furniture keeps off the wheel's and the bed's tiles (a rug can lie under them)
+  const tiles = footprint(item, x, y, !!flip);
+  if (!tiles.every(tileOnFloor)) return fail("out_of_bounds");
+  const mine = new Set(tiles.map(tileKey));
   for (const o of others) {
     const oi = CATALOG_BY_ID.get(o.item);
-    if (oi && oi.zone === item.zone && spanHits(x, item.w, o.x, oi.w)) return fail("overlap");
+    if (oi && oi.zone === item.zone && footprint(oi, o.x, o.y, !!o.flip).some((t) => mine.has(tileKey(t)))) return fail("overlap");
   }
-  return { ok: true, item, x, y: ROOM.FLOOR_ROW };
+  if (item.zone === "floor") for (const k of FIXTURES) {
+    const f = player.fixtures && player.fixtures[k];
+    if (f && mine.has(tileKey([f.i, f.j]))) return { ok: false, error: "fixture", which: k };
+  }
+  return { ok: true, item, x, y };
 }
 
 // Rate-limited "I'm watching" stamp. Early calls do not stamp (and cannot extend the window).
@@ -841,7 +861,7 @@ function patchState(st, now = Date.now()) {
 }
 // Bump STATE_RESET to wipe the saved state once on the next boot (a clean relaunch: every room,
 // balance and the replay anchor). The old file is kept beside it as state.<old id>.bak.json.
-const STATE_RESET = "2026-10-31-relaunch";
+const STATE_RESET = "2026-11-01-floor-tiles"; // wiped again: furniture moved from wall columns onto floor tiles
 function load() {
   let saved = null;
   try {
@@ -1398,8 +1418,8 @@ const POST_ROUTES = {
     return okMe(p, { item: r.item.id });
   },
   "/api/place": (b, p) => {
-    const v = validatePlacement(p, b.itemId, b.x, b.y);
-    if (!v.ok) return err(400, v.error);
+    const v = validatePlacement(p, b.itemId, b.x, b.y, null, b.flip === true);
+    if (!v.ok) return err(400, v.error, v.which ? { which: v.which } : {});
     const entry = { pid: crypto.randomBytes(4).toString("hex"), item: v.item.id, x: v.x, y: v.y, flip: b.flip === true };
     p.placed.push(entry);
     return okMe(p, { placed: entry });
@@ -1407,8 +1427,8 @@ const POST_ROUTES = {
   "/api/move": (b, p) => {
     const e = typeof b.pid === "string" ? p.placed.find((q) => q.pid === b.pid) : null;
     if (!e) return err(404, "unknown_pid");
-    const v = validatePlacement(p, e.item, b.x, b.y, e.pid);
-    if (!v.ok) return err(400, v.error);
+    const v = validatePlacement(p, e.item, b.x, b.y, e.pid, typeof b.flip === "boolean" ? b.flip : !!e.flip);
+    if (!v.ok) return err(400, v.error, v.which ? { which: v.which } : {});
     e.x = v.x;
     e.y = v.y;
     if (typeof b.flip === "boolean") e.flip = b.flip;
@@ -1417,7 +1437,7 @@ const POST_ROUTES = {
   // {which: "wheel"|"bed", i, j, flip?}: stand the wheel or the bed on another floor tile
   "/api/fixture": (b, p) => {
     const r = moveFixture(p, b);
-    if (!r.ok) return err(400, r.error);
+    if (!r.ok) return err(400, r.error, r.with ? { with: r.with } : {});
     return okMe(p, { fixture: r.fixture });
   },
   "/api/remove": (b, p) => {

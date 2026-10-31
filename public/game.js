@@ -24,24 +24,16 @@ let FLAT_SPOT = { wheel: { x: 80, y: 170 } };
 // Floor: NI x NJ diamond tiles of 32 x 16. Tile (i, j): i runs down-right along the RIGHT back wall,
 // j runs down-left along the LEFT back wall, (0, 0) is the back corner. Tile centre on screen:
 //   x = X0 + (i - j) * 16,  y = Y0 + (i + j) * 8 + 8
-// Column mapping, the bijection between the server's 20 floor columns and the "lane" tiles lining
-// the two back walls (an L that turns at the corner):
-//   c <= CORNER (9):  tile (0, CORNER - c)     cols 0..9 run up the left wall into the corner
-//   c >  CORNER:      tile (c - CORNER, 0)     cols 10..19 run down the right wall
-// so the floor is 11 x 10 (NI = COLS - CORNER, NJ = CORNER + 1). Column c always lands at screen
-// x = 24 + 16c: the flat room's left-to-right order and 16-px pitch survive (only y bends into the V of
-// the walls), sprite widths still match their column counts, and no multi-column item can split
-// (it just bends round the corner, like a sofa pushed into it).
-// Inverse (picking, placement ghost): screen -> tile (i, j) -> column CORNER + i - j. Any floor tile
-// projects straight back (vertically on screen) onto the lane column in line with it.
-// Lanes off a wall: rugs lie flat 2 tiles deep (lanes 0..1) off their wall; the rest of the floor is
-// open play area, where the hamster rests and his bed stands (BED_TILE, clear of every column).
+// The floor is 11 x 10 (NI = COLS - CORNER, NJ = CORNER + 1). Floor furniture, rugs, the wheel and
+// the bed stand on tiles anywhere on it (see footprint()); screenToTile() is the inverse for picking.
+// Wall columns map onto the walls the flat way: column c lands at screen x = 24 + 16c, cols 0..9 up
+// the left wall into the corner (CORNER = 9), cols 10..19 down the right wall (colTile()).
 // Walls: wall columns share the x pitch (col c spans x 16+16c .. 32+16c); rows 2..7 stack 16 px apart
 // above the floor line. The back wall is painted flat into a strip (LW x WALL_H, same x as the screen)
 // and then folded: pixel column x drops so its bottom sits on wallBase(x), 1 px per 2 px from the
 // corner. Wallpaper, wainscot panels, wall decor and their placement overlays all go through the fold.
-// Room material (me.roomTier) frames the room: wainscot panels + wall cap + end posts, the furniture
-// lanes and the front border ring of floor tiles, and the floor slab. Inside that frame the equipped
+// Room material (me.roomTier) frames the room: wainscot panels + wall cap + end posts, the ring of
+// floor tiles along the walls and the front edge, and the floor slab. Inside that frame the equipped
 // wallpaper covers the upper walls and the equipped flooring covers the open floor.
 const ISO = { CORNER: 9, NI: 11, NJ: 10, X0: 168, Y0: 102, WALL_H: 100, PAD: 8, SLAB: 5, FOOT: 3 };
 const LW = ISO.PAD * 2 + (ISO.NI + ISO.NJ) * 16; // 352
@@ -61,11 +53,6 @@ const wallRowY = (r) => (r - ROOM.WALL_TOP) * 16 + 2; // strip y of a wall row's
 const stripTop = (x) => wallBase(x) - ISO.WALL_H; // screen y of strip row 0 at column x
 function screenToTile(x, y) { const a = (x - ISO.X0) / 16, b = (y - ISO.Y0) / 8; return [(a + b) / 2, (b - a) / 2]; }
 function tileToCol(i, j) { return clamp(ISO.CORNER + Math.floor(i) - Math.floor(j), 0, ROOM.COLS - 1); }
-// lane space (s along the walls in columns, d tiles out from the wall) -> screen, and back
-function laneToScreen(s, d) {
-  const left = s < ISO.CORNER + 1, i = left ? d : s - ISO.CORNER, j = left ? ISO.CORNER + 1 - s : d;
-  return { x: ISO.X0 + (i - j) * 16, y: ISO.Y0 + (i + j) * 8 };
-}
 function applyRoom(room) {
   if (room && typeof room === "object") ROOM = { ...ROOM, ...room };
   CELL = ROOM.CELL || 16;
@@ -99,6 +86,10 @@ function checkFixture(k, i, j) {
   if (!(Number.isInteger(i) && Number.isInteger(j) && i >= 1 && i < ROOM.ISO_NI && j >= 1 && j < ROOM.ISO_NJ && i + j <= ROOM.FIX_MAX_SUM)) return { ok: false, error: "out_of_bounds" };
   const o = fixture(k === "wheel" ? "bed" : "wheel");
   if (Math.max(Math.abs(o.i - i), Math.abs(o.j - j)) < ROOM.FIX_GAP) return { ok: false, error: "too_close", which: k };
+  for (const p of (S.me && S.me.placed) || []) { // not onto furniture (rugs are flat: fine)
+    const it = S.catalog.get(p.item);
+    if (it && it.zone === "floor" && footprint(it, p.x, p.y, p.flip).some(([a, b]) => a === i && b === j)) return { ok: false, error: "occupied", with: it };
+  }
   return { ok: true };
 }
 const IW = () => window.IsoWheel || null;
@@ -1050,40 +1041,44 @@ function foldLayer(paint, x0 = WALL_X0, x1 = WALL_X1, c = g) {
   for (let px = Math.max(WALL_X0, Math.floor(x0)); px < Math.min(WALL_X1, Math.ceil(x1)); px++) c.drawImage(wallLayer, px, 0, 1, ISO.WALL_H, px, stripTop(px), 1, ISO.WALL_H);
 }
 
-// Rugs lie flat in lanes 0..1 off their wall: texel column u -> lane position s = x + u/16, texel row
-// v -> d = v/8 tiles out (so the rug art's rows 3..12 cover d 0.4..1.6, under the furniture's front
-// and out onto the floor). Each screen pixel maps back through laneAt() and samples the flat rug.
-// At the corner the left-wall part and the right-wall part fold round it.
-function laneAt(px, py) { // both lane readings of a screen point: [{ s, d, arm }]
-  const [i, j] = screenToTile(px, py);
-  return [{ s: ISO.CORNER + 1 - j, d: i, arm: "left" }, { s: i + ISO.CORNER, d: j, arm: "right" }]
-    .filter((l) => (l.arm === "left" ? l.s < ISO.CORNER + 1 : l.s >= ISO.CORNER + 1));
-}
+// Floor furniture and rugs stand on floor tiles (same rules as server.js footprint()): placement
+// (x, y) = (i, j) is the BACK tile of a w-tile chain along i (flip false: parallel to the right wall,
+// the iso art's canonical SW face) or along j (flip true: parallel to the left wall, mirrored). Rugs
+// lie RUG_DEPTH tiles deep across the chain.
 const RUG_DEPTH = 2;
-function laneBox(x, w, d0 = 0, d1 = RUG_DEPTH) {
-  const pts = [];
-  for (const s of [x, x + w, ...(x < ISO.CORNER + 1 && x + w > ISO.CORNER + 1 ? [ISO.CORNER + 1 - 1e-6, ISO.CORNER + 1] : [])]) for (const d of [d0, d1]) pts.push(laneToScreen(s, d));
-  const x0 = Math.floor(Math.min(...pts.map((p) => p.x))), x1 = Math.ceil(Math.max(...pts.map((p) => p.x)));
-  const y0 = Math.floor(Math.min(...pts.map((p) => p.y))), y1 = Math.ceil(Math.max(...pts.map((p) => p.y)));
+function footprint(it, i, j, flip) {
+  const out = [], deep = it.zone === "rug" ? RUG_DEPTH : 1;
+  for (let a = 0; a < it.w; a++) for (let d = 0; d < deep; d++) out.push(flip ? [i + d, j + a] : [i + a, j + d]);
+  return out;
+}
+const tileOnFloor = ([i, j]) => i >= 0 && j >= 0 && i < ROOM.ISO_NI && j < ROOM.ISO_NJ && i + j <= ROOM.FIX_MAX_SUM;
+function tilesBox(tiles) { // screen box around a set of floor tiles
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [i, j] of tiles) { const o = isoTileTop(i, j); x0 = Math.min(x0, o.x); y0 = Math.min(y0, o.y); x1 = Math.max(x1, o.x + 32); y1 = Math.max(y1, o.y + 16); }
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
+// A screen point in a rug's own terms: s along its chain (0..w), d across it (0..RUG_DEPTH).
+function rugAt(p, px, py) {
+  const [fi, fj] = screenToTile(px, py);
+  return p.flip ? { s: fj - p.y, d: fi - p.x } : { s: fi - p.x, d: fj - p.y };
+}
+// Rugs lie flat on their tiles: texel column u -> s = u/16 along the chain, texel row v -> d = v/8
+// across it (the rug art's rows 3..12 cover d 0.4..1.6). Each screen pixel maps back through rugAt().
 const rugCache = new Map();
 function rugProjection(p, it) {
-  const key = `${it.id}|${p.x}|${p.flip ? 1 : 0}|${hasSprite(it.sprite)}`;
+  const key = `${it.id}|${p.x}|${p.y}|${p.flip ? 1 : 0}|${hasSprite(it.sprite)}`;
   if (rugCache.has(key)) return rugCache.get(key);
   const pw = it.w * CELL, src = canvas(pw, 16);
   drawRugFlat(p, it, 0, src.getContext("2d"), FX, 0, 0);
-  const tex = rgbaOf(src), box = laneBox(p.x, it.w), out = canvas(Math.max(1, box.w), Math.max(1, box.h)), oc = out.getContext("2d");
+  const tex = rgbaOf(src), box = tilesBox(footprint(it, p.x, p.y, p.flip)), out = canvas(Math.max(1, box.w), Math.max(1, box.h)), oc = out.getContext("2d");
   const img = oc.createImageData(out.width, out.height), d = img.data;
   for (let y = 0; y < out.height; y++) for (let x = 0; x < out.width; x++) {
-    for (const l of laneAt(box.x + x + 0.5, box.y + y + 0.5)) {
-      if (l.s < p.x || l.s >= p.x + it.w || l.d < 0 || l.d >= RUG_DEPTH) continue;
-      const u = Math.floor((l.s - p.x) * 16), v = Math.floor(l.d * 8), k = (v * pw + u) * 4;
-      if (!tex[k + 3]) continue;
-      const q = (y * out.width + x) * 4;
-      d[q] = tex[k]; d[q + 1] = tex[k + 1]; d[q + 2] = tex[k + 2]; d[q + 3] = 255;
-      break;
-    }
+    const l = rugAt(p, box.x + x + 0.5, box.y + y + 0.5);
+    if (l.s < 0 || l.s >= it.w || l.d < 0 || l.d >= RUG_DEPTH) continue;
+    const u = Math.floor(l.s * 16), v = Math.floor(l.d * 8), k = (v * pw + u) * 4;
+    if (!tex[k + 3]) continue;
+    const q = (y * out.width + x) * 4;
+    d[q] = tex[k]; d[q + 1] = tex[k + 1]; d[q + 2] = tex[k + 2]; d[q + 3] = 255;
   }
   oc.putImageData(img, 0, 0);
   const r = { canvas: out, x: box.x, y: box.y };
@@ -1092,7 +1087,8 @@ function rugProjection(p, it) {
   return r;
 }
 function rugHit(p, it, L) {
-  return laneAt(L.x, L.y).some((l) => l.s >= p.x && l.s < p.x + it.w && l.d >= 0 && l.d < RUG_DEPTH);
+  const l = rugAt(p, L.x, L.y);
+  return l.s >= 0 && l.s < it.w && l.d >= 0 && l.d < RUG_DEPTH;
 }
 
 function render(st) {
@@ -1164,13 +1160,21 @@ function isoSpan(id, x, w, flip) {
   const [i, j] = colTile(right ? x + w - 1 : x), o = isoOrigin(s, tileSouth(i, j), f);
   return { id: "iso_" + id, flip: f, x: o.x, y: o.y, w: s.w, h: s.h, d: footY(right ? x : x + w - 1, 1) };
 }
-function isoFloor(it, x, flip) { return it && it.zone === "floor" ? isoSpan(it.id, x, it.w, flip) : null; }
-// a floor item at column p.x: its iso art when it has some, else the billboard (same frame either way)
+// A floor item on tile (i, j) (its back tile; see footprint()): its iso art anchored on the south
+// vertex of its FRONT tile (mirrored when flipped), else a billboard standing on that tile.
+// d: painter's key = the ground line of its back tile, so anything a row in front of any of its
+// tiles draws over it.
+function floorGeom(it, i, j, flip) {
+  const f = !!flip, front = f ? [i, j + it.w - 1] : [i + it.w - 1, j], d = isoTileCenter(i, j).y + ISO.FOOT;
+  const s = isoArt(it.id);
+  if (s) { const o = isoOrigin(s, tileSouth(front[0], front[1]), f); return { art: { id: "iso_" + it.id, flip: f }, x: o.x, y: o.y, w: s.w, h: s.h, d }; }
+  const c = isoTileCenter(front[0], front[1]), pw = it.w * CELL, ph = it.h * CELL;
+  return { art: null, x: Math.round(c.x - pw / 2), y: c.y + ISO.FOOT - ph, w: pw, h: ph, d };
+}
 function drawFloorItem(p, it, c = g) {
-  const a = isoFloor(it, p.x, p.flip);
-  if (a && sprite(c, a.id, frame10, a.x, a.y, { ...FX, flip: a.flip })) return;
-  const pw = it.w * CELL, ph = it.h * CELL;
-  drawItem(p, it, colLeft(p.x), footY(p.x, it.w) - ph, pw, ph, c);
+  const G = floorGeom(it, p.x, p.y, p.flip);
+  if (G.art && sprite(c, G.art.id, frame10, G.x, G.y, { ...FX, flip: G.art.flip })) return;
+  drawItem(p, it, G.x, G.y, G.w, G.h, c);
 }
 function drawBurrow() {
   const [ba, bb] = ROOM.RESERVED.burrow, a = isoSpan("burrow", ba, bb - ba + 1, false);
@@ -1184,11 +1188,10 @@ function drawBurrow() {
 const SHADOW = () => diamondCanvas("rgba(0,0,0,.2)", null, null, 0.72);
 function drawStanding(me) {
   const list = [];
-  const shadowCols = (x, w) => { for (let c = x; c < x + w; c++) { const [i, j] = colTile(c); drawTileOverlay(g, i, j, SHADOW()); } };
   for (const [p, it] of itemsIn("floor")) {
-    shadowCols(p.x, it.w);
-    const a = isoFloor(it, p.x, p.flip);
-    list.push({ d: a ? a.d : footY(p.x, it.w), x: colLeft(p.x), draw: () => drawFloorItem(p, it) });
+    for (const [i, j] of footprint(it, p.x, p.y, p.flip)) drawTileOverlay(g, i, j, SHADOW());
+    const G = floorGeom(it, p.x, p.y, p.flip);
+    list.push({ d: G.d, x: G.x, draw: () => drawFloorItem(p, it) });
   }
   if (IBURROW) {
     const [ba, bb] = ROOM.RESERVED.burrow, ab = isoSpan("burrow", ba, bb - ba + 1, false);
@@ -1402,14 +1405,9 @@ function findPlaced(pid) {
 }
 const itemOf = (p) => (p && p.fixture ? FIX_ITEM[p.fixture] : p && S.catalog.get(p.item));
 const unplaced = (id) => (S.me ? (S.me.owned[id] || 0) - S.me.placed.filter((p) => p.item === id).length : 0);
-function reservedCols() {
-  const m = new Map();
-  for (const [name, [a, b]] of Object.entries(ROOM.RESERVED || {})) for (let c = a; c <= b; c++) m.set(c, name);
-  return m;
-}
 // Where an item at server cell (x, y) shows on screen (iso logical pixels). Floor: its iso sprite's
-// box (flip only matters for 1-wide iso art), else its billboard box. Rug: the bounding box of its
-// two lanes. Wall: the bounding box of the folded rect (wallRect is the same rect in flat strip coordinates).
+// box, else its billboard box. Rug: the box around its tiles. Wall: the bounding box of the folded
+// rect (wallRect is the same rect in flat strip coordinates).
 const wallRect = (it, x, y) => ({ x: colLeft(x), y: wallRowY(y), w: it.w * CELL, h: it.h * CELL });
 function isoRect(it, x, y, flip = false) {
   if (it.zone === "fixture") return fixtureRect(it.fixture, x, y, flip);
@@ -1419,41 +1417,34 @@ function isoRect(it, x, y, flip = false) {
     for (let px = f.x; px < f.x + f.w; px++) { const t = stripTop(clamp(px, WALL_X0, WALL_X1 - 1)) + f.y; top = Math.min(top, t); bot = Math.max(bot, t + f.h); }
     return { x: f.x, y: top, w: f.w, h: bot - top };
   }
-  if (it.zone === "rug") return laneBox(x, it.w);
-  const a = isoFloor(it, x, flip);
-  if (a) return { x: a.x, y: a.y, w: a.w, h: a.h };
-  const ph = it.h * CELL;
-  return { x: colLeft(x), y: footY(x, it.w) - ph, w: it.w * CELL, h: ph };
+  if (it.zone === "rug") return tilesBox(footprint(it, x, y, flip));
+  const G = floorGeom(it, x, y, flip);
+  return { x: G.x, y: G.y, w: G.w, h: G.h };
 }
 // Same checks, same order as server.js validatePlacement(); the server re-validates every move.
-function checkSpot(it, x, y, ignorePid = null) {
+function checkSpot(it, x, y, ignorePid = null, flip = false) {
   const me = S.me;
   if (!it || !it.zone) return { ok: false, error: "not_placeable" };
   if (!Number.isInteger(x) || !Number.isInteger(y)) return { ok: false, error: "bad_coords" };
   const others = ((me && me.placed) || []).filter((p) => p.pid !== ignorePid);
   if (others.filter((p) => p.item === it.id).length >= ((me && me.owned[it.id]) || 0)) return { ok: false, error: "unowned" };
-  if (x < 0 || x + it.w > ROOM.COLS || y < 0 || y >= ROOM.ROWS) return { ok: false, error: "out_of_bounds" };
   if (it.zone === "wall") {
-    if (y < ROOM.WALL_TOP || y + it.h - 1 > ROOM.WALL_BOTTOM) return { ok: false, error: "out_of_bounds" };
+    if (x < 0 || x + it.w > ROOM.COLS || y < ROOM.WALL_TOP || y + it.h - 1 > ROOM.WALL_BOTTOM) return { ok: false, error: "out_of_bounds" };
     for (const o of others) {
       const oi = S.catalog.get(o.item);
       if (oi && oi.zone === "wall" && span(x, it.w, o.x, oi.w) && span(y, it.h, o.y, oi.h)) return { ok: false, error: "overlap", with: oi };
     }
     return { ok: true };
   }
-  const res = reservedCols();
-  for (let c = x; c < x + it.w; c++) if (res.has(c)) return { ok: false, error: "reserved", which: res.get(c) };
+  const tiles = footprint(it, x, y, flip);
+  if (!tiles.every(tileOnFloor)) return { ok: false, error: "out_of_bounds" };
+  const mine = new Set(tiles.map(([i, j]) => i * 100 + j));
   for (const o of others) {
     const oi = S.catalog.get(o.item);
-    if (oi && oi.zone === it.zone && span(x, it.w, o.x, oi.w)) return { ok: false, error: "overlap", with: oi };
+    if (oi && oi.zone === it.zone && footprint(oi, o.x, o.y, o.flip).some(([i, j]) => mine.has(i * 100 + j))) return { ok: false, error: "overlap", with: oi };
   }
+  if (it.zone === "floor") for (const k of ["wheel", "bed"]) { const f = fixture(k); if (mine.has(f.i * 100 + f.j)) return { ok: false, error: "fixture", which: k }; }
   return { ok: true };
-}
-function whichReserved(it, x) {
-  if (!it || x == null) return "wheel";
-  const res = reservedCols();
-  for (let c = x; c < x + it.w; c++) if (res.has(c)) return res.get(c);
-  return "wheel";
 }
 // Server error codes in words.
 function errorWords(j, ctx = {}) {
@@ -1470,7 +1461,8 @@ function errorWords(j, ctx = {}) {
       const cat = ctx.it && ctx.it.cat;
       return cat === "wheel" ? "Your wheel already has that" : cat === "bed" ? "Your bed is already that good" : cat === "room" ? "Your den is already built of that (or better)" : "You already own that";
     }
-    case "reserved": return (ctx.which || whichReserved(ctx.it, ctx.x)) === "burrow" ? "That's the burrow. It stays where it is" : "That spot is the wheel's";
+    case "fixture": return `The ${ctx.which || j.which || "wheel"} is there`;
+    case "occupied": { const w = ctx.with || (j.with && S.catalog.get(j.with)); return w ? `The ${w.name} is there` : "Something is already there"; }
     case "too_close": return ctx.which === "bed" ? "Too close to the wheel" : "Too close to the bed";
     case "bad_fixture": return "That can't move";
     case "overlap": return ctx.with ? `The ${ctx.with.name} is already there` : "Something is already there";
@@ -1499,50 +1491,65 @@ const wallYRange = (it) => [ROOM.WALL_TOP, ROOM.WALL_BOTTOM - it.h + 1];
 // screen -> the tile under the pointer -> its lane column (inverse of colTile), as that column's
 // centre. Wall: unfold the wall (strip coordinates), then rows count from the top like the flat wall.
 function toFlat(L, zone) {
-  if (zone === "fixture") return { x: L.x, y: L.y }; // fixtures speak tiles: keep the screen point
+  if (zone !== "wall") return { x: L.x, y: L.y }; // the floor speaks tiles: keep the screen point
   if (zone === "wall") {
     const px = clamp(Math.floor(L.x), WALL_X0, WALL_X1 - 1);
     return { x: L.x - colLeft(0), y: L.y - stripTop(px) - wallRowY(0) };
   }
-  const [i, j] = screenToTile(L.x, L.y);
-  return { x: (tileToCol(i, j) + 0.5) * CELL, y: FLOOR_Y };
 }
 function fixtureCell(x, y) { // screen point -> the open-floor tile under it, clamped off the wall lanes
   const [i, j] = screenToTile(x, y);
   return { x: clamp(Math.floor(i), 1, ROOM.ISO_NI - 1), y: clamp(Math.floor(j), 1, ROOM.ISO_NJ - 1) };
 }
+function floorCell(it, fi, fj, flip) { // tile under the pointer -> back tile, the chain centred on it
+  const back = Math.floor((it.w - 1) / 2), along = flip ? [0, back] : [back, 0];
+  return { x: clamp(Math.floor(fi) - along[0], 0, ROOM.ISO_NI - 1), y: clamp(Math.floor(fj) - along[1], 0, ROOM.ISO_NJ - 1) };
+}
 function cellAt(it, Ls) { // the ghost is centred on the pointer and clamped into its zone
   if (it.zone === "fixture") return fixtureCell(Ls.x, Ls.y);
+  if (it.zone !== "wall") { const [fi, fj] = screenToTile(Ls.x, Ls.y); return floorCell(it, fi, fj, P.flip); }
   const L = toFlat(Ls, it.zone);
   const x = clamp(Math.round(L.x / CELL - it.w / 2), 0, ROOM.COLS - it.w);
-  if (it.zone !== "wall") return { x, y: ROOM.FLOOR_ROW };
   const [y0, y1] = wallYRange(it);
   return { x, y: clamp(Math.round(L.y / CELL - it.h / 2), y0, y1) };
 }
 function dragCell(Ls) { // dragging keeps the grab offset: the item moves by whole cells (d.lx/ly: flat press point)
   const d = P.drag, it = P.it, L = toFlat(Ls, it.zone);
-  if (it.zone === "fixture") { const c = isoTileCenter(d.x0, d.y0); return fixtureCell(c.x + L.x - d.lx, c.y + L.y - d.ly); }
+  if (it.zone !== "wall") { // floor: the back tile follows the pointer by whole tiles
+    const c = isoTileCenter(d.x0, d.y0), x = c.x + L.x - d.lx, y = c.y + L.y - d.ly;
+    if (it.zone === "fixture") return fixtureCell(x, y);
+    const [fi, fj] = screenToTile(x, y);
+    return { x: clamp(Math.floor(fi), 0, ROOM.ISO_NI - 1), y: clamp(Math.floor(fj), 0, ROOM.ISO_NJ - 1) };
+  }
   const x = clamp(d.x0 + Math.round((L.x - d.lx) / CELL), 0, ROOM.COLS - it.w);
-  if (it.zone !== "wall") return { x, y: ROOM.FLOOR_ROW };
   const [y0, y1] = wallYRange(it);
   return { x, y: clamp(d.y0 + Math.round((L.y - d.ly) / CELL), y0, y1) };
 }
 function updateGhost(L) {
   if (!P.mode) return;
   if (!L.inside && !P.drag) { if (P.cell) { P.cell = null; P.valid = null; renderPlacing(); } return; }
+  // auto-facing until the player flips by hand: floor items nearer the left wall run along it (and
+  // face into the room); wall decor on the left half mirrors
+  const flip0 = P.flip;
+  if (P.mode === "place" && !P.userFlip) {
+    if (P.it.zone === "floor" || P.it.zone === "rug") { const [fi, fj] = screenToTile(L.x, L.y); P.flip = fi < fj; }
+    else if (P.it.zone === "wall") { const F = toFlat(L, "wall"); P.flip = F.x / CELL < ROOM.COLS / 2; }
+  }
   const c = P.drag ? dragCell(L) : cellAt(P.it, L);
-  if (P.cell && c.x === P.cell.x && c.y === P.cell.y) return;
+  if (P.cell && c.x === P.cell.x && c.y === P.cell.y && P.flip === flip0) return;
   P.cell = c;
-  // Tuber-Simulator-style auto-facing: until the player flips manually, items
-  // along the left wall lane mirror to face into the room, right lane faces left.
-  if (P.mode === "place" && !P.userFlip) P.flip = c.x + P.it.w / 2 < ROOM.COLS / 2;
-  P.valid = P.it.zone === "fixture" ? checkFixture(P.it.fixture, c.x, c.y) : checkSpot(P.it, c.x, c.y, P.mode === "move" ? P.pid : null);
+  revalidate();
   renderPlacing();
+}
+function revalidate() {
+  if (!P.mode || !P.cell) return;
+  const c = P.cell;
+  P.valid = P.it.zone === "fixture" ? checkFixture(P.it.fixture, c.x, c.y) : checkSpot(P.it, c.x, c.y, P.mode === "move" ? P.pid : null, P.flip);
 }
 function hitTest(L) {
   if (!S.me) return null;
   const order = { floor: 0, rug: 1, wall: 2 }; // topmost layer first; floor billboards front-most first
-  const depth = (p, it) => (it.zone === "floor" ? footY(p.x, it.w) : 0);
+  const depth = (p, it) => (it.zone === "floor" ? floorGeom(it, p.x, p.y, p.flip).d : 0);
   const list = S.me.placed.map((p) => [p, S.catalog.get(p.item)]).filter(([, it]) => it && it.zone)
     .sort((a, b) => order[a[1].zone] - order[b[1].zone] || depth(...b) - depth(...a));
   const inside = (f, x, y) => x >= f.x && x < f.x + f.w && y >= f.y && y < f.y + f.h;
@@ -1638,7 +1645,7 @@ $("itemTool").addEventListener("click", (e) => {
   else if (b.dataset.act === "flip") flipPlaced(p);
   else if (b.dataset.act === "remove") removePlaced(p);
 });
-$("pFlip").onclick = () => { if (P.mode) { P.flip = !P.flip; P.userFlip = true; renderPlacing(); } };
+$("pFlip").onclick = () => { if (P.mode) { P.flip = !P.flip; P.userFlip = true; revalidate(); renderPlacing(); } };
 $("pCancel").onclick = () => cancelMode();
 function renderPlacing() {
   const on = !!P.mode;
@@ -1690,12 +1697,12 @@ addEventListener("keydown", (e) => {
   if (e.target && e.target.closest && e.target.closest("input,textarea,select")) return;
   if (e.key === "Escape") { if (P.mode) cancelMode(); else select(null); }
   else if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    if (P.mode) { P.flip = !P.flip; P.userFlip = true; renderPlacing(); } else if (selPid) flipPlaced(findPlaced(selPid));
+    if (P.mode) { P.flip = !P.flip; P.userFlip = true; revalidate(); renderPlacing(); } else if (selPid) flipPlaced(findPlaced(selPid));
   } else if ((e.key === "Delete" || e.key === "Backspace") && selPid && !P.mode && !fixOf(selPid)) { e.preventDefault(); removePlaced(findPlaced(selPid)); }
 });
 
-// in-canvas overlay: zone guides, reserved columns, ghost, selection. Floor + rugs mark lane tiles;
-// wall overlays are painted on the flat wall strip and folded with it.
+// in-canvas overlay: zone guides, ghost, selection. Floor + rugs mark floor tiles; wall overlays are
+// painted on the flat wall strip and folded with it.
 function frameRect(x, y, w, h, c = g) { c.fillRect(x, y, w, 1); c.fillRect(x, y + h - 1, w, 1); c.fillRect(x, y, 1, h); c.fillRect(x + w - 1, y, 1, h); }
 function ring(f, col, c = g) { // dark outer + bright inner: readable on cream walls and on the night sky
   c.fillStyle = "rgba(12,10,8,.9)"; frameRect(f.x - 1, f.y - 1, f.w + 2, f.h + 2, c);
@@ -1717,7 +1724,6 @@ const OV = {
   bad: () => diamondCanvas("rgba(239,68,68,.38)", "#f87171"),
   sel: () => diamondCanvas(null, "rgba(255,255,255,.85)"),
 };
-function laneTiles(x, w, deep = 1) { const out = []; for (let c = x; c < x + w; c++) { const [i, j] = colTile(c); for (let k = 0; k < deep; k++) out.push(c <= ISO.CORNER ? [i + k, j] : [i, j + k]); } return out; }
 function drawPlacement() {
   const now = performance.now();
   if (P.mode && P.it && P.it.zone === "fixture") { // open-floor tiles, the target tile, a ghost of the fixture
@@ -1737,9 +1743,9 @@ function drawPlacement() {
         const x = Math.min(colLeft(c), WALL_X1 - 2), y = stripTop(x) + wallRowY(r);
         g.fillStyle = "rgba(255,255,255,.7)"; g.fillRect(x, y, 1, 1); g.fillStyle = "rgba(0,0,0,.45)"; g.fillRect(x + 1, y, 1, 1);
       }
-    } else { // every lane tile outlined; the wheel's and the burrow's hatched red
-      const res = reservedCols();
-      for (let c = 0; c < ROOM.COLS; c++) { const [i, j] = colTile(c); drawTileOverlay(g, i, j, res.has(c) ? OV.reserved() : OV.lane()); }
+    } else { // every floor tile outlined; for furniture the wheel's and the bed's hatched red
+      for (let i = 0; i < ROOM.ISO_NI; i++) for (let j = 0; j < ROOM.ISO_NJ; j++) if (tileOnFloor([i, j])) drawTileOverlay(g, i, j, OV.lane());
+      if (it.zone === "floor") for (const k of ["wheel", "bed"]) { const f = fixture(k); drawTileOverlay(g, f.i, f.j, OV.reserved()); }
     }
     if (P.cell) {
       const ok = !!(P.valid && P.valid.ok) && P.flashUntil < now, col = ok ? "#4ade80" : "#f87171";
@@ -1751,10 +1757,11 @@ function drawPlacement() {
           ring(f, col, s);
         }, f.x - 1, f.x + f.w + 1);
       } else {
-        for (const [i, j] of laneTiles(P.cell.x, it.w, it.zone === "rug" ? RUG_DEPTH : 1)) drawTileOverlay(g, i, j, ok ? OV.ok() : OV.bad());
+        for (const [i, j] of footprint(it, P.cell.x, P.cell.y, P.flip)) if (tileOnFloor([i, j])) drawTileOverlay(g, i, j, ok ? OV.ok() : OV.bad());
         g.globalAlpha = 0.8;
-        if (it.zone === "rug") { const r = rugProjection({ x: P.cell.x, flip: P.flip }, it); g.drawImage(r.canvas, r.x, r.y); }
-        else { const f = isoRect(it, P.cell.x, P.cell.y, P.flip); drawFloorItem({ x: P.cell.x, flip: P.flip }, it); g.globalAlpha = 1; ring(f, col); } // what you see is what lands
+        const gp = { x: P.cell.x, y: P.cell.y, flip: P.flip };
+        if (it.zone === "rug") { const r = rugProjection(gp, it); g.drawImage(r.canvas, r.x, r.y); }
+        else { const f = isoRect(it, gp.x, gp.y, gp.flip); drawFloorItem(gp, it); g.globalAlpha = 1; ring(f, col); } // what you see is what lands
         g.globalAlpha = 1;
       }
     }
@@ -1764,7 +1771,7 @@ function drawPlacement() {
     if (it && it.zone === "fixture") { drawTileOverlay(g, p.x, p.y, OV.sel()); const f = fixtureRect(p.fixture, p.x, p.y, p.flip); ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now); }
     else if (it && it.zone === "wall") { const f = wallRect(it, p.x, p.y); foldLayer((s) => ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now, s), f.x - 1, f.x + f.w + 1); }
     else if (it) {
-      for (const [i, j] of laneTiles(p.x, it.w, it.zone === "rug" ? RUG_DEPTH : 1)) drawTileOverlay(g, i, j, OV.sel());
+      for (const [i, j] of footprint(it, p.x, p.y, p.flip)) drawTileOverlay(g, i, j, OV.sel());
       if (it.zone === "floor") { const f = isoRect(it, p.x, p.y, p.flip); ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now); }
     }
   }
@@ -2106,9 +2113,15 @@ function renderPortrait(cert, pose) {
   c.drawImage(wallpaperCanvas(room.wallpaper || "wp_plain"), 0, 0);
   for (const [p, it] of items("wall").sort((a, b) => a[0].y - b[0].y || a[0].x - b[0].x)) drawItem(p, it, p.x * CELL, p.y * CELL, it.w * CELL, it.h * CELL, c, fx, fr);
   c.drawImage(floorCanvas(room.floor || "fl_pine"), 0, FLOOR_Y);
-  for (const [p, it] of items("rug").sort((a, b) => a[0].x - b[0].x)) drawRugFlat(p, it, p.x * CELL, c, fx, fr);
-  for (const [p, it] of items("floor").sort((a, b) => a[0].x - b[0].x)) {
-    const pw = it.w * CELL, ph = it.h * CELL, x = p.x * CELL;
+  // floor items stand on tiles in the den: flatten each to the column under its middle, back to front
+  const flatX = (p, it) => {
+    const t = footprint(it, p.x, p.y, p.flip), cx = t.reduce((s, [i, j]) => s + isoTileCenter(i, j).x, 0) / t.length;
+    return clamp(Math.round((cx - 16) / CELL - it.w / 2), 0, ROOM.COLS - it.w) * CELL;
+  };
+  const backToFront = (a, b) => a[0].x + a[0].y - (b[0].x + b[0].y);
+  for (const [p, it] of items("rug").sort(backToFront)) drawRugFlat(p, it, flatX(p, it), c, fx, fr);
+  for (const [p, it] of items("floor").sort(backToFront)) {
+    const pw = it.w * CELL, ph = it.h * CELL, x = flatX(p, it);
     c.fillStyle = "rgba(0,0,0,.2)"; c.fillRect(x + 1, FLOOR_Y, pw - 2, 2);
     drawItem(p, it, x, FLOOR_Y - ph, pw, ph, c, fx, fr);
   }

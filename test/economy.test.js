@@ -181,47 +181,56 @@ test("buy: skins, wallpapers, floors are single-copy; defaults already owned", (
 
 // ---------- placement ----------
 const R = S.ROOM;
-test("placement: floor furniture in bounds, y normalised to the floor row", () => {
-  const p = own(fresh(), "fur_sofa"); // 3 wide
-  const v = validatePlacement(p, "fur_sofa", 7, 3);
+// fresh() rooms have the wheel on tile (1, 5) and the bed on (7, 2)
+test("placement: floor furniture stands on tiles (back tile + a chain along i, or along j flipped)", () => {
+  const p = own(fresh(), "fur_sofa"); // 3 long
+  const v = validatePlacement(p, "fur_sofa", 3, 0);
   assert.equal(v.ok, true);
-  assert.equal(v.y, R.FLOOR_ROW);
-  assert.equal(validatePlacement(p, "fur_sofa", -1, 11).error, "out_of_bounds");
-  assert.equal(validatePlacement(p, "fur_sofa", 18, 11).error, "out_of_bounds");
-  assert.equal(validatePlacement(p, "fur_sofa", 7, 12).error, "out_of_bounds");
-  assert.ok(validatePlacement(own(fresh(), "fur_seed_bowl"), "fur_seed_bowl", 19, 11).ok);
+  assert.deepEqual([v.x, v.y], [3, 0]);
+  assert.ok(validatePlacement(p, "fur_sofa", 3, 4).ok, "the middle of the floor");
+  assert.ok(validatePlacement(p, "fur_sofa", 0, 0, null, true).ok, "along the left wall");
+  assert.equal(validatePlacement(p, "fur_sofa", -1, 0).error, "out_of_bounds");
+  assert.equal(validatePlacement(p, "fur_sofa", 9, 0).error, "out_of_bounds"); // i 9..11 runs off the floor
+  assert.ok(validatePlacement(p, "fur_sofa", 0, 8).ok);
+  assert.equal(validatePlacement(p, "fur_sofa", 0, 8, null, true).error, "out_of_bounds"); // flipped: j 8..10
+  assert.equal(validatePlacement(p, "fur_sofa", 6, 8).error, "out_of_bounds"); // past the front edge (i + j > 14)
+  assert.ok(validatePlacement(own(fresh(), "fur_seed_bowl"), "fur_seed_bowl", 10, 0).ok);
 });
 
 test("placement: non-integer coords rejected", () => {
   const p = own(fresh(), "fur_seed_bowl");
-  for (const [x, y] of [[1.5, 11], ["1", 11], [1, null], [NaN, 11], [1, Infinity]]) {
+  for (const [x, y] of [[1.5, 0], ["1", 0], [1, null], [NaN, 0], [1, Infinity]]) {
     assert.equal(validatePlacement(p, "fur_seed_bowl", x, y).error, "bad_coords", `${x},${y}`);
   }
 });
 
-test("placement: no reserved columns (the burrow is gone); the wheel's old columns are free", () => {
-  const p = own(fresh(), "fur_bookshelf", 1); // 2 wide
-  for (const x of [15, 16, 17, 18]) assert.ok(validatePlacement(p, "fur_bookshelf", x, 11).ok, `x=${x}`);
-  for (const x of [2, 3, 4, 5, 6]) assert.ok(validatePlacement(p, "fur_bookshelf", x, 11).ok, `x=${x}`);
-  assert.ok(validatePlacement(p, "fur_bookshelf", 0, 11).ok);
-  assert.ok(validatePlacement(p, "fur_bookshelf", 7, 11).ok);
-  assert.ok(validatePlacement(p, "fur_bookshelf", 14, 11).ok);
+test("placement: furniture keeps off the wheel's and the bed's tiles; rugs can lie under them; fixtures keep off furniture", () => {
+  const p = own(own(own(fresh(), "fur_seed_bowl"), "fur_sofa"), "rug_rag");
+  assert.deepEqual(validatePlacement(p, "fur_seed_bowl", 1, 5), { ok: false, error: "fixture", which: "wheel" });
+  assert.deepEqual(validatePlacement(p, "fur_sofa", 5, 2), { ok: false, error: "fixture", which: "bed" }); // i 5..7 reaches the bed
+  assert.ok(validatePlacement(p, "fur_sofa", 4, 2).ok, "i 4..6 stops short of the bed");
+  assert.ok(validatePlacement(p, "rug_rag", 1, 4).ok, "a rug under the wheel");
+  p.placed.push({ pid: "s1", item: "fur_sofa", x: 3, y: 7, flip: false }); // tiles (3..5, 7)
+  assert.deepEqual(S.moveFixture(p, { which: "wheel", i: 4, j: 7 }), { ok: false, error: "occupied", with: "fur_sofa" });
+  assert.ok(S.moveFixture(p, { which: "wheel", i: 4, j: 8 }).ok);
 });
 
-test("placement: floor overlap is 1-D over columns", () => {
-  const p = own(own(fresh(), "fur_sofa"), "fur_seed_bowl", 2);
-  p.placed.push({ pid: "s1", item: "fur_sofa", x: 8, y: 11, flip: false }); // cols 8..10
-  assert.equal(validatePlacement(p, "fur_seed_bowl", 8, 11).error, "overlap");
-  assert.equal(validatePlacement(p, "fur_seed_bowl", 10, 11).error, "overlap");
-  assert.ok(validatePlacement(p, "fur_seed_bowl", 7, 11).ok);
-  assert.ok(validatePlacement(p, "fur_seed_bowl", 11, 11).ok);
-  // moving the sofa onto itself (shifted by one) is fine
-  assert.ok(validatePlacement(p, "fur_sofa", 9, 11, "s1").ok);
+test("placement: floor overlap is 2-D over tiles", () => {
+  const p = own(own(own(fresh(), "fur_sofa"), "fur_seed_bowl", 2), "fur_bookshelf");
+  p.placed.push({ pid: "s1", item: "fur_sofa", x: 4, y: 4, flip: false }); // tiles (4..6, 4)
+  assert.equal(validatePlacement(p, "fur_seed_bowl", 5, 4).error, "overlap");
+  assert.ok(validatePlacement(p, "fur_seed_bowl", 5, 5).ok);
+  assert.ok(validatePlacement(p, "fur_seed_bowl", 5, 3).ok);
+  assert.equal(validatePlacement(p, "fur_bookshelf", 6, 3, null, true).error, "overlap"); // flipped: (6, 3..4)
+  assert.ok(validatePlacement(p, "fur_bookshelf", 7, 3, null, true).ok);
+  // moving the sofa onto itself (shifted by one) is fine, and so is turning it in place
+  assert.ok(validatePlacement(p, "fur_sofa", 5, 4, "s1").ok);
+  assert.ok(validatePlacement(p, "fur_sofa", 4, 4, "s1", true).ok);
 });
 
 test("placement: wall zone is 2-D on rows 2-7 and ignores the floor", () => {
   const p = own(own(fresh(), "wall_window", 2), "wall_pennant", 2); // window 2x2
-  assert.ok(validatePlacement(p, "wall_window", 3, 2).ok); // reserved cols only apply to the floor
+  assert.ok(validatePlacement(p, "wall_window", 3, 2).ok);
   assert.equal(validatePlacement(p, "wall_window", 3, 1).error, "out_of_bounds");
   assert.equal(validatePlacement(p, "wall_window", 3, 7).error, "out_of_bounds"); // would cover row 8
   assert.ok(validatePlacement(p, "wall_window", 3, 6).ok);
@@ -230,32 +239,33 @@ test("placement: wall zone is 2-D on rows 2-7 and ignores the floor", () => {
   assert.equal(validatePlacement(p, "wall_pennant", 6, 4).error, "overlap");
   assert.ok(validatePlacement(p, "wall_pennant", 6, 5).ok);
   assert.ok(validatePlacement(p, "wall_pennant", 7, 3).ok);
-  // a floor item in the same columns does not collide with wall decor
+  // a floor item on a tile with the same numbers does not collide with wall decor
   own(p, "fur_seed_bowl");
-  assert.ok(validatePlacement(p, "fur_seed_bowl", 9, 11).ok);
+  assert.ok(validatePlacement(p, "fur_seed_bowl", 5, 3).ok);
 });
 
-test("placement: rugs collide only with rugs", () => {
-  const p = own(own(own(fresh(), "rug_persian"), "rug_rag"), "fur_sofa");
-  p.placed.push({ pid: "f1", item: "fur_sofa", x: 8, y: 11, flip: false });
-  assert.ok(validatePlacement(p, "rug_persian", 8, 11).ok); // under furniture is fine
-  p.placed.push({ pid: "r1", item: "rug_persian", x: 8, y: 11, flip: false }); // cols 8..11
-  assert.equal(validatePlacement(p, "rug_rag", 11, 11).error, "overlap");
-  assert.ok(validatePlacement(p, "rug_rag", 12, 11).ok);
-  assert.ok(validatePlacement(p, "rug_rag", 5, 11).ok);
-  assert.ok(validatePlacement(p, "rug_rag", 15, 11).ok); // the old burrow columns are open floor
+test("placement: rugs lie 2 tiles deep and collide only with rugs", () => {
+  const p = own(own(own(fresh(), "rug_persian"), "rug_rag", 2), "fur_sofa");
+  p.placed.push({ pid: "f1", item: "fur_sofa", x: 4, y: 4, flip: false });
+  assert.ok(validatePlacement(p, "rug_persian", 4, 4).ok); // under furniture is fine
+  p.placed.push({ pid: "r1", item: "rug_persian", x: 4, y: 4, flip: false }); // tiles i 4..7, j 4..5
+  assert.equal(validatePlacement(p, "rug_rag", 7, 5).error, "overlap");
+  assert.equal(validatePlacement(p, "rug_rag", 6, 3).error, "overlap"); // its second row (j 4) touches
+  assert.ok(validatePlacement(p, "rug_rag", 8, 4).ok);
+  assert.ok(validatePlacement(p, "rug_rag", 2, 2, null, true).ok); // flipped: i 2..3, j 2..3
+  assert.equal(validatePlacement(p, "rug_rag", 0, 9).error, "out_of_bounds"); // 2 deep: j 9..10
 });
 
 test("placement: unowned, unknown and non-placeable items", () => {
   const p = fresh();
-  assert.equal(validatePlacement(p, "fur_seed_bowl", 0, 11).error, "unowned");
+  assert.equal(validatePlacement(p, "fur_seed_bowl", 0, 0).error, "unowned");
   own(p, "fur_seed_bowl", 1);
-  p.placed.push({ pid: "b1", item: "fur_seed_bowl", x: 0, y: 11, flip: false });
-  assert.equal(validatePlacement(p, "fur_seed_bowl", 1, 11).error, "unowned"); // only one copy
-  assert.ok(validatePlacement(p, "fur_seed_bowl", 1, 11, "b1").ok); // but it can move
-  assert.equal(validatePlacement(p, "nope", 0, 11).error, "unknown_item");
-  assert.equal(validatePlacement(p, "skin_classic", 0, 11).error, "not_placeable");
-  assert.equal(validatePlacement(p, "wheel_t1", 0, 11).error, "not_placeable");
+  p.placed.push({ pid: "b1", item: "fur_seed_bowl", x: 0, y: 0, flip: false });
+  assert.equal(validatePlacement(p, "fur_seed_bowl", 1, 0).error, "unowned"); // only one copy
+  assert.ok(validatePlacement(p, "fur_seed_bowl", 1, 0, "b1").ok); // but it can move
+  assert.equal(validatePlacement(p, "nope", 0, 0).error, "unknown_item");
+  assert.equal(validatePlacement(p, "skin_classic", 0, 0).error, "not_placeable");
+  assert.equal(validatePlacement(p, "wheel_t1", 0, 0).error, "not_placeable");
 });
 
 // ---------- heartbeat ----------
