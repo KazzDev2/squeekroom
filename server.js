@@ -5,8 +5,9 @@
 // While he runs, players may raid richer rooms (POST /api/raid): a won raid moves watts, a lost
 // stake is burned, less a share paid to the defender by room tier. GET /api/leaderboard lists every
 // room by balance.
-// Optional wallet sign-in (POST /api/wallet/{nonce,verify,username}): a gasless personal_sign proof
-// binds an EVM address, which unlocks a unique username shown on the leaderboard.
+// Usernames (POST /api/username): every den picks a unique one when it starts; it's the name others see.
+// Optional wallet sign-in (POST /api/wallet/{nonce,verify}): a gasless personal_sign proof binds an EVM
+// address, which adds a verified badge next to the username.
 // Zero dependencies. Node 18+ (uses global fetch).
 //
 //   node server.js            live mode: settled height from SqueekCore.state() on Sepolia
@@ -283,7 +284,7 @@ function newPlayer(height, now = Date.now(), token = null) {
     raidsToday: 0, // raids made on raidDay (BALANCE.RAID.PER_DAY a day)
     raidedBy: [], // ring of {pid, at, avenged}: who raided this room (revenge waives the 70% rule once)
     wallet: null, // lowercase 0x address once a personal_sign proof was verified
-    username: null, // shown on the leaderboard instead of the nick; needs a bound wallet
+    username: null, // unique, shown on the leaderboard instead of the nick; picked when the den starts
     walletNonce: null, // pending sign-in {message, expiresAt}: single-use, 10 min
   };
 }
@@ -312,8 +313,8 @@ function getPlayer(st, token) {
 
 // ---------- wallet sign-in (optional; EIP-191 personal_sign, gasless) ----------
 // A player asks for a one-time message, signs it in their wallet, and the server recovers the signer
-// (lib/ethsig.js) from the exact stored text. A bound wallet unlocks a unique username, which the
-// leaderboard and raid feed show instead of the free-text nick. Players without a wallet are unaffected.
+// (lib/ethsig.js) from the exact stored text. A bound wallet puts a verified badge next to the username.
+// Players without a wallet are unaffected.
 const WALLET = {
   NONCE_TTL_MS: 600_000, // a pending sign-in message lives 10 minutes and is spent by a successful verify
   USERNAME_RE: /^[A-Za-z0-9_]{3,16}$/,
@@ -363,11 +364,10 @@ function verifyWallet(st, token, body, now = Date.now()) {
   invalidateLeaderboard(st);
   return { ok: true, wallet: address };
 }
-// body {username}: needs a bound wallet; 3-16 of [A-Za-z0-9_], unique case-insensitively; may change.
+// body {username}: 3-16 of [A-Za-z0-9_], unique case-insensitively; may change. No wallet needed.
 function setUsername(st, token, body) {
   const p = getPlayer(st, token);
   if (!p) return fail("unknown_player");
-  if (!p.wallet) return fail("wallet_required");
   const u = body && typeof body === "object" ? body.username : undefined;
   if (typeof u !== "string" || !WALLET.USERNAME_RE.test(u)) return fail("bad_username");
   const key = u.toLowerCase();
@@ -625,7 +625,7 @@ function claimCommemorative(st, token, now = Date.now()) {
     serial,
     seed: sha256(token + String(claimHeight) + String(serial)),
     tokenFingerprint: sha256(token).slice(0, 12),
-    nick: p.nick,
+    nick: displayName(p),
     claimedAt: new Date(now).toISOString(),
     joinHeight: p.joinHeight,
     claimHeight,
@@ -1586,14 +1586,16 @@ const POST_ROUTES = {
     if (!r.ok) return err(WALLET_ERR_STATUS[r.error] || 400, r.error);
     return okMe(p, { wallet: r.wallet });
   },
-  "/api/wallet/username": (b, p, token) => {
-    const r = setUsername(state, token, b);
-    if (!r.ok) return err(WALLET_ERR_STATUS[r.error] || 400, r.error);
-    return okMe(p, { username: r.username });
-  },
+};
+// {username}: set or change the den's username (the onboarding step and the side panel; the wallet
+// panel still uses its old path)
+POST_ROUTES["/api/username"] = POST_ROUTES["/api/wallet/username"] = (b, p, token) => {
+  const r = setUsername(state, token, b);
+  if (!r.ok) return err(WALLET_ERR_STATUS[r.error] || 400, r.error);
+  return okMe(p, { username: r.username });
 };
 const RAID_ERR_STATUS = { hamster_asleep: 409, chain_unknown: 409, chain_stale: 409, no_raids_left: 429, bad_target: 404, unknown_player: 404, not_eligible: 403, self_target: 400 };
-const WALLET_ERR_STATUS = { unknown_player: 404, no_nonce: 409, nonce_expired: 410, wallet_taken: 409, username_taken: 409, wallet_required: 403 };
+const WALLET_ERR_STATUS = { unknown_player: 404, no_nonce: 409, nonce_expired: 410, wallet_taken: 409, username_taken: 409 };
 const DEV_ROUTES = {
   "/api/dev/advance": (b) => {
     const n = b.n == null ? 1 : b.n;

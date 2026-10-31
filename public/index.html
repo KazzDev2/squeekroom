@@ -500,8 +500,8 @@ body.modal-open{overflow:hidden}
     <div class="tabs" id="tabs" role="tablist" aria-label="Shop categories"></div>
     <div class="cards" id="cards"></div>
     <div class="nickrow">
-      <label for="nick">Den name</label>
-      <input id="nick" maxlength="20" placeholder="anon" autocomplete="off" spellcheck="false">
+      <label for="nick">Username</label>
+      <input id="nick" maxlength="16" placeholder="pick one" autocomplete="off" spellcheck="false" autocapitalize="off">
       <button id="nickSave">Save</button>
     </div>
     <p class="simnote" id="simNote" hidden>For now Squeektoshi is simulated and runs nonstop, so raids are always open. Her real sleep rhythm (and bed income) comes back when the real hamster goes live.</p>
@@ -531,6 +531,17 @@ body.modal-open{overflow:hidden}
       <div class="tutdots" id="tutDots"></div>
       <button type="button" class="pxbtn" id="tutNext">Next</button>
     </div>
+  </div>
+</div>
+
+<!-- First den: pick a username (required, no wallet needed). Opens after the tutorial. -->
+<div class="tutmodal" id="nameModal" hidden>
+  <div class="tutbox" role="dialog" aria-modal="true" aria-labelledby="nameTitle" aria-describedby="nameText">
+    <h2 id="nameTitle">Name your den</h2>
+    <p id="nameText">Pick a username. Other players see it on the leaderboard and in the raid feed. You can change it later in the shop panel.</p>
+    <div class="wrow"><input class="winput" id="nameInput" maxlength="20" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="e.g. wheel_runner" aria-describedby="nameHint" aria-label="Username"></div>
+    <div class="whint" id="nameHint" aria-live="polite"></div>
+    <div class="tutnav"><span></span><button type="button" class="pxbtn" id="nameSave">Save</button></div>
   </div>
 </div>
 

@@ -470,6 +470,7 @@ async function loadConfig() {
 }
 function applyConfig(j) {
   S.demo = !!j.demo;
+  S.replay = !!j.replay; // simulated: the server's reading is the only one (no live status to fetch)
   S.nonstop = !!(j.replay && j.replay.nonstop); // simulated, running nonstop until the real hamster goes live
   $("simNote").hidden = !S.nonstop;
   if (j.api) S.api = j.api;
@@ -537,7 +538,7 @@ function applyMe(me, first = false, opts = {}) {
 // Live wheel reading straight from the public API (CORS is open). Browsers pass its edge checks
 // where a hosting provider's IP may not, so this is the primary source outside demo mode.
 async function liveFetch() {
-  if (!S.loaded || S.demo) return; // demo mode uses the server's fake hamster
+  if (!S.loaded || S.demo || S.replay) return; // demo and replay use the server's own reading
   try {
     const r = await fetch(`${S.api}/status`, { headers: { accept: "application/json" } });
     if (!r.ok) throw 0;
@@ -2014,13 +2015,34 @@ function renderFirstHint() {
     && !Object.entries(me.owned || {}).some(([id, n]) => n > 0 && !DEFAULT_IDS.has(id));
   $("firstHint").hidden = !fresh || !!P.mode;
 }
+// Username: unique, 3-16 of [A-Za-z0-9_] (the server re-checks). Picked in the onboarding step
+// (nameModal, after the tutorial), changed here in the side panel. No wallet needed.
+function nameProblem(v) {
+  if (!v) return "3–16 letters, numbers or _";
+  if (/[^A-Za-z0-9_]/.test(v)) return "Only letters, numbers and _ (no spaces or symbols)";
+  if (v.length < 3) return `Too short: ${v.length}/3 characters minimum`;
+  if (v.length > 16) return "Too long: 16 characters max";
+  return null;
+}
+function nameErrorWords(j, want) {
+  const e = j && j.error;
+  return e === "username_taken" ? `“${want}” is already taken. Try another.` : e === "bad_username" ? "Not allowed: 3–16 letters, numbers or _." : errorWords(j);
+}
+async function saveUsername(want) {
+  const r = await post("/api/username", { username: want });
+  if (r.ok && r.j.me) { applyMe(r.j.me); if (LB.open) loadLb(); }
+  return r;
+}
 const nickEl = $("nick");
-function syncNick() { if (S.me && document.activeElement !== nickEl && !nickEl.dataset.dirty) nickEl.value = S.me.nick === "anon" ? "" : S.me.nick; }
+function syncNick() { if (S.me && document.activeElement !== nickEl && !nickEl.dataset.dirty) nickEl.value = S.me.username || ""; }
 async function saveNick() {
-  const r = await post("/api/nick", { nick: nickEl.value });
-  delete nickEl.dataset.dirty;
-  if (r.ok && r.j.me) { applyMe(r.j.me); toast(r.j.me.nick === "anon" ? "Den name cleared" : `Den name saved: ${r.j.me.nick}`, "ok"); }
-  else toast(errorWords(r.j), "err");
+  const want = nickEl.value.trim();
+  if (S.me && want === S.me.username) { delete nickEl.dataset.dirty; return; }
+  const bad = nameProblem(want);
+  if (bad) { toast(bad, "err"); return; }
+  const r = await saveUsername(want);
+  if (r.ok) { delete nickEl.dataset.dirty; toast(`Username saved: ${r.j.me.username}`, "ok"); }
+  else toast(nameErrorWords(r.j, want), "err");
 }
 nickEl.addEventListener("input", () => (nickEl.dataset.dirty = "1"));
 nickEl.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveNick(); nickEl.blur(); } });
@@ -2036,6 +2058,7 @@ function afterMe() {
   renderInventory();
   renderFirstHint();
   syncNick();
+  maybeAskName();
   renderPlacing();
   positionTool();
   renderHud();
@@ -3133,6 +3156,7 @@ function closeTut() {
   cancelAnimationFrame(tut.raf);
   ls.set(TUT_SEEN, "1");
   if (tut.back && tut.back.focus) tut.back.focus();
+  maybeAskName();
 }
 $("helpBtn").addEventListener("click", () => openTut(0));
 $("tutX").addEventListener("click", closeTut);
@@ -3157,6 +3181,52 @@ tutCv.addEventListener("pointerup", (e) => { // swipe either way; a plain tap mo
   tutGo(tut.i + (Math.abs(dx) > 30 && dx > 0 ? -1 : 1));
 });
 if (!ls.get(TUT_SEEN)) setTimeout(() => openTut(0), 300); // first visit
+
+// ---------- onboarding: a den without a username must pick one (after the tutorial) ----------
+const nameUi = { open: false, busy: false, err: "" };
+function maybeAskName() {
+  if (nameUi.open || !S.me || S.me.username || !ls.get(TUT_SEEN) || !$("tut").hidden) return;
+  nameUi.open = true;
+  nameUi.err = "";
+  $("nameModal").hidden = false;
+  $("nameInput").value = "";
+  nameValidate();
+  $("nameInput").focus();
+}
+function nameValidate() {
+  const v = $("nameInput").value, bad = nameProblem(v), hint = $("nameHint");
+  hint.className = "whint" + (nameUi.err || (bad && v) ? " bad" : bad ? "" : " good");
+  hint.textContent = nameUi.err || bad || "Looks good. We'll check it's free when you save.";
+  $("nameSave").disabled = nameUi.busy || !!bad;
+  return !bad;
+}
+async function nameSubmit() {
+  if (nameUi.busy || !nameValidate()) return;
+  const want = $("nameInput").value;
+  nameUi.busy = true;
+  $("nameSave").textContent = "Saving…";
+  nameValidate();
+  const r = await saveUsername(want);
+  nameUi.busy = false;
+  $("nameSave").textContent = "Save";
+  if (r.ok) {
+    nameUi.open = false;
+    $("nameModal").hidden = true;
+    toast(`Welcome, ${r.j.me.username}!`, "ok");
+    return;
+  }
+  nameUi.err = nameErrorWords(r.j, want);
+  nameValidate();
+  $("nameInput").focus();
+}
+$("nameInput").addEventListener("input", () => { nameUi.err = ""; nameValidate(); });
+$("nameSave").addEventListener("click", nameSubmit);
+addEventListener("keydown", (e) => { // capture phase: it can't be dismissed, and the room's keys stay out of it
+  if (!nameUi.open || e.key === "Tab") return;
+  if (e.key === "Enter") { e.preventDefault(); nameSubmit(); }
+  else if (e.key === "Escape") e.preventDefault();
+  e.stopImmediatePropagation();
+}, true);
 
 // debug handle for the browser console / verification
 window.__squeekroom = { S, ham, wheel, sparks, meter, pops, spawnPop, liveStatus, tintAt, P, checkSpot, enterPlace, select,

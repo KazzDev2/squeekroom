@@ -42,7 +42,7 @@ function renderBtn() {
   } else {
     btn.className = "walletbtn";
     btn.textContent = "Connect Wallet";
-    btn.title = "Optional: link a burner wallet with one free signature to claim a unique username";
+    btn.title = "Optional: link a burner wallet with one free signature to get a ✓ next to your username";
     btn.removeAttribute("aria-label");
   }
 }
@@ -102,7 +102,7 @@ function start() {
   box.append(" wallet with nothing in it. You'll sign one free message. It costs no gas and moves nothing. ");
   box.appendChild(h("em", null, "This game never asks for a transaction, so don't sign one."));
   body.appendChild(box);
-  body.appendChild(h("p", "wnote", "Linking gets you a unique username with a ✓ on the leaderboard. Your watts and den don't change."));
+  body.appendChild(h("p", "wnote", "Linking puts a ✓ next to your username on the leaderboard. Your watts and den don't change."));
   const acts = h("div", "wacts");
   acts.appendChild(pxbtn("Cancel", true, closeModal));
   acts.appendChild(pxbtn("It's a burner, continue", false, showPicker));
@@ -363,7 +363,7 @@ function nameForm(body, { cur, saveLabel, onSaved, extraBtn }) {
 function showNameStep() {
   const m = me();
   const body = show("name", "✓ WALLET LINKED", m && m.wallet ? short(m.wallet) : "");
-  body.appendChild(h("p", "wnote", "Pick a username if you want one. It shows instead of your den name, with a ✓. You can change it later."));
+  body.appendChild(h("p", "wnote", "Pick a username. It shows on the leaderboard with a ✓. You can change it later."));
   nameForm(body, { cur: null, saveLabel: "Save username", onSaved: () => closeModal(), extraBtn: pxbtn("Skip", true, closeModal) });
 }
 

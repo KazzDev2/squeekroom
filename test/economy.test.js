@@ -1286,9 +1286,10 @@ test("wallet verify: one wallet per player (wallet_taken); re-verifying or switc
   assert.ok(signIn(st, TC, KEY_A).ok); // ... which frees the old one
 });
 
-test("wallet username: needs a wallet, 3-16 of [A-Za-z0-9_], unique ignoring case, may change", () => {
+test("username: no wallet needed, 3-16 of [A-Za-z0-9_], unique ignoring case, may change", () => {
   const st = walletWorld();
-  assert.equal(S.setUsername(st, TA, { username: "Squeaker" }).error, "wallet_required");
+  assert.ok(S.setUsername(st, TC, { username: "NoWallet" }).ok, "no wallet needed for a username");
+  assert.equal(st.players[TC].wallet, null);
   assert.ok(signIn(st, TA, KEY_A).ok);
   assert.ok(signIn(st, TB, KEY_B).ok);
   for (const username of [undefined, 42, "", "ab", "a".repeat(17), "has space", "dash-ed", "emoji\u{1F600}", "ünï", "semi;colon", ["abc"]]) {
