@@ -32,9 +32,9 @@ let FLAT_SPOT = { wheel: { x: 80, y: 170 } };
 // above the floor line. The back wall is painted flat into a strip (LW x WALL_H, same x as the screen)
 // and then folded: pixel column x drops so its bottom sits on wallBase(x), 1 px per 2 px from the
 // corner. Wallpaper, wainscot panels, wall decor and their placement overlays all go through the fold.
-// Room material (me.roomTier) frames the room: wainscot panels + wall cap + end posts, the ring of
-// floor tiles along the walls and the front edge, and the floor slab. Inside that frame the equipped
-// wallpaper covers the upper walls and the equipped flooring covers the open floor.
+// Room material (me.roomTier) is the den's trim: a short baseboard, the wall cap along the arch, the
+// end posts and the floor slab. The equipped wallpaper covers the walls down to the baseboard and the
+// equipped flooring covers every floor tile.
 const ISO = { CORNER: 9, NI: 11, NJ: 10, X0: 168, Y0: 102, WALL_H: 100, PAD: 8, SLAB: 5, FOOT: 3 };
 const LW = ISO.PAD * 2 + (ISO.NI + ISO.NJ) * 16; // 352
 const LH = 240; // the floor's front tip (empty floor) runs off the bottom edge; fit() caps it at ~70% of the window height
@@ -966,14 +966,17 @@ for (let px = WALL_X0; px < WALL_X1; px++) ARCH_EX = Math.max(ARCH_EX, stripTop(
 function paintRoomBase(c, wp, fl, t) {
   const [hi, mid, lo] = matEdge(t), H = ISO.WALL_H, HT = H + ARCH_EX;
   c.fillStyle = BACKDROP; c.fillRect(0, 0, LW, LH);
-  // walls, flat: wallpaper tiled up from the floor line (seams meet the corner), wainscot; the strip
-  // runs ARCH_EX rows taller so the arch above the old top has wallpaper too
+  // walls, flat: wallpaper tiled up from the floor line (seams meet the corner) all the way down to a
+  // short baseboard in the den material (the bottom BASE rows of its wall panel); the strip runs
+  // ARCH_EX rows taller so the arch above the old top has wallpaper too
+  const BASE = 7;
   const strip = canvas(LW, HT), s = strip.getContext("2d"), sw = swatch(wp, "wallpaper");
   for (let y = HT - 16; y > -16; y -= 16) for (let px = WALL_X0; px < WALL_X1; px += 16) s.drawImage(sw, px, y);
-  for (let px = WALL_X0; px < WALL_X1; px += 16) {
-    if (!sprite(s, `wall_mat_t${t}`, 0, px, HT - 32, {})) { s.fillStyle = mid; s.fillRect(px, HT - 32, 16, 32); s.fillStyle = lo; s.fillRect(px, HT - 32, 1, 32); }
-  }
-  s.fillStyle = "rgba(0,0,0,.18)"; s.fillRect(WALL_X0, HT - 33, WALL_X1 - WALL_X0, 1); // the wainscot's shadow on the wallpaper
+  const panel = canvas(16, 32), pc = panel.getContext("2d");
+  if (!sprite(pc, `wall_mat_t${t}`, 0, 0, 0, {})) { pc.fillStyle = mid; pc.fillRect(0, 0, 16, 32); pc.fillStyle = lo; pc.fillRect(0, 0, 1, 32); }
+  for (let px = WALL_X0; px < WALL_X1; px += 16) s.drawImage(panel, 0, 32 - BASE, 16, BASE, px, HT - BASE, 16, BASE);
+  s.fillStyle = hi; s.fillRect(WALL_X0, HT - BASE, WALL_X1 - WALL_X0, 1); // the baseboard's lit top edge
+  s.fillStyle = "rgba(0,0,0,.18)"; s.fillRect(WALL_X0, HT - BASE - 1, WALL_X1 - WALL_X0, 1); // and its shadow on the wallpaper
   // fold onto the two back walls from the arch down, cap along the arch; the shade deepens smoothly
   // round the corner (light from the left), so the corner reads as a curved burrow wall, not a fold
   for (let px = WALL_X0; px < WALL_X1; px++) {
@@ -991,13 +994,9 @@ function paintRoomBase(c, wp, fl, t) {
 }
 function paintFloor(c, fl, t, [hi, mid, lo]) {
   const img = c.getImageData(0, 0, LW, LH), d = img.data;
-  const flTex = rgbaOf(swatch(fl, "floor"));
-  const mc = canvas(32, 16), mx = mc.getContext("2d");
-  if (!sprite(mx, `floor_mat_t${t}`, 0, 0, 0, {})) mx.drawImage(diamondCanvas(mid, lo), 0, 0);
-  const matTex = rgbaOf(mc);
+  const flTex = rgbaOf(swatch(fl, "floor")); // the equipped flooring covers every tile
   const bottom = new Int16Array(LW).fill(-1);
   for (let j = 0; j < ISO.NJ; j++) for (let i = 0; i < ISO.NI; i++) {
-    const frame = i === 0 || j === 0 || i === ISO.NI - 1 || j === ISO.NJ - 1; // lanes along the walls + the front ring
     const o = isoTileTop(i, j);
     for (let ly = 0; ly < 16; ly++) for (let lx = 0; lx < 32; lx++) {
       if (!DIAMOND[ly * 32 + lx]) continue;
@@ -1005,23 +1004,16 @@ function paintFloor(c, fl, t, [hi, mid, lo]) {
       if (X < 0 || X >= LW || Y < 0) continue;
       if (Y > bottom[X]) bottom[X] = Y;
       if (Y >= LH) continue;
-      let k;
-      if (frame) k = (ly * 32 + lx) * 4;
-      else { // the flooring swatch on the half-texel iso lattice (2:1 lines stay 2 px per row)
-        const u = clamp(Math.floor((lx + 2 * ly - 15) / 2), 0, 15), v = clamp(Math.floor((2 * ly - lx + 16) / 2), 0, 15);
-        k = (v * 16 + u) * 4;
-      }
-      const src = frame ? matTex : flTex, q = (Y * LW + X) * 4;
-      if (!src[k + 3]) continue;
-      d[q] = src[k]; d[q + 1] = src[k + 1]; d[q + 2] = src[k + 2]; d[q + 3] = 255;
+      // the flooring swatch on the half-texel iso lattice (2:1 lines stay 2 px per row)
+      const u = clamp(Math.floor((lx + 2 * ly - 15) / 2), 0, 15), v = clamp(Math.floor((2 * ly - lx + 16) / 2), 0, 15);
+      const k = (v * 16 + u) * 4, q = (Y * LW + X) * 4;
+      if (!flTex[k + 3]) continue;
+      d[q] = flTex[k]; d[q + 1] = flTex[k + 1]; d[q + 2] = flTex[k + 2]; d[q + 3] = 255;
     }
   }
   c.putImageData(img, 0, 0);
-  // the open floor sits a touch lower than the frame: a soft inner shadow along its back edges
-  c.fillStyle = "rgba(0,0,0,.16)";
-  for (let i = 1; i < ISO.NI - 1; i++) { const o = isoTileTop(i, 1); for (let lx = 16; lx < 32; lx++) c.fillRect(o.x + lx, o.y + Math.floor((lx - 15) / 2), 1, 1); }
-  for (let j = 1; j < ISO.NJ - 1; j++) { const o = isoTileTop(1, j); for (let lx = 0; lx < 16; lx++) c.fillRect(o.x + lx, o.y + Math.floor((16 - lx) / 2), 1, 1); }
-  // slab under the two front edges, in the material
+  // slab under the two front edges, in the den material (with the baseboard, the wall cap and the
+  // end posts, the trim that shows the den's upgrade)
   const front = ISO.X0 + (ISO.NI - ISO.NJ) * 16; // the floor's front vertex
   for (let X = WALL_X0; X < WALL_X1; X++) {
     if (bottom[X] < 0) continue;
