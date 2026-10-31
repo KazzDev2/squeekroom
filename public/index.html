@@ -333,6 +333,70 @@ body.modal-open{overflow:hidden}
   .raidchip{white-space:normal;text-align:left;max-width:100%}
 }
 @media (prefers-reduced-motion:reduce){.raidchip.open,.tag.rev,.raidgo.busy{animation:none}.feed.hit,.stage.hit,.raidbox.shake{animation:none}}
+/* ---------- wallet: header button, verified badge, sign-in modal (dark stage look) ---------- */
+.walletbtn{margin-left:auto;font-family:var(--display);font-size:10px;letter-spacing:.2px;line-height:1.2;border:2px solid #1d1a14;border-radius:0;padding:5px 8px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:5px;max-width:100%;background:var(--chain);color:#fff;box-shadow:inset -2px -2px 0 #1e3a8a,inset 2px 2px 0 #93c5fd}
+.walletbtn:hover{background:#2563eb}
+.walletbtn[hidden]{display:none}
+.walletbtn.linked{background:#2a251d;color:#f1ece2;box-shadow:inset -2px -2px 0 #000,inset 2px 2px 0 #4b4337}
+.walletbtn.linked:hover{background:#342d23}
+.walletbtn .wn{overflow:hidden;text-overflow:ellipsis;max-width:128px}
+.walletbtn .wn.addr{font-family:var(--mono);font-size:11px;font-weight:600}
+.walletbtn:focus-visible{outline:2px solid var(--chain);outline-offset:2px}
+.vbadge{display:inline-block;flex:none;font-family:var(--mono);font-size:9px;font-weight:700;line-height:1;padding:2px 3px;margin-left:5px;vertical-align:1px;background:var(--ok);color:#fff;border:1px solid #14532d;box-shadow:inset -1px -1px 0 #14532d;border-radius:0}
+.walletbtn .vbadge{margin-left:0}
+.wmodal{position:fixed;inset:0;z-index:50;background:rgba(10,8,6,.84);display:flex;align-items:center;justify-content:center;padding:12px}
+.wmodal[hidden]{display:none}
+.wbox{position:relative;width:min(440px,100%);max-height:100%;overflow:auto;background:#1e1b16;color:#f1ece2;border:2px solid #000;box-shadow:0 0 0 2px #1e3a8a,0 0 0 4px #000,0 24px 60px rgba(0,0,0,.6);padding:14px;display:flex;flex-direction:column;gap:12px}
+.wbox.warn{box-shadow:0 0 0 2px #f5a623,0 0 0 4px #000,0 0 40px rgba(245,166,35,.25),0 24px 60px rgba(0,0,0,.6)}
+.wbox h2{font-family:var(--display);font-size:15px;margin:0;color:#93c5fd;letter-spacing:.3px}
+.wbox.warn h2{color:#ffd166}
+.wbox .sub{font-size:12px;color:#a39b8d;overflow-wrap:anywhere}
+.wbody{display:flex;flex-direction:column;gap:12px}
+.wwarn{background:#2a1d05;color:#fde68a;border:2px solid #000;box-shadow:inset 2px 2px 0 #f5a623,inset -2px -2px 0 #7c2d12;padding:10px 12px;font-size:13px;line-height:1.5}
+.wwarn b{font-family:var(--display);font-weight:400;font-size:13px;color:#ffd166;display:block;margin-bottom:4px;letter-spacing:.3px}
+.wwarn em{font-style:normal;color:#fff;font-weight:600}
+.wacts{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
+.wacts .pxbtn{padding:7px 12px}
+.wsec{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#a39b8d;margin-bottom:-6px}
+.wlist{display:flex;flex-direction:column;gap:6px;margin:0;padding:0;list-style:none}
+.wopt{all:unset;box-sizing:border-box;width:100%;display:grid;grid-template-columns:32px minmax(0,1fr) auto;align-items:center;gap:10px;padding:8px 10px;background:#2a251d;border:2px solid #000;box-shadow:inset -2px -2px 0 #000,inset 2px 2px 0 #4b4337;cursor:pointer;font-size:13px}
+.wopt:hover{background:#342d23}
+.wopt:focus-visible{outline:2px solid var(--chain);outline-offset:1px}
+.wopt img,.wopt .wico{width:32px;height:32px;display:block;object-fit:contain}
+.wopt .wico{background:#15110c;border:1px solid #3a352c;display:grid;place-items:center;font-family:var(--display);font-size:14px;color:#a39b8d}
+.wopt .wnm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wopt .wnm small{display:block;font-weight:400;font-size:10px;color:#a39b8d;overflow:hidden;text-overflow:ellipsis}
+.wopt .wgo{font-family:var(--display);font-size:10px;color:#93c5fd}
+.wempty{background:#15110c;border:1px solid #3a352c;padding:14px 12px;font-size:12px;line-height:1.5;color:#d6cfc2;text-align:center}
+.wempty b{display:block;font-family:var(--display);font-weight:400;font-size:12px;color:#f1ece2;margin-bottom:4px}
+.wempty a{color:#93c5fd}
+.wnote{font-size:11px;color:#a39b8d;margin:0;line-height:1.45}
+.wnote.notice{color:#fde68a}
+.werr{font-size:12px;color:#fca5a5;margin:0;line-height:1.45;background:#2a0f0f;border:2px solid #000;box-shadow:inset 2px 2px 0 #dc2626;padding:7px 9px}
+.werr[hidden]{display:none}
+.wwait{display:flex;align-items:center;gap:12px;background:#15110c;border:1px solid #3a352c;padding:12px}
+.wspin{flex:none;width:20px;height:20px;background:conic-gradient(#93c5fd 0 25%,#3b82f6 0 50%,#1e3a8a 0 75%,#2a251d 0);border:2px solid #000;animation:wspin .8s steps(4) infinite}
+@keyframes wspin{to{transform:rotate(360deg)}}
+.wwait .wt{font-size:13px;line-height:1.45}
+.wwait .wt small{display:block;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#a39b8d}
+.wmsg{margin:0;font:11px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;background:#15110c;border:1px dashed #4b4337;padding:8px 10px;color:#d6cfc2;max-height:150px;overflow:auto}
+.waddr{display:flex;align-items:center;gap:8px;background:#15110c;border:1px solid #3a352c;padding:8px 10px}
+.waddr code{flex:1;min-width:0;font:12px/1.4 var(--mono);overflow-wrap:anywhere;color:#f1ece2}
+.waddr .q{background:#2a251d;color:#f1ece2;border:2px solid #000;padding:3px 7px;font-size:10px;cursor:pointer;font-family:var(--display);box-shadow:inset -2px -2px 0 #000,inset 2px 2px 0 #4b4337}
+.wfield{display:flex;flex-direction:column;gap:5px}
+.wfield label{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#a39b8d;display:flex;justify-content:space-between;gap:8px}
+.wfield label .cur{letter-spacing:0;text-transform:none;font-size:12px;color:#f1ece2}
+.wrow{display:flex;gap:8px}
+.winput{flex:1;min-width:0;background:#15110c;border:2px solid #000;color:#f1ece2;padding:6px 9px;font-weight:600;font-size:14px;box-shadow:inset 2px 2px 0 #000}
+.winput:focus{outline:2px solid var(--chain);outline-offset:0}
+.winput.bad{border-color:#dc2626}
+.winput.good{border-color:#16a34a}
+.whint{font-size:11px;color:#a39b8d;min-height:1.4em}
+.whint.bad{color:#fca5a5}
+.whint.good{color:#4ade80}
+.pxbtn:disabled{opacity:.5;cursor:default}
+@media (max-width:860px){.walletbtn{margin-left:0}}
+@media (prefers-reduced-motion:reduce){.wspin{animation-duration:2.4s}}
 </style>
 </head>
 <body>
@@ -358,6 +422,7 @@ body.modal-open{overflow:hidden}
     <span class="sub" id="bedLine" title="Bed income: while he sleeps (no block for 10 minutes) every room earns from its bed, online or not">&nbsp;</span>
   </div>
   <button type="button" class="raidchip locked" id="raidChip" hidden aria-haspopup="dialog" aria-controls="lb">raids…</button>
+  <button type="button" class="walletbtn" id="walletBtn" hidden aria-haspopup="dialog" aria-controls="walletModal">Connect Wallet</button>
 </header>
 <div class="demobar" id="demo" hidden>
   <span class="hint">demo</span>
@@ -492,8 +557,21 @@ body.modal-open{overflow:hidden}
   </div>
 </div>
 
+<!-- Wallet sign-in (optional): burner warning -> wallet picker (EIP-6963) -> one free personal_sign -> username.
+     wallet.js fills #wBody per step. -->
+<div class="wmodal" id="walletModal" hidden>
+  <div class="wbox" id="walletBox" role="dialog" aria-modal="true" aria-labelledby="wTitle" aria-describedby="wSub">
+    <div class="certhead">
+      <div><h2 id="wTitle">WALLET</h2><div class="sub" id="wSub"></div></div>
+      <button type="button" class="certx" id="wClose" aria-label="Close">✕</button>
+    </div>
+    <div class="wbody" id="wBody"></div>
+  </div>
+</div>
+
 <!-- Room art (row-string sprites + drawSprite); game.js falls back to placeholders for anything missing. -->
 <script src="sprites.js"></script>
 <script src="game.js"></script>
+<script src="wallet.js"></script>
 </body>
 </html>

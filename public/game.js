@@ -448,7 +448,16 @@ function applyConfig(j) {
   if (j.balance) S.balance = j.balance;
   if (j.room) applyRoom(j.room);
   if (Array.isArray(j.catalog)) S.catalog = new Map(j.catalog.map((i) => [i.id, i]));
+  S.walletCfg = j.wallet && j.wallet.enabled ? j.wallet : null; // absent: no wallet button at all
   S.configured = true;
+  walletHook("onConfig", S.walletCfg);
+}
+// public/wallet.js (optional, loaded after this file) registers window.SqueekWallet; every call is
+// guarded so the game runs unchanged without it.
+function walletHook(name, ...args) {
+  const w = window.SqueekWallet;
+  if (!w || typeof w[name] !== "function") return undefined;
+  try { return w[name](...args); } catch (e) { console.error("wallet:", e); return undefined; }
 }
 async function refresh() {
   if (!S.configured) return;
@@ -1400,6 +1409,7 @@ view.addEventListener("pointercancel", () => { press = null; P.down = false; if 
 view.addEventListener("pointerleave", (e) => { if (P.mode && e.pointerType === "mouse" && !P.drag && P.cell) { P.cell = null; P.valid = null; renderPlacing(); } });
 view.addEventListener("contextmenu", (e) => { if (P.mode || selPid) { e.preventDefault(); if (P.mode) cancelMode(); else select(null); } });
 addEventListener("keydown", (e) => {
+  if (walletHook("isOpen")) { walletHook("key", e); return; } // the wallet modal sits above everything
   if (certOpen()) { certKey(e); return; } // the certificate is modal: room shortcuts stay off
   if (RU.open) { raidKey(e); return; } // so is the raid
   if (LB.open && e.key === "Escape") { closeLb(); return; }
@@ -1744,6 +1754,7 @@ function afterMe() {
   positionTool();
   renderHud();
   if (RU.open) renderRaid();
+  walletHook("onMe", S.me);
 }
 buildTabs();
 buildCards();
@@ -2157,6 +2168,9 @@ function matSwatchUrl(t) {
   return u;
 }
 const defensePct = (t) => RB().DEFENSE_PCT[t | 0] ?? 0;
+// display name: the server's `name` (wallet username, else the room nick); nick for older payloads
+const rowName = (r) => (r && (r.name || r.nick)) || "anon";
+function verifiedBadge() { const b = elx("span", "vbadge", "✓"); b.title = "Wallet-verified username"; b.setAttribute("aria-label", "wallet verified"); return b; }
 const rowMatLine = (r) => `${roomMaterial(r.roomTier | 0)} room${defensePct(r.roomTier) ? ` · −${defensePct(r.roomTier)}% odds` : ""}`;
 // recomputed against my live watts (the server's flag uses the same rule; it re-checks on raid)
 function rowRaidable(r) {
@@ -2238,7 +2252,8 @@ function renderLb() {
     if (raidable) { row.type = "button"; row.dataset.pid = r.publicId; row.onclick = () => openRaid(r); }
     row.appendChild(elx("span", "rk", `#${r.rank}`));
     const img = elx("img", "mat"); img.src = matSwatchUrl(r.roomTier); img.alt = ""; row.appendChild(img);
-    const who = elx("span", "who"), nm = elx("span", "nm", r.nick || "anon");
+    const who = elx("span", "who"), nm = elx("span", "nm", rowName(r));
+    if (r.verified) nm.appendChild(verifiedBadge());
     if (you) nm.appendChild(elx("span", "tag you", "YOU"));
     if (r.revenge) nm.appendChild(elx("span", "tag rev", "REVENGE!"));
     who.appendChild(nm);
@@ -2250,8 +2265,8 @@ function renderLb() {
       const sm = elx("small"); sm.appendChild(elx("span", ev >= 0 ? "pos" : "neg", `EV ${evText(ev)}`)); wt.appendChild(sm);
       wt.appendChild(elx("span", "go", "RAID ⚔"));
     } else wt.appendChild(elx("small", null, you ? (r.rank === 1 ? "the crown: pure prey" : "you") : "< 70% of you"));
-    row.title = raidable ? `Raid ${r.nick}${r.revenge ? " (revenge)" : ""}` : you ? "Your room" : `Below 70% of your watts (< ${fmt(minTarget())} W): punch up only`;
-    row.setAttribute("aria-label", `Rank ${r.rank}, ${r.nick}${you ? " (you)" : ""}, ${roomMaterial(r.roomTier | 0)} room, ${fmt(r.watts)} watts${raidable ? ", raidable" : ""}${r.revenge ? ", revenge" : ""}`);
+    row.title = raidable ? `Raid ${rowName(r)}${r.revenge ? " (revenge)" : ""}` : you ? "Your room" : `Below 70% of your watts (< ${fmt(minTarget())} W): punch up only`;
+    row.setAttribute("aria-label", `Rank ${r.rank}, ${rowName(r)}${r.verified ? " (wallet verified)" : ""}${you ? " (you)" : ""}, ${roomMaterial(r.roomTier | 0)} room, ${fmt(r.watts)} watts${raidable ? ", raidable" : ""}${r.revenge ? ", revenge" : ""}`);
     row.appendChild(wt);
     li.appendChild(row);
     box.appendChild(li);
@@ -2320,19 +2335,19 @@ function raidBlock(t, sb) {
   if (ph === "locked") return { lock: true, msg: `<b>😴 RAIDS LOCKED</b> ${S.idle ? "Squeektoshi is sleeping. Raids open again the moment he runs." : "No fresh chain reading right now. Raids open while he runs."}` };
   if (ph === "cool") return { lock: true, msg: `<b>⏳ COOLING DOWN</b> Your next raid in ${durText(cooldownLeft())}. One raid per 30 minutes.` };
   if (sb.max < sb.min) return { lock: true, msg: `<b>TOO POOR TO RAID</b> Stakes start at ${fmt(sb.min)} W and can be at most 20% of your watts: you need ${fmt(Math.ceil((sb.min * 100) / RB().STAKE_MAX_BALANCE_PCT))} W.` };
-  if (!rowRaidable(t)) return { lock: true, msg: `<b>OUT OF REACH</b> ${escapeHtml(t.nick)} holds less than 70% of your watts now (needs ≥ ${fmt(minTarget())} W). Punch up only.` };
+  if (!rowRaidable(t)) return { lock: true, msg: `<b>OUT OF REACH</b> ${escapeHtml(rowName(t))} holds less than 70% of your watts now (needs ≥ ${fmt(minTarget())} W). Punch up only.` };
   return null;
 }
 function renderRaid(force = false) {
   if (!RU.open || !S.me) return;
   const t = raidTarget(), me = S.me, R = RB();
   const tb = $("raidTarget");
-  const tsig = `${t.publicId}|${t.nick}|${t.roomTier}|${t.watts}|${t.revenge}`;
+  const tsig = `${t.publicId}|${rowName(t)}|${t.verified}|${t.roomTier}|${t.watts}|${t.revenge}`;
   if (force || tb.dataset.sig !== tsig) {
     tb.dataset.sig = tsig;
     tb.innerHTML = "";
     const img = elx("img"); img.src = matSwatchUrl(t.roomTier); img.alt = ""; tb.appendChild(img);
-    const who = elx("div"); who.appendChild(elx("div", "tn", t.nick || "anon")); who.appendChild(elx("div", "tm", `#${t.rank} · ${rowMatLine(t)}`));
+    const who = elx("div"); { const tn = elx("div", "tn", rowName(t)); if (t.verified) tn.appendChild(verifiedBadge()); who.appendChild(tn); } who.appendChild(elx("div", "tm", `#${t.rank} · ${rowMatLine(t)}`));
     tb.appendChild(who);
     const w = elx("div", "tw", `${fmt(t.watts)} W`); w.appendChild(elx("small", null, "their watts")); tb.appendChild(w);
   }
@@ -2340,7 +2355,7 @@ function renderRaid(force = false) {
   $("raidBox").classList.toggle("revenge", rev);
   $("raidRev").hidden = !rev;
   $("raidTitle").textContent = rev ? "⚔ REVENGE RAID" : "⚔ RAID";
-  $("raidSub").textContent = rev ? `pay ${t.nick} back` : `one roll · win their watts or burn your stake`;
+  $("raidSub").textContent = rev ? `pay ${rowName(t)} back` : `one roll · win their watts or burn your stake`;
   if (RU.result) return; // the result view is showing
   const sb = stakeNow(), S0 = sb.v, myW = me.watts;
   // multiplier rows
@@ -2368,7 +2383,7 @@ function renderRaid(force = false) {
   const m = RU.mult, ev = selP * (m / 100) - 1, [lo, hi] = lootRange(m, S0, t.watts), critHi = Math.min(Math.floor((hi * R.CRIT_MULT_PCT) / 100), t.watts);
   const sum = $("raidSum");
   sum.className = "rsum" + (ev < 0 ? " negev" : "");
-  sum.innerHTML = `<b class="pos">Win ${pctText(selP)}</b>: take <b>${fmt(lo)}–${fmt(hi)} W</b> from ${escapeHtml(t.nick)} (${R.CRIT_CHANCE_PCT}% crit: up to ${fmt(critHi)} W)<br>`
+  sum.innerHTML = `<b class="pos">Win ${pctText(selP)}</b>: take <b>${fmt(lo)}–${fmt(hi)} W</b> from ${escapeHtml(rowName(t))} (${R.CRIT_CHANCE_PCT}% crit: up to ${fmt(critHi)} W)<br>`
     + `<b class="neg">Lose ${pctText(1 - selP)}</b>: your <b>${fmt(S0)} W</b> stake is burned. Nobody gets it.<br>`
     + `EV <b class="${ev >= 0 ? "pos" : "neg"}">${evText(ev)}</b> = ${ev >= 0 ? "+" : "−"}${fmt(Math.abs(ev * S0))} W per raid on average`
     + (ev < 0 ? `<span class="warn">⚠ Negative EV: their ${roomMaterial(t.roomTier | 0).toLowerCase()} walls${t.watts < myW ? " and smaller purse" : ""} make this a losing bet on average.</span>` : "");
@@ -2414,7 +2429,7 @@ function raidErrorWords(j) {
     case "chain_stale": return "Raids are locked: the chain reading went stale. They reopen with a fresh block.";
     case "cooldown": return `Still cooling down: your next raid in ${durText(j.cooldownMsLeft || 0)}.`;
     case "bad_target": return "That room doesn't exist any more.";
-    case "not_eligible": return `${t ? t.nick : "They"} dropped below 70% of your watts. Punch up only (or wait for revenge).`;
+    case "not_eligible": return `${t ? rowName(t) : "They"} dropped below 70% of your watts. Punch up only (or wait for revenge).`;
     case "self_target": return "You can't raid your own room.";
     case "bad_mult": return "Pick a multiplier first.";
     case "bad_stake": case "stake_out_of_range": return j.max < j.min ? `You can't stake yet: stakes start at ${fmt(j.min)} W (max 20% of your watts).` : `Stake must be a whole number from ${fmt(j.min)} to ${fmt(j.max)} W.`;
@@ -2467,7 +2482,7 @@ function showRaidResult(res, t, before) {
   const m = res.multPct || RU.mult;
   if (win) {
     $("resBig").textContent = res.revenge ? "REVENGE TAKEN!" : "RAID WON!";
-    $("resDet").textContent = `You took ${fmt(res.loot)} W from ${t.nick} · ${multLabel(m)} at ${pctText(res.p)} odds · next raid in ${durText(RB().COOLDOWN_MS)}`;
+    $("resDet").textContent = `You took ${fmt(res.loot)} W from ${rowName(t)} · ${multLabel(m)} at ${pctText(res.p)} odds · next raid in ${durText(RB().COOLDOWN_MS)}`;
     countUp($("resAmt"), res.loot, res.crit ? 1700 : 1200);
     for (let i = 0; i < (res.crit ? 36 : 22); i++) {
       const a = Math.random() * Math.PI * 2, d = 60 + Math.random() * 110, p = elx("i", "fxp coin");
@@ -2477,11 +2492,11 @@ function showRaidResult(res, t, before) {
     }
     raidFx(res.crit ? "crit" : "win");
     gainFlash(res.loot);
-    toast(`${res.crit ? "CRIT! " : ""}You raided ${t.nick}: +${fmt(res.loot)} W`, "ok");
+    toast(`${res.crit ? "CRIT! " : ""}You raided ${rowName(t)}: +${fmt(res.loot)} W`, "ok");
   } else {
     $("resBig").textContent = "RAID FAILED";
     $("resAmt").textContent = `−${fmt(res.stakeLost || res.stake)} W`;
-    $("resDet").textContent = `Stake burned to ash at ${pctText(res.p)} odds. ${t.nick} keeps everything · next raid in ${durText(RB().COOLDOWN_MS)}`;
+    $("resDet").textContent = `Stake burned to ash at ${pctText(res.p)} odds. ${rowName(t)} keeps everything · next raid in ${durText(RB().COOLDOWN_MS)}`;
     for (let i = 0; i < 28; i++) {
       const p = elx("i", "fxp ember");
       p.style.left = `${5 + Math.random() * 90}%`;
@@ -2638,6 +2653,8 @@ window.__squeekroom = { S, ham, wheel, sparks, meter, liveStatus, tintAt, P, che
   get selPid() { return selPid; }, get FX() { return FX; },
   renderNow() { const st = liveStatus(); tick10(); render(st); }, // paints one frame even when rAF is paused (hidden tab)
   renderCert, openCert, closeCert, certLeftWords, get cert() { return certUi.cert; } };
+// the narrow surface public/wallet.js builds on (it never touches game internals beyond this)
+window.__squeekroom.bridge = { S, post, applyMe, toast, errorWords, refreshLb() { if (LB.open) loadLb(); } };
 
 fit();
 renderHud();
