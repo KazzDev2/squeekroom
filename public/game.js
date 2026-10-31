@@ -3006,7 +3006,7 @@ function tutArrowUp(c, x, y, col) {
 const TUT_MULT = ["1X", "1.25X", "1.6X", "2X", "2.6X", "3.5X"];
 
 const TUT = [
-  { title: "He runs, you earn", text: "Squeektoshi is a real hamster. Every Squeek block he runs pays your den Watts, even while you're away.",
+  { title: "He runs, you earn", text: "Squeektoshi is a real hamster. Every Squeek block he runs generates electricity (Watts), even while you're away.",
     draw(c, t) {
       tutBg(c, false);
       const f = Math.floor(t * 12) % 4;
