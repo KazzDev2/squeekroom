@@ -1010,6 +1010,15 @@ const REPLAY_NIGHT = [
   ["run", 10, 2800, "stir"], // synthetic
   ["sleep", 60, 0, "day sleep"],
 ];
+// Nonstop (the default for now, until the real hamster goes live): the same runs with their real work
+// weights, stretched to fill the whole cycle with no rests, so he is always running. Same blocks per
+// day; there is no sleep, so no bed income. REPLAY_NONSTOP=0 brings back the real nightly rhythm.
+const REPLAY_NONSTOP_NIGHT = (() => {
+  const runs = REPLAY_NIGHT.filter(([kind]) => kind === "run"), total = REPLAY_NIGHT.reduce((a, [, min]) => a + min, 0);
+  const runMin = runs.reduce((a, [, min]) => a + min, 0);
+  return runs.map(([kind, min, weight, label]) => [kind, (min * total) / runMin, weight, label]);
+})();
+const REPLAY_NONSTOP = process.env.REPLAY_NONSTOP !== "0";
 const REPLAY_VERSION = 2; // bump when REPLAY_NIGHT changes (re-anchors the offset once, continuously)
 const REPLAY_BASE_SPEED = 3; // REPLAY_NIGHT minutes are written for this speed (480 min = 24 h / 3)
 const REPLAY_BLOCKS_PER_DAY = 1078; // the real rate; replay settles this x SPEED
@@ -1029,10 +1038,10 @@ const REPLAY_EPOCH_MS = Number.isFinite(Date.parse(process.env.REPLAY_EPOCH || "
 
 // The cycle for one speed: segments with absolute offsets in the cycle and whole block counts
 // (largest remainder, so they sum exactly to blocksPerCycle). Pure.
-function replaySchedule(speed = REPLAY_BASE_SPEED, epochMs = REPLAY_EPOCH_MS) {
+function replaySchedule(speed = REPLAY_BASE_SPEED, epochMs = REPLAY_EPOCH_MS, nonstop = false) {
   const k = REPLAY_BASE_SPEED / speed;
   let at = 0;
-  const segments = REPLAY_NIGHT.map(([kind, min, weight, label]) => {
+  const segments = (nonstop ? REPLAY_NONSTOP_NIGHT : REPLAY_NIGHT).map(([kind, min, weight, label]) => {
     const ms = Math.max(Math.round(min * 60_000 * k), kind === "run" ? REPLAY_MIN_RUN_MS : REPLAY_MIN_SLEEP_MS);
     const s = { kind, label, start: at, end: at + ms, ms, weight: kind === "run" ? weight : 0, blocks: 0, before: 0 };
     at += ms;
@@ -1050,7 +1059,7 @@ function replaySchedule(speed = REPLAY_BASE_SPEED, epochMs = REPLAY_EPOCH_MS) {
   let c = 0;
   for (const s of segments) (s.before = c), (c += s.blocks);
   const maxRate = Math.max(...runs.map((s) => s.blocks / s.ms));
-  return { version: REPLAY_VERSION, speed, epochMs, cycleMs, blocksPerCycle, blocksPerDay: (blocksPerCycle * 86_400_000) / cycleMs, maxRate, segments, key: `v${REPLAY_VERSION}|x${speed}|${epochMs}` };
+  return { version: REPLAY_VERSION, speed, epochMs, cycleMs, blocksPerCycle, blocksPerDay: (blocksPerCycle * 86_400_000) / cycleMs, maxRate, segments, nonstop, key: `v${REPLAY_VERSION}${nonstop ? "ns" : ""}|x${speed}|${epochMs}` };
 }
 // Where t falls: cycle number n, segment index i, progress u in [0, 1). null before the epoch.
 function replayLocate(t, sched) {
@@ -1173,7 +1182,7 @@ function leaveReplay(st, h, now = Date.now()) {
   delete st.replay;
   if (st === state) resetSpeedSamples(); // the jump is not a cadence
 }
-const REPLAY_SCHEDULE = replaySchedule(REPLAY_SPEED, REPLAY_EPOCH_MS);
+const REPLAY_SCHEDULE = replaySchedule(REPLAY_SPEED, REPLAY_EPOCH_MS, REPLAY_NONSTOP);
 // Speed-bonus baseline (blocks/min that pays 100%): replay's own mean run cadence, else BASE_BPM.
 const SPEED_BASE_BPM = REPLAY ? replayRunMeanBpm(REPLAY_SCHEDULE) : BALANCE.SPEED.BASE_BPM;
 
@@ -1398,7 +1407,7 @@ function snapshot(token) {
 function configPayload({ replay = REPLAY, sched = REPLAY_SCHEDULE } = {}) {
   return {
     demo: DEMO, core: CORE, api: replay ? REPLAY_API_SINK : API, balance: BALANCE, room: ROOM, catalog: CATALOG,
-    replay: replay ? { speed: sched.speed, blocksPerDay: sched.blocksPerDay, cycleMs: sched.cycleMs, epoch: new Date(sched.epochMs).toISOString() } : null,
+    replay: replay ? { speed: sched.speed, blocksPerDay: sched.blocksPerDay, cycleMs: sched.cycleMs, epoch: new Date(sched.epochMs).toISOString(), nonstop: !!sched.nonstop } : null,
     wallet: { enabled: true, usernameRe: WALLET.USERNAME_RE.source, burnerWarning: true, nonceTtlMs: WALLET.NONCE_TTL_MS },
   };
 }
@@ -1613,7 +1622,7 @@ Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, apply
   raidChance, resolveRaid, raidOdds, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS,
   WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername,
-  REPLAY_NIGHT, REPLAY_API_SINK, REPLAY_MIN_SLEEP_MS, replaySchedule, replayLocate, replayCumulativeBlocks, cumulativeBlocks: replayCumulativeBlocks,
+  REPLAY_NIGHT, REPLAY_NONSTOP_NIGHT, REPLAY_API_SINK, REPLAY_MIN_SLEEP_MS, replaySchedule, replayLocate, replayCumulativeBlocks, cumulativeBlocks: replayCumulativeBlocks,
   replayReading, replayTick, leaveReplay, advanceTo,
   wattsFor, speedPctFrom, speedOpts, replayRunMeanBpm, recordSpeedSample });
 

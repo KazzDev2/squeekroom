@@ -1796,3 +1796,16 @@ test("replay: asleep within 30 s of every run's end, awake from every run's star
   }
   assert.ok(sawRun > 0 && sawSleep > 0);
 });
+
+test("replay nonstop: the real runs stretched over the whole cycle, same blocks a day, never asleep", () => {
+  const ns = S.replaySchedule(3, EP, true);
+  assert.ok(ns.segments.every((x) => x.kind === "run"));
+  assert.equal(ns.cycleMs, SCHED.cycleMs);
+  assert.equal(ns.blocksPerCycle, SCHED.blocksPerCycle);
+  assert.notEqual(ns.key, SCHED.key, "switching re-anchors the offset (continuously)");
+  const st = replayWorld({ [TOKEN]: S.newPlayer(null, EP, TOKEN) });
+  for (let x = EP + DAY + 3_700; x <= EP + DAY + ns.cycleMs; x += 10_000) {
+    S.replayTick(st, x, ns, 5204);
+    assert.equal(S.asleep(st, x), false);
+  }
+});

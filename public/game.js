@@ -470,6 +470,8 @@ async function loadConfig() {
 }
 function applyConfig(j) {
   S.demo = !!j.demo;
+  S.nonstop = !!(j.replay && j.replay.nonstop); // simulated, running nonstop until the real hamster goes live
+  $("simNote").hidden = !S.nonstop;
   if (j.api) S.api = j.api;
   if (j.balance) S.balance = j.balance;
   if (j.room) applyRoom(j.room);
@@ -584,7 +586,7 @@ function renderHud() {
   const h = st.h;
   $("status").textContent = { active: "ACTIVE", stale: "STALE", offline: "offline", connecting: "connecting…", none: "no reading" }[st.key]
     || (h && h.coreStatus && h.coreStatus !== "IDLE" && h.coreStatus !== "UNKNOWN" ? h.coreStatus.replace(/_/g, " ") : "IDLE");
-  $("source").textContent = st.key === "offline" ? "server unreachable" : !h ? " " : S.demo ? "demo hamster" : h.source === "live" ? "live from api.squeekchain.com" : "via game server";
+  $("source").textContent = st.key === "offline" ? "server unreachable" : !h ? " " : S.demo ? "demo hamster" : h.source === "live" ? "live from api.squeekchain.com" : S.nonstop ? "simulated · always running" : "via game server";
   $("speed").textContent = st.active && st.speed > 0 ? `${(st.speed / 1000).toFixed(2)} m/s` : "—";
   $("block").textContent = S.height != null ? S.height.toLocaleString("en-US") : "—";
   if (S.chain && typeof S.chain.blockProgress === "number") $("prog").style.width = clamp((S.chain.blockProgress / 1e9) * 100, 0, 100).toFixed(1) + "%";
