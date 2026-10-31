@@ -2793,23 +2793,26 @@ for (const k of Object.keys(SKIN_REMAPS)) SKIN_REMAPS[k.replace(/^skin_/, "")] =
 
 // ---------- normalize ----------
 const SPRITES = window.SPRITES || {};
-for (const [id, def] of Object.entries(ART)) {
-  const { w, h } = def;
-  const frames = def.frames.map((rows, fi) => {
-    const px = new Uint8Array(w * h);
-    for (let y = 0; y < h; y++) {
-      const row = rows[y] || "";
-      if (row.length !== w) console.warn(`sprite ${id} frame ${fi} row ${y}: ${row.length} chars, expected ${w}`);
-      for (let x = 0; x < w; x++) {
-        const ch = row[x];
-        px[y * w + x] = ch && ch !== "." ? parseInt(ch, 16) || 0 : 0;
+function registerArt(art) {
+  for (const [id, def] of Object.entries(art)) {
+    const { w, h } = def;
+    const frames = def.frames.map((rows, fi) => {
+      const px = new Uint8Array(w * h);
+      for (let y = 0; y < h; y++) {
+        const row = rows[y] || "";
+        if (row.length !== w) console.warn(`sprite ${id} frame ${fi} row ${y}: ${row.length} chars, expected ${w}`);
+        for (let x = 0; x < w; x++) {
+          const ch = row[x];
+          px[y * w + x] = ch && ch !== "." ? parseInt(ch, 16) || 0 : 0;
+        }
       }
-    }
-    if (rows.length !== h) console.warn(`sprite ${id} frame ${fi}: ${rows.length} rows, expected ${h}`);
-    return px;
-  });
-  SPRITES[id] = { ...def, id, rows: def.frames, frames };
+      if (rows.length !== h) console.warn(`sprite ${id} frame ${fi}: ${rows.length} rows, expected ${h}`);
+      return px;
+    });
+    SPRITES[id] = { ...def, id, rows: def.frames, frames };
+  }
 }
+registerArt(ART);
 
 // ---------- rasterize + cache ----------
 const RGB = PALETTE.map((hex) => (hex ? [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)] : null));
@@ -3066,6 +3069,7 @@ liveSprite("wall_cuckoo", (ctx, frame, x, y, o, s) => {
 });
 
 window.SPRITES = SPRITES;
+window.registerArt = registerArt;
 window.SKIN_REMAPS = Object.assign(window.SKIN_REMAPS || {}, SKIN_REMAPS);
 window.SPRITE_PALETTE = PALETTE;
 window.drawSprite = drawSprite;

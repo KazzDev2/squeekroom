@@ -480,7 +480,7 @@ function applyState(j) {
   S.night = j.night;
   S.idle = j.idle === true;
   if (typeof j.serverTime === "number") S.skew = j.serverTime - Date.now();
-  if (j.me) applyMe(j.me, first, { at: j.serverTime, soft: S.idle });
+  if (j.me) { applyMe(j.me, first, { at: j.serverTime, soft: S.idle }); if (!first) noteTrickle(); }
   else if (j.meError) toast(j.meError === "server_full" ? "The server is full right now." : `Could not load your room (${j.meError}).`, "err");
   if (j.raid !== undefined) applyRaidStatus(j.raid);
   if (typeof j.burned === "number") S.burned = j.burned;
@@ -499,6 +499,7 @@ function applyMe(me, first = false, opts = {}) {
   S.watching = !!me.watching;
   if (first || !prev) meter.shown = me.watts;
   else if (me.lifetimeWatts > prev.lifetimeWatts) onAccrual(me.lifetimeWatts - prev.lifetimeWatts, !!opts.soft);
+  noteEarn(me, prev, first);
   meter.target = me.watts;
   afterMe();
 }
@@ -531,7 +532,9 @@ async function beat() {
 }
 
 // ---------- HUD strip ----------
-const meter = { shown: 0, target: 0, lastText: "", glowUntil: 0 };
+// shown tweens to target: a fixed METER_MS ease-out from wherever it is when the target moves
+const meter = { shown: 0, target: 0, from: 0, to: 0, t0: 0, lastText: "", glowUntil: 0 };
+const METER_MS = 600;
 const fmt = (n) => Math.round(n).toLocaleString("en-US");
 let cuckooAt = 0; // the cuckoo clock pops its bird for ~2 s after each accrual
 // soft: bed income (a watt or two now and then while he sleeps): shorter glow, one spark, no cuckoo.
@@ -591,10 +594,13 @@ function renderBedLine(me, bonusPct) {
   el.innerHTML = html;
   el.title = S.idle ? "He's asleep: your bed is earning (every room earns, online or not)" : "Bed income: while he sleeps (no block for 10 minutes) every room earns from its bed, online or not";
 }
-function stepMeter(dt) {
-  const d = meter.target - meter.shown;
-  if (Math.abs(d) < 0.5) meter.shown = meter.target;
-  else meter.shown += d * (1 - Math.exp(-dt / 320)) + Math.sign(d) * Math.min(Math.abs(d), dt * 0.02);
+function stepMeter() {
+  const now = performance.now();
+  if (meter.target !== meter.to) { meter.from = meter.shown; meter.to = meter.target; meter.t0 = now; }
+  if (meter.shown !== meter.to) {
+    const k = Math.min(1, (now - meter.t0) / METER_MS), e = 1 - (1 - k) * (1 - k) * (1 - k); // ease-out cubic
+    meter.shown = k >= 1 ? meter.to : Math.round(meter.from + (meter.to - meter.from) * e); // whole-watt steps
+  }
   const txt = S.me ? fmt(meter.shown) : "—";
   if (txt !== meter.lastText) { $("watts").textContent = txt; meter.lastText = txt; }
   if (meter.glowUntil && performance.now() > meter.glowUntil) { meter.glowUntil = 0; $("meter").classList.remove("glow"); }
@@ -637,12 +643,18 @@ $("sleep").onclick = async () => {
 const SIT_MS = 1400;
 const ham = { init: false, mode: "sleep", x: SPOT.bed.x, y: SPOT.bed.y, gy: SPOT.bed.y, face: -1, move: null, sitLeft: 0, runPhase: 0, blink: 0, breath: 0 };
 // The bed he sleeps in: me.bedTier's sprite standing on BED_TILE; sleep = where his bottom-centre goes.
+// With iso art (iso_bed_tN, unflipped) its iso vertex sits on BED_TILE's south vertex; id is then the
+// iso id, so the "_front" overlay drawn at the same origin is iso_bed_tN_front.
 function bedGeom() {
-  const tier = clamp((S.me && S.me.bedTier) | 0, 0, 5), id = `bed_t${tier}`;
-  const s = (window.SPRITES || {})[id];
+  const tier = clamp((S.me && S.me.bedTier) | 0, 0, 5), flat = `bed_t${tier}`;
+  const s = (window.SPRITES || {})[flat];
   const w = (s && s.w) || 28, h = (s && s.h) || 10, sl = (s && s.sleep) || [w >> 1, h - 3];
   const x = Math.round(SPOT.bed.x - w / 2), y = SPOT.bed.y - h;
-  return { id, tier, x, y, w, h, foot: SPOT.bed.y, sleepX: x + sl[0], sleepY: y + sl[1] };
+  const geom = { id: flat, tier, x, y, w, h, foot: SPOT.bed.y, sleepX: x + sl[0], sleepY: y + sl[1] };
+  const is = isoArt(flat);
+  if (!is) return geom;
+  const o = isoOrigin(is, tileSouth(BED_TILE[0], BED_TILE[1]), false), isl = Array.isArray(is.sleep) ? is.sleep : null;
+  return { ...geom, id: `iso_${flat}`, x: o.x, y: o.y, w: is.w, h: is.h, sleepX: isl ? o.x + isl[0] : geom.sleepX, sleepY: isl ? o.y + isl[1] : geom.sleepY };
 }
 function spotFor(mode) {
   if (mode === "run") return SPOT.wheel;
@@ -746,6 +758,7 @@ function stepFx(dt, st) {
     if (zClock <= 0) { zs.push({ x: ham.x + 6, y: ham.y - 18, t: 0, life: 2600 }); zClock = 1900; }
   } else zClock = 400;
   for (let i = zs.length - 1; i >= 0; i--) { zs[i].t += dt; if (zs[i].t > zs[i].life) zs.splice(i, 1); }
+  stepPops(dt);
   stepRaidFx(dt);
 }
 
@@ -1035,24 +1048,65 @@ function render(st) {
   }
   // 6b. raid fx (embers, flashes) over the tint so they glow at night
   drawRaidFx();
+  // 6c. "+N W" / "-N W" popups, untinted so they read at night
+  drawPops();
   // 7. placement ghost, zone guides, selection outline (after the tint so they read at night)
   drawPlacement();
   // present: integer-scaled, no smoothing
   vctx.imageSmoothingEnabled = false;
   vctx.drawImage(buf, 0, 0, view.width, view.height);
 }
+// ---------- dimetric art ("iso_" + id) ----------
+// An iso sprite is a SPRITES entry with iso: { ax, ay } = the south (lowest) vertex of its base
+// footprint, as a lattice POINT in sprite pixels (the corner between pixels, like isoTileCenter's
+// south vertex): a lone 32 x 16 tile diamond drawn at the sprite's origin has ax 16, ay 16 (its
+// 2-px bottom tip is pixels 15..16 of row 15). Canonical art faces SW with its tile chain running
+// down-right (as it stands on the right wall); mirrored (flip) it faces SE with the chain running
+// down-left (the left wall), and the mirrored vertex sits at w - ax. No ox/oy on iso art.
+// Anything without iso art (or straddling the corner) stays a billboard.
+function isoArt(id) { const s = (window.SPRITES || {})["iso_" + id]; return s && s.iso && s.w && hasSprite("iso_" + id) ? s : null; }
+function tileSouth(i, j) { const c = isoTileCenter(i, j); return { x: c.x, y: c.y + 8 }; }
+function isoOrigin(s, S, flip) { return { x: S.x - (flip ? s.w - s.iso.ax : s.iso.ax), y: S.y - s.iso.ay }; }
+// iso art of `id` standing on lane columns x..x+w-1, anchored on the nearest (lowest) of them: right
+// wall unflipped, left wall mirrored; a 1-wide item honours its own flip. null -> billboard.
+// d: painter's key = the ground line of its BACK-most tile (not the billboard's mean): a long block
+// hugging the wall is behind anything standing a row in front of any of its tiles; along one wall
+// the order of lane items is unchanged.
+function isoSpan(id, x, w, flip) {
+  const s = isoArt(id);
+  if (!s || (x <= ISO.CORNER && x + w - 1 > ISO.CORNER)) return null;
+  const right = x > ISO.CORNER, f = w === 1 ? !!flip : !right;
+  const [i, j] = colTile(right ? x + w - 1 : x), o = isoOrigin(s, tileSouth(i, j), f);
+  return { id: "iso_" + id, flip: f, x: o.x, y: o.y, w: s.w, h: s.h, d: footY(right ? x : x + w - 1, 1) };
+}
+function isoFloor(it, x, flip) { return it && it.zone === "floor" ? isoSpan(it.id, x, it.w, flip) : null; }
+// a floor item at column p.x: its iso art when it has some, else the billboard (same frame either way)
+function drawFloorItem(p, it, c = g) {
+  const a = isoFloor(it, p.x, p.flip);
+  if (a && sprite(c, a.id, frame10, a.x, a.y, { ...FX, flip: a.flip })) return;
+  const pw = it.w * CELL, ph = it.h * CELL;
+  drawItem(p, it, colLeft(p.x), footY(p.x, it.w) - ph, pw, ph, c);
+}
+function drawBurrow() {
+  const [ba, bb] = ROOM.RESERVED.burrow, a = isoSpan("burrow", ba, bb - ba + 1, false);
+  if (a && sprite(g, a.id, frame10, a.x, a.y, { flip: a.flip })) return;
+  if (!sprite(g, "burrow", frame10, IBURROW.x, IBURROW.y, {})) g.drawImage(burrowCanvas(), IBURROW.x, IBURROW.y);
+}
+
 // Billboards: every front-facing sprite stands bottom-centre on its tiles. Painter's order is the
 // ground line (screen y of the feet = iso depth i + j), then x. Contact shadows go down first.
+// Iso art stands on the same tiles and sorts by the same ground line.
 const SHADOW = () => diamondCanvas("rgba(0,0,0,.2)", null, null, 0.72);
 function drawStanding(me) {
   const list = [];
   const shadowCols = (x, w) => { for (let c = x; c < x + w; c++) { const [i, j] = colTile(c); drawTileOverlay(g, i, j, SHADOW()); } };
   for (const [p, it] of itemsIn("floor")) {
-    const pw = it.w * CELL, ph = it.h * CELL, x = colLeft(p.x), fy = footY(p.x, it.w);
     shadowCols(p.x, it.w);
-    list.push({ d: fy, x, draw: () => drawItem(p, it, x, fy - ph, pw, ph) });
+    const a = isoFloor(it, p.x, p.flip);
+    list.push({ d: a ? a.d : footY(p.x, it.w), x: colLeft(p.x), draw: () => drawFloorItem(p, it) });
   }
-  list.push({ d: IBURROW.foot, x: IBURROW.x, draw: () => { if (!sprite(g, "burrow", frame10, IBURROW.x, IBURROW.y, {})) g.drawImage(burrowCanvas(), IBURROW.x, IBURROW.y); } });
+  const [ba, bb] = ROOM.RESERVED.burrow, ab = isoSpan("burrow", ba, bb - ba + 1, false);
+  list.push({ d: ab ? ab.d : IBURROW.foot, x: IBURROW.x, draw: drawBurrow });
   const tier = (me && me.wheelTier) | 0, [wa, wb] = ROOM.RESERVED.wheel;
   shadowCols(wa + 1, Math.max(1, wb - wa - 1));
   const m = ham.mode === "move" ? ham.move : null;
@@ -1067,7 +1121,7 @@ function drawStanding(me) {
   drawTileOverlay(g, BED_TILE[0], BED_TILE[1], SHADOW());
   list.push({ d: b.foot, x: b.x, draw: () => {
     if (!sprite(g, b.id, frame10, b.x, b.y, {})) g.drawImage(placeholderItem({ id: b.id, name: "bed" }, b.w, b.h), b.x, b.y);
-    if (hamInBed) { drawHamster(); if (ham.mode === "sleep") sprite(g, `${b.id}_front`, frame10, b.x, b.y, {}); }
+    if (hamInBed) { drawHamster(); if (ham.mode === "sleep") sprite(g, `${b.id}_front`, frame10, b.x, b.y, {}); } // iso: iso_bed_tN_front, same origin
   } });
   if (!hamInWheel && !hamInBed) {
     g.fillStyle = "rgba(0,0,0,.2)"; g.fillRect(Math.round(ham.x) - 6, Math.round(ham.gy) - 1, 12, 2); // his own little shadow
@@ -1112,6 +1166,94 @@ function drawFx() {
   }
 }
 
+// ---------- earn popups: "+N W" floats at the income source, "-N W" when someone raids me ----------
+// Earned = growth of me.lifetimeWatts, which the server only moves through creditWatts() (wheel blocks
+// and bed time). Purchases and raid transfers move me.watts alone, so they can never pop here; raids
+// keep their own fx (sparks/embers/flash, the raid result card). A high-water mark makes it monotonic,
+// so an out-of-order response (a stale poll landing after a buy reply) can't pop the same watts twice.
+// Pool: POP_N fixed slots, each with its own small canvas, text rasterised once per spawn (3x5 FONT,
+// 1px OUTLINE ring); the frame loop only blits, so nothing allocates at 60 fps.
+const POP_N = 6, POP_CW = 84, POP_CH = 14;
+const pops = Array.from({ length: POP_N }, () => ({ on: false, c: null, w: 0, h: 0, x: 0, y: 0, t: 0, life: 0, rise: 0, kind: "", n: 0 }));
+const earnMark = { pid: null, hw: -1, poll: false };
+// compact amounts: the 3x5 font has no comma ("12.3K", "1.2M")
+function popAmt(n) {
+  n = Math.max(0, Math.round(n));
+  if (n < 10_000) return String(n);
+  const [d, s] = n < 1e6 ? [1e3, "K"] : [1e6, "M"], v = n / d;
+  return (v < 100 ? v.toFixed(1).replace(/\.0$/, "") : String(Math.floor(v))) + s;
+}
+function rasterPop(p, str, color, sc) {
+  if (!p.c) { p.c = document.createElement("canvas"); p.c.width = POP_CW; p.c.height = POP_CH; }
+  const c = p.c.getContext("2d");
+  c.clearRect(0, 0, POP_CW, POP_CH);
+  p.w = Math.min(POP_CW, (str.length * 4 - 1) * sc + 2); p.h = 5 * sc + 2;
+  for (let pass = 0; pass < 2; pass++) { // 0: outline ring, 1: fill
+    c.fillStyle = pass ? color : OUTLINE;
+    let cx = 1;
+    for (const ch of str) {
+      const gl = FONT[ch] || FONT["?"];
+      for (let r = 0; r < 5; r++) for (let b = 0; b < 3; b++) {
+        if (!(gl[r] & (4 >> b))) continue;
+        const x = cx + b * sc, y = 1 + r * sc;
+        if (pass) c.fillRect(x, y, sc, sc); else c.fillRect(x - 1, y - 1, sc + 2, sc + 2);
+      }
+      cx += 4 * sc;
+    }
+  }
+}
+// kind: "earn" (yellow, at the wheel or bed), "pip" (bare "+" trickle while he sleeps), "hit" (red, top centre)
+function spawnPop(kind, n = 0) {
+  let p = null;
+  for (const q of pops) if (q.on && q.kind === kind && kind !== "pip" && q.t < 250) { p = q; n += q.n; break; } // same poll burst: one popup
+  if (!p) for (const q of pops) if (!q.on) { p = q; break; }
+  if (!p) { p = pops[0]; for (const q of pops) if (q.t > p.t) p = q; } // all busy: recycle the oldest
+  const asleep = S.idle;
+  let x, y, str, color = "#ffd166", sc = 1, rise = 18, life = 1200;
+  if (kind === "hit") {
+    str = `-${popAmt(n)} W`; color = "#ff5a5a"; sc = 2; x = LW / 2; y = 26; rise = 14; life = 1600;
+  } else {
+    const at = asleep ? SPOT.bed : SPOT.wheel;
+    x = at.x + (asleep ? -8 : 0); // left of the bed: the sleep Zs drift off to the right
+    y = asleep ? at.y - 30 : IWHEEL.cy - 6;
+    if (kind === "pip") { str = "+"; rise = 10; life = 900; }
+    else { str = `+${popAmt(n)} W`; sc = n >= 100 ? 2 : 1; } // big wheel paydays read bigger
+  }
+  if (!p.on || p.kind !== kind || p.t >= 250) { p.x = x; p.y = y; p.t = 0; } // a merged burst keeps flying from where it is
+  p.on = true; p.kind = kind; p.n = n; p.rise = rise; p.life = life;
+  rasterPop(p, str, color, sc);
+}
+// called from applyMe on every server copy of `me`
+function noteEarn(me, prev, first) {
+  const pid = me.publicId || null, lw = Number(me.lifetimeWatts) || 0;
+  if (first || !prev || pid !== earnMark.pid || earnMark.hw < 0) { earnMark.pid = pid; earnMark.hw = lw; return; } // first sight / other room: baseline
+  if (lw <= earnMark.hw) return;
+  const d = lw - earnMark.hw;
+  earnMark.hw = lw;
+  earnMark.poll = true;
+  spawnPop("earn", d); // whole watts from the server, so a 1 W bed trickle still shows "+1 W"
+}
+// a poll that saw no new watts while the bed is paying (it carries fractions server-side): a bare "+"
+function noteTrickle() {
+  if (!earnMark.poll && S.idle && S.me && (S.me.bedWattsPerMin || 0) > 0) spawnPop("pip");
+  earnMark.poll = false;
+}
+function stepPops(dt) {
+  for (const p of pops) if (p.on && (p.t += dt) >= p.life) p.on = false;
+}
+function drawPops() {
+  for (const p of pops) {
+    if (!p.on) continue;
+    const k = p.t / p.life, e = 1 - (1 - k) * (1 - k) * (1 - k);
+    const a = k < 0.08 ? k / 0.08 : k > 0.6 ? (1 - k) / 0.4 : 1;
+    const pop = k < 0.12 ? Math.round(2 * (1 - k / 0.12)) : 0; // springs up from 2px low
+    const x = clamp(Math.round(p.x - p.w / 2), 1, LW - p.w - 1), y = Math.max(1, Math.round(p.y - p.h + pop - p.rise * e));
+    g.globalAlpha = clamp(a, 0, 1) * (p.kind === "pip" ? 0.85 : 1);
+    g.drawImage(p.c, 0, 0, p.w, p.h, x, y, p.w, p.h);
+  }
+  g.globalAlpha = 1;
+}
+
 // ---------- main loop: one rAF, fixed steps (60 fps easing/fx, 10 fps sprite frames) ----------
 const STEP = 1000 / 60, STEP10 = 100;
 let last = performance.now(), acc = 0, acc10 = 0, hudClock = 0;
@@ -1151,11 +1293,11 @@ function reservedCols() {
   for (const [name, [a, b]] of Object.entries(ROOM.RESERVED || {})) for (let c = a; c <= b; c++) m.set(c, name);
   return m;
 }
-// Where an item at server cell (x, y) shows on screen (iso logical pixels). Floor: its billboard
-// box. Rug: the bounding box of its two lanes. Wall: the bounding box of the folded rect (wallRect
-// is the same rect in flat strip coordinates).
+// Where an item at server cell (x, y) shows on screen (iso logical pixels). Floor: its iso sprite's
+// box (flip only matters for 1-wide iso art), else its billboard box. Rug: the bounding box of its
+// two lanes. Wall: the bounding box of the folded rect (wallRect is the same rect in flat strip coordinates).
 const wallRect = (it, x, y) => ({ x: colLeft(x), y: wallRowY(y), w: it.w * CELL, h: it.h * CELL });
-function isoRect(it, x, y) {
+function isoRect(it, x, y, flip = false) {
   if (it.zone === "wall") {
     const f = wallRect(it, x, y);
     let top = Infinity, bot = -Infinity;
@@ -1163,6 +1305,8 @@ function isoRect(it, x, y) {
     return { x: f.x, y: top, w: f.w, h: bot - top };
   }
   if (it.zone === "rug") return laneBox(x, it.w);
+  const a = isoFloor(it, x, flip);
+  if (a) return { x: a.x, y: a.y, w: a.w, h: a.h };
   const ph = it.h * CELL;
   return { x: colLeft(x), y: footY(x, it.w) - ph, w: it.w * CELL, h: ph };
 }
@@ -1280,7 +1424,7 @@ function hitTest(L) {
   const inside = (f, x, y) => x >= f.x && x < f.x + f.w && y >= f.y && y < f.y + f.h;
   const sy = L.y - stripTop(clamp(Math.floor(L.x), WALL_X0, WALL_X1 - 1)); // the pointer on the unfolded wall
   for (const [p, it] of list) {
-    if (it.zone === "rug" ? rugHit(p, it, L) : it.zone === "wall" ? inside(wallRect(it, p.x, p.y), L.x, sy) : inside(isoRect(it, p.x, p.y), L.x, L.y)) return p;
+    if (it.zone === "rug" ? rugHit(p, it, L) : it.zone === "wall" ? inside(wallRect(it, p.x, p.y), L.x, sy) : inside(isoRect(it, p.x, p.y, p.flip), L.x, L.y)) return p;
   }
   return null;
 }
@@ -1347,7 +1491,7 @@ function positionTool() {
   if (!it) { el.hidden = true; return; }
   $("toolName").textContent = it.name;
   el.hidden = false;
-  const f = isoRect(it, p.x, p.y), cr = view.getBoundingClientRect(), sr = stage.getBoundingClientRect(), k = cr.width / LW;
+  const f = isoRect(it, p.x, p.y, p.flip), cr = view.getBoundingClientRect(), sr = stage.getBoundingClientRect(), k = cr.width / LW;
   const tw = el.offsetWidth, th = el.offsetHeight;
   let left = cr.left - sr.left + (f.x + f.w / 2) * k, top = cr.top - sr.top + f.y * k - 6;
   if (top - th < 4) top = cr.top - sr.top + (f.y + f.h) * k + th + 6; // no room above: hang it below
@@ -1470,7 +1614,7 @@ function drawPlacement() {
         for (const [i, j] of laneTiles(P.cell.x, it.w, it.zone === "rug" ? RUG_DEPTH : 1)) drawTileOverlay(g, i, j, ok ? OV.ok() : OV.bad());
         g.globalAlpha = 0.8;
         if (it.zone === "rug") { const r = rugProjection({ x: P.cell.x, flip: P.flip }, it); g.drawImage(r.canvas, r.x, r.y); }
-        else { const f = isoRect(it, P.cell.x, P.cell.y); drawItem({ flip: P.flip }, it, f.x, f.y, f.w, f.h); g.globalAlpha = 1; ring(f, col); }
+        else { const f = isoRect(it, P.cell.x, P.cell.y, P.flip); drawFloorItem({ x: P.cell.x, flip: P.flip }, it); g.globalAlpha = 1; ring(f, col); } // what you see is what lands
         g.globalAlpha = 1;
       }
     }
@@ -1480,7 +1624,7 @@ function drawPlacement() {
     if (it && it.zone === "wall") { const f = wallRect(it, p.x, p.y); foldLayer((s) => ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now, s), f.x - 1, f.x + f.w + 1); }
     else if (it) {
       for (const [i, j] of laneTiles(p.x, it.w, it.zone === "rug" ? RUG_DEPTH : 1)) drawTileOverlay(g, i, j, OV.sel());
-      if (it.zone === "floor") { const f = isoRect(it, p.x, p.y); ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now); }
+      if (it.zone === "floor") { const f = isoRect(it, p.x, p.y, p.flip); ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now); }
     }
   }
 }
@@ -2590,6 +2734,7 @@ function raidedMe(e) {
   for (const id of ["feed", "stage"]) { const n = $(id); n.classList.remove("hit"); void n.offsetWidth; n.classList.add("hit"); setTimeout(() => n.classList.remove("hit"), 1600); }
   if (w) { const m = $("meter"); m.classList.remove("poor"); void m.offsetWidth; m.classList.add("poor"); setTimeout(() => m.classList.remove("poor"), 900); }
   raidFx("hit");
+  if (w && e.amount > 0) spawnPop("hit", e.amount); // the flash and embers carry no number: say what it cost
   if (FEED.collapsed) { FEED.collapsed = false; FEED.sig = ""; } // open it for this one (not remembered)
   if (LB.open) loadLb();
 }
@@ -2647,9 +2792,9 @@ function renderFeed() {
 }
 
 // debug handle for the browser console / verification
-window.__squeekroom = { S, ham, wheel, sparks, meter, liveStatus, tintAt, P, checkSpot, enterPlace, select,
+window.__squeekroom = { S, ham, wheel, sparks, meter, pops, spawnPop, liveStatus, tintAt, P, checkSpot, enterPlace, select,
   raid: { LB, RU, FEED, raidP, raidStakeBounds, lootRange, openLb, closeLb, openRaid, closeRaid, loadLb, raidFx, applyFeed },
-  get iso() { return { ISO, LW, LH, SPOT, IWHEEL, IBURROW, BED_TILE, colTile, colLeft, footY, tileToCol, screenToTile, wallBase, toFlat, isoRect, bedGeom, laneAt }; },
+  get iso() { return { ISO, LW, LH, SPOT, IWHEEL, IBURROW, BED_TILE, colTile, colLeft, footY, tileToCol, screenToTile, wallBase, toFlat, isoRect, bedGeom, laneAt, isoSpan, isoFloor }; },
   get selPid() { return selPid; }, get FX() { return FX; },
   renderNow() { const st = liveStatus(); tick10(); render(st); }, // paints one frame even when rAF is paused (hidden tab)
   renderCert, openCert, closeCert, certLeftWords, get cert() { return certUi.cert; } };
