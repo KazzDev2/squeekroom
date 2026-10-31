@@ -2,6 +2,8 @@
 // every settled Squeek block generates watts for EVERY player, online or not (true idle), and while
 // he sleeps (no settled block for a while) every room earns a slower trickle from its bed.
 // Watts buy cosmetics; wheel and bed upgrades are the only items that raise generation.
+// While he runs, players may raid richer rooms (POST /api/raid): a won raid moves watts, a lost
+// stake is burned. GET /api/leaderboard lists every room by balance.
 // Zero dependencies. Node 18+ (uses global fetch).
 //
 //   node server.js            live mode: settled height from SqueekCore.state() on Sepolia
@@ -50,6 +52,34 @@ const BALANCE = {
   BED_RATE_PER_MIN: 1.5, // tier 0 (must be a multiple of 0.1: the math runs in tenths of a watt)
   BED_MULT_PCT: [100, 125, 160, 200, 260, 350], // bedTier 0..5
   BED_TICK_MAX_MS: 60_000, // one poller tick credits at most this much time (no catch-up after downtime)
+  // Raids: wager a stake on a multiplier against a richer room while he RUNS. Win chance
+  // p = clamp((EDGE / M) x (1 - defense) x tilt, P_MIN, P_MAX), so attacker EV = S x (p x M - 1)
+  // does not depend on M (the multiplier only dials variance). A loss burns the stake (nobody gets it).
+  RAID: {
+    EDGE_PCT: 110,
+    MULT_PCT: [150, 200, 300, 500, 1000], // M = 1.5, 2, 3, 5, 10 ("Heist")
+    DEFENSE_PCT: [0, 5, 10, 15, 20, 25], // by the DEFENDER's roomTier 0..5
+    TILT_EXP: 0.25, // tilt = (defenderWatts / attackerWatts) ^ TILT_EXP, clamped below
+    TILT_MIN_PCT: 75,
+    TILT_MAX_PCT: 150,
+    P_MIN_PCT: 2,
+    P_MAX_PCT: 90,
+    LOOT_U_MIN_PCT: 75, // win: loot = (M - 1) x stake x U, U uniform in [0.75, 1.25], <= defender balance
+    LOOT_U_MAX_PCT: 125,
+    CRIT_CHANCE_PCT: 5,
+    CRIT_MULT_PCT: 150,
+    STAKE_MIN: 50,
+    STAKE_MAX: 5000,
+    STAKE_MAX_BALANCE_PCT: 20, // stake <= floor(20% of the attacker's balance)
+    ELIGIBLE_MIN_PCT: 70, // targets must hold >= 70% of the attacker's balance (punch-up only)...
+    REVENGE_WINDOW_MS: 86_400_000, // ...unless they raided the attacker within 24 h (once per provocation)
+    RAIDED_BY_MAX: 20,
+    COOLDOWN_MS: 1_800_000, // per attacker
+    FEED_MAX: 50,
+    FEED_SNAPSHOT: 20,
+    LEADERBOARD_MAX: 200,
+    LEADERBOARD_CACHE_MS: 10_000,
+  },
 };
 
 // ---------- room grid ----------
@@ -173,6 +203,8 @@ function newPlayer(height, now = Date.now(), token = null) {
     activeDays: 0,
     lastActiveDay: null,
     commemorative: null,
+    lastRaidAt: 0, // ms of this player's last resolved raid (attacker cooldown)
+    raidedBy: [], // ring of {pid, at, avenged}: who raided this room (revenge waives the 70% rule once)
   };
 }
 // Bring an older player record up to the current shape (missing fields get their defaults).
@@ -182,6 +214,8 @@ function patchPlayer(p, token) {
   if (!Number.isInteger(p.bedTier)) p.bedTier = 0;
   if (!Number.isFinite(p.bedFrac)) p.bedFrac = 0;
   if (!Number.isInteger(p.roomTier)) p.roomTier = 0;
+  if (!Number.isFinite(p.lastRaidAt)) p.lastRaidAt = 0;
+  if (!Array.isArray(p.raidedBy)) p.raidedBy = [];
   for (const k of LEGACY_FIELDS) delete p[k];
   return p;
 }
@@ -377,6 +411,176 @@ function claimCommemorative(st, token, now = Date.now()) {
   return { ok: true, already: false, cert: p.commemorative };
 }
 
+// ---------- raids ----------
+// Pure core first (explicit args, injectable rng), then applyRaid() which validates and mutates one
+// state object. Raid transfers never touch lifetimeWatts/activeDays: lifetime is earn-only (it
+// gates the certificate), so loot is moved on the balances directly, never through creditWatts().
+const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+// tilt = clamp((defenderWatts / attackerWatts) ^ 0.25, 0.75, 1.5): punching up pays better.
+function wealthTilt(attackerWatts, defenderWatts) {
+  const R = BALANCE.RAID;
+  const ratio = defenderWatts / attackerWatts;
+  const t = Number.isNaN(ratio) ? 1 : Math.pow(ratio, R.TILT_EXP); // 0/0 -> neutral; x/0 -> Infinity -> max
+  return clamp(t, R.TILT_MIN_PCT / 100, R.TILT_MAX_PCT / 100);
+}
+const raidDefensePct = (defender) => BALANCE.RAID.DEFENSE_PCT[defender.roomTier | 0] ?? BALANCE.RAID.DEFENSE_PCT[0];
+// p = clamp((1.10 / M) x (1 - d) x T, 0.02, 0.90), with M given as a percentage (150 = 1.5x).
+function raidOdds(multPct, defensePct, tilt) {
+  const R = BALANCE.RAID;
+  const p = (R.EDGE_PCT / multPct) * (1 - defensePct / 100) * tilt;
+  return clamp(p, R.P_MIN_PCT / 100, R.P_MAX_PCT / 100);
+}
+function raidChance(attacker, defender, multPct) {
+  if (!BALANCE.RAID.MULT_PCT.includes(multPct)) return 0;
+  return raidOdds(multPct, raidDefensePct(defender), wealthTilt(attacker.watts, defender.watts));
+}
+// One resolution, rolls in a fixed order: win, then loot U, then crit (a loss uses one roll).
+// Pure: returns the outcome, mutates nothing.
+function resolveRaid(attacker, defender, stake, multPct, rng = Math.random) {
+  const R = BALANCE.RAID;
+  const p = raidChance(attacker, defender, multPct);
+  if (!(rng() < p)) return { win: false, p, stakeLost: stake };
+  const uPct = R.LOOT_U_MIN_PCT + (R.LOOT_U_MAX_PCT - R.LOOT_U_MIN_PCT) * rng();
+  const cap = Math.max(0, defender.watts);
+  let loot = Math.min(Math.floor(((multPct - 100) * stake * uPct) / 10_000), cap);
+  const crit = rng() < R.CRIT_CHANCE_PCT / 100;
+  if (crit) loot = Math.min(Math.floor((loot * R.CRIT_MULT_PCT) / 100), cap);
+  return { win: true, p, loot: Math.max(0, loot), crit };
+}
+// Stake bounds for a balance: [50, min(floor(20% of balance), 5000)] (max < min: can't raid).
+function stakeBounds(watts) {
+  const R = BALANCE.RAID;
+  return { min: R.STAKE_MIN, max: Math.min(Math.floor((Math.max(0, watts) * R.STAKE_MAX_BALANCE_PCT) / 100), R.STAKE_MAX) };
+}
+// The multiplier as shown (1.5, 2, 3, 5, 10) or as its percentage (150 .. 1000). null if neither.
+function parseMultPct(v) {
+  if (typeof v !== "number" || !Number.isFinite(v)) return null;
+  const L = BALANCE.RAID.MULT_PCT;
+  if (L.includes(v)) return v;
+  const pct = Math.round(v * 100);
+  return L.includes(pct) && Math.abs(v * 100 - pct) < 1e-9 ? pct : null;
+}
+const raidCooldownLeft = (p, now) => (p.lastRaidAt > 0 ? clamp(p.lastRaidAt + BALANCE.RAID.COOLDOWN_MS - now, 0, BALANCE.RAID.COOLDOWN_MS) : 0);
+// The oldest unavenged provocation by `pid` against `player` within the revenge window, or null.
+function pendingRevenge(player, pid, now) {
+  const list = Array.isArray(player.raidedBy) ? player.raidedBy : [];
+  return list.find((e) => e && e.pid === pid && !e.avenged && now >= e.at && now - e.at < BALANCE.RAID.REVENGE_WINDOW_MS) || null;
+}
+// Punch-up rule (target holds >= 70% of the attacker's balance) or a pending revenge.
+function raidEligibility(attacker, defender, now) {
+  if (attacker === defender || (attacker.publicId && attacker.publicId === defender.publicId)) return { ok: false, error: "self_target" };
+  if (defender.watts * 100 >= attacker.watts * BALANCE.RAID.ELIGIBLE_MIN_PCT) return { ok: true, revenge: null };
+  const revenge = pendingRevenge(attacker, defender.publicId, now);
+  return revenge ? { ok: true, revenge } : { ok: false, error: "not_eligible" };
+}
+// Raids are open only while he RUNS: height observed, chain reading fresh (live mode), not asleep.
+function raidWindow(lastAdvanceAt, now = Date.now(), chainReadAt = null) {
+  if (!Number.isFinite(lastAdvanceAt) || lastAdvanceAt <= 0) return { open: false, reason: "chain_unknown" };
+  if (chainReadAt != null && !(now - chainReadAt <= CHAIN_FRESH_MS)) return { open: false, reason: "chain_stale" };
+  if (chainIdle(lastAdvanceAt, now, chainReadAt)) return { open: false, reason: "hamster_asleep" };
+  return { open: true, reason: null };
+}
+function raidStatus(st, player, now = Date.now(), chainReadAt = null) {
+  return { open: raidWindow(st.lastAdvanceAt, now, chainReadAt).open, cooldownMsLeft: raidCooldownLeft(player, now) };
+}
+
+// publicId -> token index per state object (built lazily, extended on player creation; a miss
+// rebuilds only when the player count says the index is behind).
+const PID_INDEX = new WeakMap();
+function buildPidIndex(st) {
+  const m = new Map();
+  for (const [t, p] of Object.entries(st.players)) if (p && p.publicId) m.set(p.publicId, t);
+  PID_INDEX.set(st, m);
+  return m;
+}
+function indexPlayer(st, token, p) {
+  const m = PID_INDEX.get(st);
+  if (m && p && p.publicId) m.set(p.publicId, token);
+}
+function tokenForPublicId(st, pid) {
+  if (typeof pid !== "string" || !pid || pid.length > 64) return null;
+  let m = PID_INDEX.get(st) || buildPidIndex(st);
+  let t = m.get(pid);
+  if (t === undefined && m.size !== Object.keys(st.players).length) t = buildPidIndex(st).get(pid);
+  return t !== undefined && Object.hasOwn(st.players, t) && st.players[t] && st.players[t].publicId === pid ? t : null;
+}
+
+const LB_CACHE = new WeakMap(); // state -> { at, rows, total }
+const invalidateLeaderboard = (st) => LB_CACHE.delete(st);
+const pushRing = (arr, entry, max) => {
+  arr.push(entry);
+  if (arr.length > max) arr.splice(0, arr.length - max);
+};
+
+// Validate and resolve one raid by the player behind `token` on body {target (publicId), stake, mult}.
+// Order: window -> cooldown -> target -> eligibility/revenge -> multiplier -> stake. Mutates st only
+// on success. opts.chainReadAt: live-mode freshness (null in demo); opts.rng: injectable for tests.
+function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng = Math.random } = {}) {
+  const R = BALANCE.RAID;
+  const atk = getPlayer(st, token);
+  if (!atk) return fail("unknown_player");
+  const w = raidWindow(st.lastAdvanceAt, now, chainReadAt);
+  if (!w.open) return fail(w.reason);
+  const left = raidCooldownLeft(atk, now);
+  if (left > 0) return { ok: false, error: "cooldown", cooldownMsLeft: left };
+  const b = body && typeof body === "object" ? body : {};
+  const defToken = tokenForPublicId(st, b.target);
+  if (!defToken) return fail("bad_target");
+  const def = st.players[defToken];
+  const el = raidEligibility(atk, def, now);
+  if (!el.ok) return fail(el.error);
+  const multPct = parseMultPct(b.mult);
+  if (multPct == null) return fail("bad_mult");
+  const { min, max } = stakeBounds(atk.watts);
+  if (!Number.isInteger(b.stake)) return { ok: false, error: "bad_stake", min, max };
+  if (b.stake < min || b.stake > max) return { ok: false, error: "stake_out_of_range", min, max };
+  const stake = b.stake;
+
+  const r = resolveRaid(atk, def, stake, multPct, rng);
+  if (r.win) {
+    def.watts -= r.loot;
+    atk.watts += r.loot;
+  } else {
+    atk.watts -= stake;
+    st.burned = (Number.isFinite(st.burned) ? st.burned : 0) + stake;
+  }
+  atk.lastRaidAt = now;
+  if (el.revenge) el.revenge.avenged = true; // the 70% waiver was used: this provocation is spent
+  if (!Array.isArray(def.raidedBy)) def.raidedBy = [];
+  def.raidedBy = def.raidedBy.filter((e) => e && now - e.at < R.REVENGE_WINDOW_MS);
+  pushRing(def.raidedBy, { pid: atk.publicId, at: now, avenged: false }, R.RAIDED_BY_MAX);
+  const feed = { at: now, atk: atk.nick, atkId: atk.publicId, def: def.nick, defId: def.publicId, win: r.win, amount: r.win ? r.loot : stake, crit: r.win ? r.crit : false };
+  if (!Array.isArray(st.raidFeed)) st.raidFeed = [];
+  pushRing(st.raidFeed, feed, R.FEED_MAX);
+  invalidateLeaderboard(st);
+  return { ok: true, result: { ...r, stake, multPct, revenge: !!el.revenge }, feed, attacker: atk, defender: def };
+}
+
+// Every player by current balance (top LEADERBOARD_MAX), projected once per LEADERBOARD_CACHE_MS
+// (a raid invalidates it). Per-viewer flags are added on top of the cached rows.
+function leaderboardRows(st, now) {
+  const R = BALANCE.RAID;
+  const c = LB_CACHE.get(st);
+  if (c && now >= c.at && now - c.at < R.LEADERBOARD_CACHE_MS) return c;
+  const all = Object.values(st.players).filter((p) => p && p.publicId);
+  all.sort((a, b) => b.watts - a.watts || b.lifetimeWatts - a.lifetimeWatts || (a.publicId < b.publicId ? -1 : a.publicId > b.publicId ? 1 : 0));
+  const rows = all.slice(0, R.LEADERBOARD_MAX).map((p, i) => ({ rank: i + 1, publicId: p.publicId, nick: p.nick, watts: p.watts, lifetimeWatts: p.lifetimeWatts, roomTier: p.roomTier | 0 }));
+  const out = { at: now, rows, total: all.length };
+  LB_CACHE.set(st, out);
+  return out;
+}
+function leaderboard(st, token, now = Date.now(), { chainReadAt = null } = {}) {
+  const viewer = getPlayer(st, token);
+  const c = leaderboardRows(st, now);
+  const rows = c.rows.map((r) => {
+    const you = !!viewer && r.publicId === viewer.publicId;
+    const revenge = !!viewer && !you && pendingRevenge(viewer, r.publicId, now) != null;
+    const raidable = !!viewer && !you && (r.watts * 100 >= viewer.watts * BALANCE.RAID.ELIGIBLE_MIN_PCT || revenge);
+    return { ...r, raidable, revenge, you };
+  });
+  return { rows, total: c.total, cachedAt: c.at, raid: viewer ? raidStatus(st, viewer, now, chainReadAt) : null };
+}
+
 // ---------- state ----------
 let state = {
   startHeight: null, // chain block height when the room server was born
@@ -390,6 +594,8 @@ let state = {
   apiError: null,
   born: null,
   certSerial: 0,
+  burned: 0, // watts destroyed by lost raid stakes (supply accounting)
+  raidFeed: [], // last BALANCE.RAID.FEED_MAX raids, oldest first
   players: {},
 };
 
@@ -400,6 +606,8 @@ function patchState(st, now = Date.now()) {
   // a state file without a sleep clock: assume the chain just moved (he counts as asleep 10 min later)
   if (!Number.isFinite(st.lastAdvanceAt) && st.height != null) st.lastAdvanceAt = now;
   st.lastBedTickAt = null; // bed income never pays for the time the server was down
+  if (!Number.isFinite(st.burned)) st.burned = 0;
+  if (!Array.isArray(st.raidFeed)) st.raidFeed = [];
   for (const [token, p] of Object.entries(st.players)) if (p && typeof p === "object") patchPlayer(p, token);
   return st;
 }
@@ -652,6 +860,7 @@ function snapshot(token) {
       if (playerCount >= MAX_PLAYERS) meError = "server_full";
       else {
         p = state.players[token] = newPlayer(state.height, now, token);
+        indexPlayer(state, token, p);
         playerCount++;
       }
     }
@@ -661,6 +870,8 @@ function snapshot(token) {
       save();
     }
   } else if (token) meError = "bad_token";
+  const readAt = chainReadAt();
+  const viewer = me ? getPlayer(state, token) : null;
   // Dynamic data only (polled every few seconds); the static rules live in configPayload().
   return {
     startHeight: state.startHeight,
@@ -670,7 +881,10 @@ function snapshot(token) {
     night: night ? { startedAt: night.startedAt, endsAt: night.endsAt } : null,
     chain: state.chain || null,
     hamster: state.hamster,
-    idle: chainIdle(state.lastAdvanceAt, now, chainReadAt()), // asleep by the chain: bed income is flowing
+    idle: chainIdle(state.lastAdvanceAt, now, readAt), // asleep by the chain: bed income is flowing
+    raid: viewer ? raidStatus(state, viewer, now, readAt) : null, // this viewer's raid window + cooldown
+    raidFeed: (Array.isArray(state.raidFeed) ? state.raidFeed : []).slice(-BALANCE.RAID.FEED_SNAPSHOT), // oldest first
+    burned: state.burned || 0,
     lastError: state.lastError,
     apiError: state.apiError || null,
     players: playerCount,
@@ -752,7 +966,18 @@ const POST_ROUTES = {
     if (!r.ok) return err(400, r.error, r);
     return [200, r];
   },
+  // {target: defender publicId, stake: integer watts, mult: 1.5|2|3|5|10 (or 150..1000)}
+  "/api/raid": (b, p, token) => {
+    const r = applyRaid(state, token, b, Date.now(), { chainReadAt: chainReadAt() });
+    if (!r.ok) {
+      const code = RAID_ERR_STATUS[r.error] || 400;
+      const { ok, error, ...extra } = r;
+      return err(code, error, extra);
+    }
+    return okMe(p, { result: r.result, feed: r.feed });
+  },
 };
+const RAID_ERR_STATUS = { hamster_asleep: 409, chain_unknown: 409, chain_stale: 409, cooldown: 429, bad_target: 404, unknown_player: 404, not_eligible: 403, self_target: 400 };
 const DEV_ROUTES = {
   "/api/dev/advance": (b) => {
     const n = b.n == null ? 1 : b.n;
@@ -795,6 +1020,9 @@ async function handle(req, res) {
       return json(res, 200, snapshot(url.searchParams.get("token")));
     }
     if (url.pathname === "/api/config" && req.method === "GET") return json(res, 200, configPayload());
+    if (url.pathname === "/api/leaderboard" && req.method === "GET") {
+      return json(res, 200, leaderboard(state, url.searchParams.get("token"), Date.now(), { chainReadAt: chainReadAt() }));
+    }
     const devRoute = DEMO ? DEV_ROUTES[url.pathname] : undefined;
     const route = Object.hasOwn(POST_ROUTES, url.pathname) ? POST_ROUTES[url.pathname] : devRoute;
     if (route && req.method === "POST") {
@@ -852,7 +1080,9 @@ function listen() {
 module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible };
 // Extra helpers for tests (the plan's six names above stay the primary surface).
 Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
-  accrueBed, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload });
+  accrueBed, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
+  raidChance, resolveRaid, raidOdds, wealthTilt, stakeBounds, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
+  leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS });
 
 if (require.main === module) {
   load();
