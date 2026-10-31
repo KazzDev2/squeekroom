@@ -6,22 +6,81 @@
 const $ = (id) => document.getElementById(id);
 
 // ---------- room geometry (server ROOM is the source of truth; these are the defaults) ----------
-const LW = 320, LH = 192; // logical canvas: 20 x 12 cells of 16 px
+// The server's model is the flat side view: 20 x 12 cells of 16 px (320 x 192). Floor items take
+// whole columns (1-D), wall items a 2-D cell on rows 2..7, rugs whole columns of their own layer.
+// The live room draws that model through the iso projection below; the certificate portrait
+// (renderPortrait) still paints the flat view, so the FLAT_* geometry stays alongside.
+const FLAT_W = 320, FLAT_H = 192;
 let ROOM = { COLS: 20, ROWS: 12, CELL: 16, FLOOR_ROW: 11, WALL_TOP: 2, WALL_BOTTOM: 7, RESERVED: { wheel: [3, 6], burrow: [16, 18] } };
-let CELL = 16, FLOOR_Y = 176; // furniture bottoms stand on this line; the floor band is below it
-const BASEBOARD = 6; // wall trim height just above the floor line
-let WHEEL = { cx: 80, cy: 150, r: 23, x: 56, y: 126 }; // 48 x 48 box centred on floor cols 3..6
-let BURROW = { cx: 280, x: 256, y: 144, w: 48, h: 32 }; // 48 x 32 mound on floor cols 16..18
-let SPOT = { wheel: { x: 80, y: 170 }, sit: { x: 128, y: 176 }, burrow: { x: 280, y: 176 } };
+let CELL = 16, FLOOR_Y = 176; // flat view: furniture bottoms stand on this line; the floor band is below it
+const BASEBOARD = 6; // flat view: wall trim height just above the floor line
+let FLAT_WHEEL = { cx: 80, cy: 150, r: 23, x: 56, y: 126 }; // 48 x 48 box centred on floor cols 3..6
+let FLAT_BURROW = { cx: 280, x: 256, y: 144, w: 48, h: 32 }; // 48 x 32 mound on floor cols 16..18
+let FLAT_SPOT = { wheel: { x: 80, y: 170 } };
+
+// ---------- iso view (v2): 2:1 dimetric room, a pure client-side projection of the flat model ----------
+// Floor: NI x NJ diamond tiles of 32 x 16. Tile (i, j): i runs down-right along the RIGHT back wall,
+// j runs down-left along the LEFT back wall, (0, 0) is the back corner. Tile centre on screen:
+//   x = X0 + (i - j) * 16,  y = Y0 + (i + j) * 8 + 8
+// Column mapping, the bijection between the server's 20 floor columns and the "lane" tiles lining
+// the two back walls (an L that turns at the corner):
+//   c <= CORNER (9):  tile (0, CORNER - c)     cols 0..9 run up the left wall into the corner
+//   c >  CORNER:      tile (c - CORNER, 0)     cols 10..19 run down the right wall
+// so the floor is 11 x 10 (NI = COLS - CORNER, NJ = CORNER + 1). Column c always lands at screen
+// x = 24 + 16c: the flat room's left-to-right order and 16-px pitch survive (only y bends into the V of
+// the walls), sprite widths still match their column counts, and no multi-column item can split
+// (it just bends round the corner, like a sofa pushed into it).
+// Inverse (picking, placement ghost): screen -> tile (i, j) -> column CORNER + i - j. Any floor tile
+// projects straight back (vertically on screen) onto the lane column in line with it.
+// Lanes off a wall: rugs lie flat 2 tiles deep (lanes 0..1) off their wall; the rest of the floor is
+// open play area, where the hamster rests and his bed stands (BED_TILE, clear of every column).
+// Walls: wall columns share the x pitch (col c spans x 16+16c .. 32+16c); rows 2..7 stack 16 px apart
+// above the floor line. The back wall is painted flat into a strip (LW x WALL_H, same x as the screen)
+// and then folded: pixel column x drops so its bottom sits on wallBase(x), 1 px per 2 px from the
+// corner. Wallpaper, wainscot panels, wall decor and their placement overlays all go through the fold.
+// Room material (me.roomTier) frames the room: wainscot panels + wall cap + end posts, the furniture
+// lanes and the front border ring of floor tiles, and the floor slab. Inside that frame the equipped
+// wallpaper covers the upper walls and the equipped flooring covers the open floor.
+const ISO = { CORNER: 9, NI: 11, NJ: 10, X0: 168, Y0: 102, WALL_H: 100, PAD: 8, SLAB: 5, FOOT: 3 };
+const LW = ISO.PAD * 2 + (ISO.NI + ISO.NJ) * 16; // 352
+const LH = 240; // the floor's front tip (empty floor) runs off the bottom edge: keeps 3x scale on 1080p
+const BED_TILE = [7, 2]; // open floor in front of cols 13..14, two tiles off the right wall, left of the burrow
+let IWHEEL = { cx: 96, cy: 124, r: 23, x: 72, y: 100, foot: 150 }, IBURROW = { cx: 296, x: 272, y: 144, foot: 176 };
+let SPOT = { wheel: { x: 96, y: 144 }, sit: { x: 136, y: 160 }, bed: { x: 248, y: 185 } };
+const isoTileCenter = (i, j) => ({ x: ISO.X0 + (i - j) * 16, y: ISO.Y0 + (i + j) * 8 + 8 });
+const isoTileTop = (i, j) => ({ x: ISO.X0 - 16 + (i - j) * 16, y: ISO.Y0 + (i + j) * 8 }); // 32 x 16 box
+const colTile = (c) => (c <= ISO.CORNER ? [0, ISO.CORNER - c] : [c - ISO.CORNER, 0]);
+const colLeft = (c) => ISO.X0 - 8 + (c - ISO.CORNER) * 16; // = 16 + 16c
+const colFootY = (c) => ISO.Y0 + 8 + 8 * Math.abs(c - ISO.CORNER); // lane tile centre
+// billboard ground line of an item over columns x..x+w-1: the mean of its lane tiles' centres
+function footY(x, w) { let s = 0; for (let c = x; c < x + w; c++) s += colFootY(c); return Math.round(s / w) + ISO.FOOT; }
+function wallBase(x) { return ISO.Y0 + (x >= ISO.X0 ? Math.floor((x - ISO.X0 + 1) / 2) : Math.floor((ISO.X0 - x) / 2)); }
+const WALL_X0 = ISO.X0 - ISO.NJ * 16, WALL_X1 = ISO.X0 + ISO.NI * 16; // [8, 344)
+const wallRowY = (r) => (r - ROOM.WALL_TOP) * 16 + 2; // strip y of a wall row's top
+const stripTop = (x) => wallBase(x) - ISO.WALL_H; // screen y of strip row 0 at column x
+function screenToTile(x, y) { const a = (x - ISO.X0) / 16, b = (y - ISO.Y0) / 8; return [(a + b) / 2, (b - a) / 2]; }
+function tileToCol(i, j) { return clamp(ISO.CORNER + Math.floor(i) - Math.floor(j), 0, ROOM.COLS - 1); }
+// lane space (s along the walls in columns, d tiles out from the wall) -> screen, and back
+function laneToScreen(s, d) {
+  const left = s < ISO.CORNER + 1, i = left ? d : s - ISO.CORNER, j = left ? ISO.CORNER + 1 - s : d;
+  return { x: ISO.X0 + (i - j) * 16, y: ISO.Y0 + (i + j) * 8 };
+}
 function applyRoom(room) {
   if (room && typeof room === "object") ROOM = { ...ROOM, ...room };
   CELL = ROOM.CELL || 16;
   FLOOR_Y = ROOM.FLOOR_ROW * CELL;
   const [wa, wb] = ROOM.RESERVED.wheel, [ba, bb] = ROOM.RESERVED.burrow;
   const wcx = ((wa + wb + 1) * CELL) / 2, bcx = ((ba + bb + 1) * CELL) / 2;
-  WHEEL = { cx: wcx, cy: FLOOR_Y - 26, r: 23, x: wcx - 24, y: FLOOR_Y - 50 };
-  BURROW = { cx: bcx, x: bcx - 24, y: FLOOR_Y - 32, w: 48, h: 32 };
-  SPOT = { wheel: { x: wcx, y: WHEEL.cy + WHEEL.r - 3 }, sit: { x: (wb + 1) * CELL + 16, y: FLOOR_Y }, burrow: { x: bcx, y: FLOOR_Y } };
+  FLAT_WHEEL = { cx: wcx, cy: FLOOR_Y - 26, r: 23, x: wcx - 24, y: FLOOR_Y - 50 };
+  FLAT_BURROW = { cx: bcx, x: bcx - 24, y: FLOOR_Y - 32, w: 48, h: 32 };
+  FLAT_SPOT = { wheel: { x: wcx, y: FLAT_WHEEL.cy + FLAT_WHEEL.r - 3 } };
+  // iso: the wheel and the burrow stand on their reserved lane tiles, front-facing
+  const iwx = colLeft(wa) + ((wb - wa + 1) * 16) / 2, iwf = footY(wa, wb - wa + 1);
+  IWHEEL = { cx: iwx, cy: iwf - 26, r: 23, x: iwx - 24, y: iwf - 50, foot: iwf };
+  const ibx = colLeft(ba) + ((bb - ba + 1) * 16) / 2, ibf = footY(ba, bb - ba + 1);
+  IBURROW = { cx: ibx, x: ibx - 24, y: ibf - 32, foot: ibf };
+  const sit = isoTileCenter(2, ISO.CORNER + 2 - (wb + 1)), bed = isoTileCenter(BED_TILE[0], BED_TILE[1]); // sit: in front of the column right of the wheel
+  SPOT = { wheel: { x: iwx, y: IWHEEL.cy + IWHEEL.r - 3 }, sit: { x: sit.x, y: sit.y + 2 }, bed: { x: bed.x, y: bed.y + ISO.FOOT } };
 }
 applyRoom();
 
@@ -141,68 +200,68 @@ const styleCache = new Map();
 function wallpaperCanvas(id) {
   const key = `wp|${id}|${hasSprite(id) ? "s" : "p"}|${FLOOR_Y}`;
   if (styleCache.has(key)) return styleCache.get(key);
-  const H = WALL_H(), c = canvas(LW, H), g = c.getContext("2d");
+  const H = WALL_H(), c = canvas(FLAT_W, H), g = c.getContext("2d");
   const wallH = H - BASEBOARD;
   if (hasSprite(id)) {
-    for (let y = 0; y < wallH; y += 16) for (let x = 0; x < LW; x += 16) sprite(g, id, 0, x, y, {});
+    for (let y = 0; y < wallH; y += 16) for (let x = 0; x < FLAT_W; x += 16) sprite(g, id, 0, x, y, {});
   } else {
     const rnd = rng(hash(id));
     const pat = {
-      wp_plain() { for (let x = 0; x < LW; x += 8) { g.fillStyle = (x / 8) % 2 ? "#efe3c8" : "#f6ecd6"; g.fillRect(x, 0, 8, wallH); } },
-      wp_polka() { g.fillStyle = "#fde4ee"; g.fillRect(0, 0, LW, wallH); for (let y = 6, row = 0; y < wallH; y += 12, row++) for (let x = (row % 2) * 8 + 4; x < LW; x += 16) fillEllipse(g, x + 0.5, y + 0.5, 2, 2, "#f472b6"); },
+      wp_plain() { for (let x = 0; x < FLAT_W; x += 8) { g.fillStyle = (x / 8) % 2 ? "#efe3c8" : "#f6ecd6"; g.fillRect(x, 0, 8, wallH); } },
+      wp_polka() { g.fillStyle = "#fde4ee"; g.fillRect(0, 0, FLAT_W, wallH); for (let y = 6, row = 0; y < wallH; y += 12, row++) for (let x = (row % 2) * 8 + 4; x < FLAT_W; x += 16) fillEllipse(g, x + 0.5, y + 0.5, 2, 2, "#f472b6"); },
       wp_forest() {
-        g.fillStyle = "#d3ead2"; g.fillRect(0, 0, LW, wallH);
-        g.fillStyle = "#bfe0be"; g.fillRect(0, wallH - 60, LW, 60);
-        for (let x = -6; x < LW; x += 18 + Math.floor(rnd() * 10)) { const h = 30 + Math.floor(rnd() * 34), col = rnd() < 0.5 ? "#22c55e" : "#166534"; for (let k = 0; k < h; k++) { const half = Math.floor((k / h) * 9); g.fillStyle = col; g.fillRect(x + 9 - half, wallH - h + k, half * 2 + 1, 1); } }
+        g.fillStyle = "#d3ead2"; g.fillRect(0, 0, FLAT_W, wallH);
+        g.fillStyle = "#bfe0be"; g.fillRect(0, wallH - 60, FLAT_W, 60);
+        for (let x = -6; x < FLAT_W; x += 18 + Math.floor(rnd() * 10)) { const h = 30 + Math.floor(rnd() * 34), col = rnd() < 0.5 ? "#22c55e" : "#166534"; for (let k = 0; k < h; k++) { const half = Math.floor((k / h) * 9); g.fillStyle = col; g.fillRect(x + 9 - half, wallH - h + k, half * 2 + 1, 1); } }
       },
       wp_circuit() {
-        g.fillStyle = "#0f3b2a"; g.fillRect(0, 0, LW, wallH);
+        g.fillStyle = "#0f3b2a"; g.fillRect(0, 0, FLAT_W, wallH);
         g.fillStyle = "#1c5a40";
-        for (let y = 8; y < wallH; y += 16) g.fillRect(0, y, LW, 1);
-        for (let x = 8; x < LW; x += 16) g.fillRect(x, 0, 1, wallH);
+        for (let y = 8; y < wallH; y += 16) g.fillRect(0, y, FLAT_W, 1);
+        for (let x = 8; x < FLAT_W; x += 16) g.fillRect(x, 0, 1, wallH);
         for (let i = 0; i < 70; i++) { const x = 8 + 16 * Math.floor(rnd() * 20), y = 8 + 16 * Math.floor(rnd() * 11); g.fillStyle = rnd() < 0.5 ? "#22c55e" : "#ffd166"; g.fillRect(x - 1, y - 1, 3, 3); }
       },
       wp_night_sky() {
-        for (let y = 0; y < wallH; y += 4) { g.fillStyle = `rgb(${Math.round(lerp(11, 30, y / wallH))},${Math.round(lerp(22, 58, y / wallH))},${Math.round(lerp(64, 138, y / wallH))})`; g.fillRect(0, y, LW, 4); }
-        for (let i = 0; i < 90; i++) { g.fillStyle = rnd() < 0.2 ? "#ffd166" : "#ffffff"; g.fillRect(Math.floor(rnd() * LW), Math.floor(rnd() * wallH), 1, 1); }
+        for (let y = 0; y < wallH; y += 4) { g.fillStyle = `rgb(${Math.round(lerp(11, 30, y / wallH))},${Math.round(lerp(22, 58, y / wallH))},${Math.round(lerp(64, 138, y / wallH))})`; g.fillRect(0, y, FLAT_W, 4); }
+        for (let i = 0; i < 90; i++) { g.fillStyle = rnd() < 0.2 ? "#ffd166" : "#ffffff"; g.fillRect(Math.floor(rnd() * FLAT_W), Math.floor(rnd() * wallH), 1, 1); }
       },
     }[id];
     if (pat) pat();
-    else { const a = PH_COLORS[hash(id) % PH_COLORS.length]; for (let x = 0; x < LW; x += 8) { g.fillStyle = (x / 8) % 2 ? shade(a, 0.55) : shade(a, 0.7); g.fillRect(x, 0, 8, wallH); } }
+    else { const a = PH_COLORS[hash(id) % PH_COLORS.length]; for (let x = 0; x < FLAT_W; x += 8) { g.fillStyle = (x / 8) % 2 ? shade(a, 0.55) : shade(a, 0.7); g.fillRect(x, 0, 8, wallH); } }
   }
   // crown trim + baseboard (fixed room structure, not part of the swatch)
-  g.fillStyle = "rgba(0,0,0,.12)"; g.fillRect(0, 0, LW, 2);
-  g.fillStyle = "#7c3f1d"; g.fillRect(0, wallH, LW, BASEBOARD);
-  g.fillStyle = "#a35a2a"; g.fillRect(0, wallH, LW, 1);
-  g.fillStyle = "#5a2d14"; g.fillRect(0, H - 1, LW, 1);
+  g.fillStyle = "rgba(0,0,0,.12)"; g.fillRect(0, 0, FLAT_W, 2);
+  g.fillStyle = "#7c3f1d"; g.fillRect(0, wallH, FLAT_W, BASEBOARD);
+  g.fillStyle = "#a35a2a"; g.fillRect(0, wallH, FLAT_W, 1);
+  g.fillStyle = "#5a2d14"; g.fillRect(0, H - 1, FLAT_W, 1);
   styleCache.set(key, c);
   return c;
 }
 function floorCanvas(id) {
   const key = `fl|${id}|${hasSprite(id) ? "s" : "p"}|${FLOOR_Y}`;
   if (styleCache.has(key)) return styleCache.get(key);
-  const H = LH - FLOOR_Y, c = canvas(LW, H), g = c.getContext("2d");
+  const H = FLAT_H - FLOOR_Y, c = canvas(FLAT_W, H), g = c.getContext("2d");
   if (hasSprite(id)) {
-    for (let y = 0; y < H; y += 16) for (let x = 0; x < LW; x += 16) sprite(g, id, 0, x, y, {});
+    for (let y = 0; y < H; y += 16) for (let x = 0; x < FLAT_W; x += 16) sprite(g, id, 0, x, y, {});
   } else {
     const rnd = rng(hash(id));
     const pat = {
       fl_pine() {
         for (let row = 0; row * 8 < H; row++) {
-          g.fillStyle = row % 2 ? "#b8783f" : "#c98b4e"; g.fillRect(0, row * 8, LW, 8);
-          g.fillStyle = "#7c3f1d"; for (let x = (row % 2) * 20; x < LW; x += 40) g.fillRect(x, row * 8, 1, 8);
-          g.fillStyle = "#8f5228"; g.fillRect(0, row * 8 + 7, LW, 1);
+          g.fillStyle = row % 2 ? "#b8783f" : "#c98b4e"; g.fillRect(0, row * 8, FLAT_W, 8);
+          g.fillStyle = "#7c3f1d"; for (let x = (row % 2) * 20; x < FLAT_W; x += 40) g.fillRect(x, row * 8, 1, 8);
+          g.fillStyle = "#8f5228"; g.fillRect(0, row * 8 + 7, FLAT_W, 1);
         }
-        g.fillStyle = "#e0a868"; g.fillRect(0, 0, LW, 1);
+        g.fillStyle = "#e0a868"; g.fillRect(0, 0, FLAT_W, 1);
       },
-      fl_checker() { for (let y = 0; y < H; y += 8) for (let x = 0; x < LW; x += 8) { g.fillStyle = ((x + y) / 8) % 2 ? "#4b5563" : "#f3efe6"; g.fillRect(x, y, 8, 8); } },
-      fl_pebble() { g.fillStyle = "#9ca3af"; g.fillRect(0, 0, LW, H); for (let i = 0; i < 80; i++) fillEllipse(g, rnd() * LW, rnd() * H, 2 + rnd() * 2, 1 + rnd() * 1.5, rnd() < 0.5 ? "#6b7280" : "#d1d5db"); },
-      fl_cloud() { g.fillStyle = "#dbe4ff"; g.fillRect(0, 0, LW, H); for (let x = 0; x < LW; x += 14) fillEllipse(g, x + rnd() * 6, 4 + rnd() * (H - 8), 6, 3, "#ffffff"); },
+      fl_checker() { for (let y = 0; y < H; y += 8) for (let x = 0; x < FLAT_W; x += 8) { g.fillStyle = ((x + y) / 8) % 2 ? "#4b5563" : "#f3efe6"; g.fillRect(x, y, 8, 8); } },
+      fl_pebble() { g.fillStyle = "#9ca3af"; g.fillRect(0, 0, FLAT_W, H); for (let i = 0; i < 80; i++) fillEllipse(g, rnd() * FLAT_W, rnd() * H, 2 + rnd() * 2, 1 + rnd() * 1.5, rnd() < 0.5 ? "#6b7280" : "#d1d5db"); },
+      fl_cloud() { g.fillStyle = "#dbe4ff"; g.fillRect(0, 0, FLAT_W, H); for (let x = 0; x < FLAT_W; x += 14) fillEllipse(g, x + rnd() * 6, 4 + rnd() * (H - 8), 6, 3, "#ffffff"); },
     }[id];
     if (pat) pat();
-    else { const a = PH_COLORS[hash(id) % PH_COLORS.length]; for (let x = 0; x < LW; x += 8) { g.fillStyle = (x / 8) % 2 ? shade(a, -0.1) : a; g.fillRect(x, 0, 8, H); } }
+    else { const a = PH_COLORS[hash(id) % PH_COLORS.length]; for (let x = 0; x < FLAT_W; x += 8) { g.fillStyle = (x / 8) % 2 ? shade(a, -0.1) : a; g.fillRect(x, 0, 8, H); } }
   }
-  g.fillStyle = "rgba(0,0,0,.18)"; g.fillRect(0, 0, LW, 1); // contact line at the wall seam
+  g.fillStyle = "rgba(0,0,0,.18)"; g.fillRect(0, 0, FLAT_W, 1); // contact line at the wall seam
   styleCache.set(key, c);
   return c;
 }
@@ -235,8 +294,8 @@ function wheelRim() {
   wheelCache.set("rim", c);
   return c;
 }
-function drawWheelPlaceholder(c, angleRev, tier) {
-  const { cx, cy } = WHEEL, x0 = cx - 24, y0 = cy - 24;
+function drawWheelPlaceholder(c, angleRev, tier, W = IWHEEL) { // W: the wheel box (iso room, or FLAT_WHEEL for the certificate)
+  const { cx, cy } = W, x0 = cx - 24, y0 = cy - 24;
   c.drawImage(wheelBack(), x0, y0);
   c.drawImage(wheelRim(), x0, y0);
   for (let k = 0; k < 6; k++) {
@@ -555,46 +614,71 @@ $("sleep").onclick = async () => {
 };
 
 // ---------- hamster behaviour ----------
-// RUN in the wheel while ACTIVE; SLEEP in the burrow on IDLE / stale / unreachable. Switching
-// always passes through a short SIT beside the wheel, with hop/walk moves between spots.
+// RUN in the wheel while ACTIVE; SLEEP in his bed once he is asleep (the chain's idle signal, or no
+// fresh reading at all); otherwise (awake, just not running) REST on the open floor by the wheel,
+// blinking. Switching passes through a short SIT at that same spot, with hop/walk moves between.
 const SIT_MS = 1400;
-const ham = { init: false, mode: "sleep", x: SPOT.burrow.x, y: SPOT.burrow.y, face: -1, move: null, sitLeft: 0, runPhase: 0, blink: 0, breath: 0 };
-function spotFor(mode) { return mode === "run" ? SPOT.wheel : SPOT.burrow; }
+const ham = { init: false, mode: "sleep", x: SPOT.bed.x, y: SPOT.bed.y, gy: SPOT.bed.y, face: -1, move: null, sitLeft: 0, runPhase: 0, blink: 0, breath: 0 };
+// The bed he sleeps in: me.bedTier's sprite standing on BED_TILE; sleep = where his bottom-centre goes.
+function bedGeom() {
+  const tier = clamp((S.me && S.me.bedTier) | 0, 0, 5), id = `bed_t${tier}`;
+  const s = (window.SPRITES || {})[id];
+  const w = (s && s.w) || 28, h = (s && s.h) || 10, sl = (s && s.sleep) || [w >> 1, h - 3];
+  const x = Math.round(SPOT.bed.x - w / 2), y = SPOT.bed.y - h;
+  return { id, tier, x, y, w, h, foot: SPOT.bed.y, sleepX: x + sl[0], sleepY: y + sl[1] };
+}
+function spotFor(mode) {
+  if (mode === "run") return SPOT.wheel;
+  if (mode === "sleep") { const b = bedGeom(); return { x: b.sleepX, y: b.sleepY }; }
+  return SPOT.sit;
+}
+function wantMode(st) {
+  if (st.active) return "run";
+  return S.idle || st.key !== "idle" ? "sleep" : "rest"; // stale / offline / no reading: he's asleep as far as we know
+}
+const near = (a, b) => Math.hypot(a.x - b.x, a.y - b.y) < 1;
 function moveTo(name) {
-  const to = name === "sit" ? SPOT.sit : spotFor(name);
-  const dist = Math.hypot(to.x - ham.x, to.y - ham.y);
-  const inWheel = Math.hypot(ham.x - SPOT.wheel.x, ham.y - SPOT.wheel.y) < 1;
-  const hop = inWheel || name === "run"; // in/out of the wheel is one big hop
-  ham.move = { name, fx: ham.x, fy: ham.y, tx: to.x, ty: to.y, t: 0, dur: hop ? 650 : Math.max(500, (dist / 70) * 1000), hop, steps: Math.max(1, Math.round(dist / 14)) };
-  if (to.x !== ham.x) ham.face = to.x < ham.x ? -1 : 1;
+  const to = spotFor(name), from = { x: ham.x, y: ham.gy };
+  const dist = Math.hypot(to.x - from.x, to.y - from.y);
+  const inWheel = near(from, SPOT.wheel), inBed = near(from, spotFor("sleep"));
+  const hop = inWheel || inBed || name === "run" || name === "sleep"; // in/out of the wheel or the bed is one hop
+  ham.move = { name, fx: from.x, fy: from.y, tx: to.x, ty: to.y, t: 0, dur: hop ? Math.max(650, (dist / 110) * 1000) : Math.max(500, (dist / 70) * 1000), hop, steps: Math.max(1, Math.round(dist / 14)),
+    wheel: inWheel || name === "run", bed: inBed || name === "sleep" };
+  if (Math.abs(to.x - from.x) > 0.5) ham.face = to.x < from.x ? -1 : 1;
   ham.mode = "move";
 }
+function settle(mode) { ham.mode = mode; ham.face = mode === "run" ? 1 : mode === "sleep" ? -1 : ham.face; }
 function stepHamster(dt, st) {
-  const want = st.active ? "run" : "sleep";
-  if (!ham.init && S.loaded) { // first reading: start in place, no transition
-    ham.init = true; ham.mode = want; const s = spotFor(want); ham.x = s.x; ham.y = s.y; ham.face = want === "run" ? 1 : -1; ham.move = null;
+  const want = wantMode(st);
+  if (!ham.init && S.loaded && S.me) { // first reading: start in place, no transition
+    ham.init = true; const s = spotFor(want); ham.x = s.x; ham.y = ham.gy = s.y; ham.move = null; settle(want);
   }
   if (ham.mode === "move") {
     const m = ham.move;
     m.t = Math.min(m.dur, m.t + dt);
     const k = m.t / m.dur;
     ham.x = lerp(m.fx, m.tx, k);
-    ham.y = lerp(m.fy, m.ty, k) - (m.hop ? 14 * Math.sin(Math.PI * k) : 2 * Math.abs(Math.sin(Math.PI * k * m.steps)));
+    ham.gy = lerp(m.fy, m.ty, k);
+    ham.y = ham.gy - (m.hop ? 14 * Math.sin(Math.PI * k) : 2 * Math.abs(Math.sin(Math.PI * k * m.steps)));
     ham.runPhase += dt / 1000 * 8;
     if (k >= 1) {
       ham.move = null;
-      if (m.name === "sit") { ham.mode = "sit"; ham.sitLeft = SIT_MS; ham.face = spotFor(want).x < ham.x ? -1 : 1; }
-      else if (m.name === want) { ham.mode = want; ham.face = want === "run" ? 1 : -1; }
+      ham.y = ham.gy;
+      if (m.name === "sit") { if (want === "rest") settle("rest"); else { ham.mode = "sit"; ham.sitLeft = SIT_MS; ham.face = spotFor(want).x < ham.x ? -1 : 1; } }
+      else if (m.name === want) settle(want);
       else moveTo("sit");
     }
   } else if (ham.mode === "sit") {
     ham.face = spotFor(want).x < ham.x ? -1 : 1;
     ham.sitLeft -= dt;
-    if (ham.sitLeft <= 0) moveTo(want);
+    if (ham.sitLeft <= 0) { if (want === "rest") settle("rest"); else moveTo(want); }
   } else if (ham.mode !== want) {
-    moveTo("sit");
+    if (ham.mode === "rest") moveTo(want); // already at the sit spot
+    else moveTo("sit");
   } else if (ham.mode === "run") {
     ham.runPhase += (dt / 1000) * (4 + 10 * clamp(st.speed / 1600, 0, 1)); // run-cycle steps per second scale with speed
+  } else if (ham.mode === "sleep") {
+    const s = spotFor("sleep"); ham.x = s.x; ham.y = ham.gy = s.y; // a bed upgrade moves the pillow
   }
 }
 
@@ -620,7 +704,7 @@ function meterTarget() {
 }
 function spawnSpark(delay = 0) {
   const a = -Math.PI / 2 + (Math.random() - 0.5) * 1.8;
-  const x0 = WHEEL.cx + Math.cos(a) * WHEEL.r, y0 = WHEEL.cy + Math.sin(a) * WHEEL.r;
+  const x0 = IWHEEL.cx + Math.cos(a) * IWHEEL.r, y0 = IWHEEL.cy + Math.sin(a) * IWHEEL.r;
   const tg = meterTarget();
   sparks.push({ x0, y0, cx: x0 + (Math.random() - 0.5) * 50, cy: Math.min(y0, tg.y) - 10 - Math.random() * 30, x1: tg.x + (Math.random() - 0.5) * 10, y1: tg.y, t: -delay, life: 1100 + Math.random() * 600, pop: 0, px: x0, py: y0 });
 }
@@ -642,7 +726,7 @@ function stepFx(dt, st) {
   }
   if (ham.mode === "sleep") {
     zClock -= dt;
-    if (zClock <= 0) { zs.push({ x: BURROW.cx + 6, y: FLOOR_Y - 20, t: 0, life: 2600 }); zClock = 1900; }
+    if (zClock <= 0) { zs.push({ x: ham.x + 6, y: ham.y - 18, t: 0, life: 2600 }); zClock = 1900; }
   } else zClock = 400;
   for (let i = zs.length - 1; i >= 0; i--) { zs[i].t += dt; if (zs[i].t > zs[i].life) zs.splice(i, 1); }
 }
@@ -652,7 +736,7 @@ let frame10 = 0;
 function tick10() {
   frame10++;
   if (ham.blink > 0) ham.blink--;
-  else if (ham.mode === "sit" && Math.random() < 0.05) ham.blink = 2;
+  else if ((ham.mode === "sit" || ham.mode === "rest") && Math.random() < 0.05) ham.blink = 2;
   ham.breath = Math.floor(frame10 / 12) % 2; // slow 2-phase breathing
   tickThumbs();
 }
@@ -689,8 +773,9 @@ const buf = canvas(LW, LH), g = buf.getContext("2d");
 const stage = $("stage");
 let dimLevel = 0; // eased 0..1 IDLE dimming
 function fit() {
-  const r = stage.getBoundingClientRect(), dpr = window.devicePixelRatio || 1, pad = 12;
-  const s = Math.max(1, Math.floor(Math.min(((r.width - pad * 2) * dpr) / LW, ((r.height - pad * 2) * dpr) / LH)));
+  const r = stage.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  const scaleAt = (pad) => Math.floor(Math.min(((r.width - pad * 2) * dpr) / LW, ((r.height - pad * 2) * dpr) / LH));
+  const s = Math.max(1, scaleAt(12), scaleAt(0)); // drop the margin when it alone costs a whole scale step (375-px phones)
   if (view.width !== LW * s) { view.width = LW * s; view.height = LH * s; }
   view.style.width = (LW * s) / dpr + "px";
   view.style.height = (LH * s) / dpr + "px";
@@ -723,44 +808,198 @@ function drawItem(p, it, x, y, pw, ph, c = g, fx = FX, fr = frame10) {
     if (it.animated && fr % 10 < 5) { c.fillStyle = "#22c55e"; c.fillRect(x + pw - 4, y + 2, 2, 2); } // "this one moves" marker
   }
 }
-function drawRug(p, it, x, c = g, fx = FX, fr = frame10) {
+// Flat rug (the certificate's floor band, and the texture the iso projection samples): 16 rows tall,
+// the rug art sits on rows 3..12 (its oy) like it always has.
+function drawRugFlat(p, it, x, c = g, fx = FX, fr = frame10, y = FLOOR_Y) {
   const pw = it.w * CELL;
-  if (!sprite(c, it.sprite, fr, x, FLOOR_Y, { ...fx, flip: !!p.flip, w: pw, h: 16 })) c.drawImage(placeholderItem(it, pw, 12), x, FLOOR_Y + 2);
+  if (!sprite(c, it.sprite, fr, x, y, { ...fx, flip: !!p.flip, w: pw, h: 16 })) c.drawImage(placeholderItem(it, pw, 12), x, y + 2);
 }
+
+// ---------- iso painters ----------
+const BACKDROP = "#1d1a14";
+const inDiamond = (x, y, k = 1) => Math.abs(x + 0.5 - 16) / 16 + Math.abs(y + 0.5 - 8) / 8 <= k;
+const DIAMOND = Uint8Array.from({ length: 32 * 16 }, (_, n) => (inDiamond(n % 32, Math.floor(n / 32)) ? 1 : 0));
+const diamondCache = new Map();
+// A 32 x 16 tile-shaped overlay: fill, 1-px rim and/or diagonal hatch (null = none). k < 1 shrinks it.
+function diamondCanvas(fill, rim, hatch = null, k = 1) {
+  const key = `${fill}|${rim}|${hatch}|${k}`;
+  if (diamondCache.has(key)) return diamondCache.get(key);
+  const c = canvas(32, 16), x = c.getContext("2d");
+  for (let y = 0; y < 16; y++) for (let px = 0; px < 32; px++) {
+    if (!inDiamond(px, y, k)) continue;
+    const edge = !inDiamond(px - 1, y, k) || !inDiamond(px + 1, y, k) || !inDiamond(px, y - 1, k) || !inDiamond(px, y + 1, k);
+    const col = edge && rim ? rim : hatch && (px + 2 * y) % 6 < 2 ? hatch : fill;
+    if (col) { x.fillStyle = col; x.fillRect(px, y, 1, 1); }
+  }
+  diamondCache.set(key, c);
+  return c;
+}
+const drawTileOverlay = (c, i, j, img) => { const t = isoTileTop(i, j); c.drawImage(img, t.x, t.y); };
+const matTier = () => clamp((S.me && S.me.roomTier) | 0, 0, 5);
+function matEdge(t) { const s = (window.SPRITES || {})[`floor_mat_t${t}`]; return ((s && s.edge) || [2, 13, 14]).map((i) => PALETTE[i] || "#888888"); }
+// 16 x 16 swatch canvas of a wallpaper / flooring style (sprite, or the flat painter's top-left corner)
+function swatch(id, kind) {
+  const c = canvas(16, 16), x = c.getContext("2d");
+  if (!sprite(x, id, 0, 0, 0, {})) x.drawImage(kind === "floor" ? floorCanvas(id) : wallpaperCanvas(id), 0, kind === "floor" ? 1 : 2, 16, 16, 0, 0, 16, 16);
+  return c;
+}
+function rgbaOf(c) { return c.getContext("2d").getImageData(0, 0, c.width, c.height).data; }
+
+// The static room: backdrop, folded walls (wallpaper above, material wainscot below, cap, end posts),
+// floor tiles (material lanes + border ring, the equipped flooring inside), the slab. Cached per look.
+const roomBaseCache = { key: null, canvas: null };
+function roomBase(me) {
+  const wp = (me && me.wallpaper) || "wp_plain", fl = (me && me.floor) || "fl_pine", t = matTier();
+  const key = `${wp}|${fl}|${t}|${hasSprite(wp)}|${hasSprite(fl)}|${hasSprite(`floor_mat_t${t}`)}`;
+  if (roomBaseCache.key === key) return roomBaseCache.canvas;
+  const c = roomBaseCache.canvas || canvas(LW, LH), x = c.getContext("2d");
+  x.clearRect(0, 0, LW, LH);
+  paintRoomBase(x, wp, fl, t);
+  roomBaseCache.key = key;
+  roomBaseCache.canvas = c;
+  return c;
+}
+function paintRoomBase(c, wp, fl, t) {
+  const [hi, mid, lo] = matEdge(t), H = ISO.WALL_H;
+  c.fillStyle = BACKDROP; c.fillRect(0, 0, LW, LH);
+  // walls, flat: wallpaper tiled up from the floor line (seams meet the corner), wainscot, cap
+  const strip = canvas(LW, H), s = strip.getContext("2d"), sw = swatch(wp, "wallpaper");
+  for (let y = H - 16; y > -16; y -= 16) for (let px = WALL_X0; px < WALL_X1; px += 16) s.drawImage(sw, px, y);
+  for (let px = WALL_X0; px < WALL_X1; px += 16) {
+    if (!sprite(s, `wall_mat_t${t}`, 0, px, H - 32, {})) { s.fillStyle = mid; s.fillRect(px, H - 32, 16, 32); s.fillStyle = lo; s.fillRect(px, H - 32, 1, 32); }
+  }
+  s.fillStyle = "rgba(0,0,0,.18)"; s.fillRect(WALL_X0, H - 33, WALL_X1 - WALL_X0, 1); // the wainscot's shadow on the wallpaper
+  s.fillStyle = hi; s.fillRect(WALL_X0, 0, WALL_X1 - WALL_X0, 1);
+  s.fillStyle = mid; s.fillRect(WALL_X0, 1, WALL_X1 - WALL_X0, 1);
+  s.fillStyle = "rgba(0,0,0,.3)"; s.fillRect(WALL_X0, 2, WALL_X1 - WALL_X0, 1);
+  // fold onto the two back walls; the right wall sits a shade darker (light from the left)
+  for (let px = WALL_X0; px < WALL_X1; px++) c.drawImage(strip, px, 0, 1, H, px, stripTop(px), 1, H);
+  c.fillStyle = "rgba(0,0,0,.13)";
+  for (let px = ISO.X0; px < WALL_X1; px++) c.fillRect(px, stripTop(px), 1, H);
+  // end posts in the material (the walls' cut ends)
+  for (const [px, col] of [[WALL_X0, lo], [WALL_X0 + 1, mid], [WALL_X1 - 2, mid], [WALL_X1 - 1, lo]]) { c.fillStyle = col; c.fillRect(px, stripTop(px), 1, H); }
+  paintFloor(c, fl, t, [hi, mid, lo]);
+}
+function paintFloor(c, fl, t, [hi, mid, lo]) {
+  const img = c.getImageData(0, 0, LW, LH), d = img.data;
+  const flTex = rgbaOf(swatch(fl, "floor"));
+  const mc = canvas(32, 16), mx = mc.getContext("2d");
+  if (!sprite(mx, `floor_mat_t${t}`, 0, 0, 0, {})) mx.drawImage(diamondCanvas(mid, lo), 0, 0);
+  const matTex = rgbaOf(mc);
+  const bottom = new Int16Array(LW).fill(-1);
+  for (let j = 0; j < ISO.NJ; j++) for (let i = 0; i < ISO.NI; i++) {
+    const frame = i === 0 || j === 0 || i === ISO.NI - 1 || j === ISO.NJ - 1; // lanes along the walls + the front ring
+    const o = isoTileTop(i, j);
+    for (let ly = 0; ly < 16; ly++) for (let lx = 0; lx < 32; lx++) {
+      if (!DIAMOND[ly * 32 + lx]) continue;
+      const X = o.x + lx, Y = o.y + ly;
+      if (X < 0 || X >= LW || Y < 0) continue;
+      if (Y > bottom[X]) bottom[X] = Y;
+      if (Y >= LH) continue;
+      let k;
+      if (frame) k = (ly * 32 + lx) * 4;
+      else { // the flooring swatch on the half-texel iso lattice (2:1 lines stay 2 px per row)
+        const u = clamp(Math.floor((lx + 2 * ly - 15) / 2), 0, 15), v = clamp(Math.floor((2 * ly - lx + 16) / 2), 0, 15);
+        k = (v * 16 + u) * 4;
+      }
+      const src = frame ? matTex : flTex, q = (Y * LW + X) * 4;
+      if (!src[k + 3]) continue;
+      d[q] = src[k]; d[q + 1] = src[k + 1]; d[q + 2] = src[k + 2]; d[q + 3] = 255;
+    }
+  }
+  c.putImageData(img, 0, 0);
+  // the open floor sits a touch lower than the frame: a soft inner shadow along its back edges
+  c.fillStyle = "rgba(0,0,0,.16)";
+  for (let i = 1; i < ISO.NI - 1; i++) { const o = isoTileTop(i, 1); for (let lx = 16; lx < 32; lx++) c.fillRect(o.x + lx, o.y + Math.floor((lx - 15) / 2), 1, 1); }
+  for (let j = 1; j < ISO.NJ - 1; j++) { const o = isoTileTop(1, j); for (let lx = 0; lx < 16; lx++) c.fillRect(o.x + lx, o.y + Math.floor((16 - lx) / 2), 1, 1); }
+  // slab under the two front edges, in the material
+  const front = ISO.X0 + (ISO.NI - ISO.NJ) * 16; // the floor's front vertex
+  for (let X = WALL_X0; X < WALL_X1; X++) {
+    if (bottom[X] < 0) continue;
+    for (let k = 1; k <= ISO.SLAB; k++) {
+      c.fillStyle = k === ISO.SLAB ? OUTLINE : k === 1 ? hi : X < front ? mid : lo;
+      c.fillRect(X, bottom[X] + k, 1, 1);
+    }
+  }
+  // contact shadow where the walls meet the floor
+  for (let X = WALL_X0; X < WALL_X1; X++) { c.fillStyle = "rgba(0,0,0,.24)"; c.fillRect(X, wallBase(X), 1, 1); c.fillStyle = "rgba(0,0,0,.1)"; c.fillRect(X, wallBase(X) + 1, 1, 1); }
+}
+
+// Wall layer: paint(ctx) draws in flat strip coordinates (x = screen x, y = strip row), then the
+// columns x0..x1 fold onto the walls. Used for wall decor and for the wall placement overlays.
+const wallLayer = canvas(LW, ISO.WALL_H), wl = wallLayer.getContext("2d");
+function foldLayer(paint, x0 = WALL_X0, x1 = WALL_X1, c = g) {
+  wl.clearRect(0, 0, LW, ISO.WALL_H);
+  paint(wl);
+  for (let px = Math.max(WALL_X0, Math.floor(x0)); px < Math.min(WALL_X1, Math.ceil(x1)); px++) c.drawImage(wallLayer, px, 0, 1, ISO.WALL_H, px, stripTop(px), 1, ISO.WALL_H);
+}
+
+// Rugs lie flat in lanes 0..1 off their wall: texel column u -> lane position s = x + u/16, texel row
+// v -> d = v/8 tiles out (so the rug art's rows 3..12 cover d 0.4..1.6, under the furniture's front
+// and out onto the floor). Each screen pixel maps back through laneAt() and samples the flat rug.
+// At the corner the left-wall part and the right-wall part fold round it.
+function laneAt(px, py) { // both lane readings of a screen point: [{ s, d, arm }]
+  const [i, j] = screenToTile(px, py);
+  return [{ s: ISO.CORNER + 1 - j, d: i, arm: "left" }, { s: i + ISO.CORNER, d: j, arm: "right" }]
+    .filter((l) => (l.arm === "left" ? l.s < ISO.CORNER + 1 : l.s >= ISO.CORNER + 1));
+}
+const RUG_DEPTH = 2;
+function laneBox(x, w, d0 = 0, d1 = RUG_DEPTH) {
+  const pts = [];
+  for (const s of [x, x + w, ...(x < ISO.CORNER + 1 && x + w > ISO.CORNER + 1 ? [ISO.CORNER + 1 - 1e-6, ISO.CORNER + 1] : [])]) for (const d of [d0, d1]) pts.push(laneToScreen(s, d));
+  const x0 = Math.floor(Math.min(...pts.map((p) => p.x))), x1 = Math.ceil(Math.max(...pts.map((p) => p.x)));
+  const y0 = Math.floor(Math.min(...pts.map((p) => p.y))), y1 = Math.ceil(Math.max(...pts.map((p) => p.y)));
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+const rugCache = new Map();
+function rugProjection(p, it) {
+  const key = `${it.id}|${p.x}|${p.flip ? 1 : 0}|${hasSprite(it.sprite)}`;
+  if (rugCache.has(key)) return rugCache.get(key);
+  const pw = it.w * CELL, src = canvas(pw, 16);
+  drawRugFlat(p, it, 0, src.getContext("2d"), FX, 0, 0);
+  const tex = rgbaOf(src), box = laneBox(p.x, it.w), out = canvas(Math.max(1, box.w), Math.max(1, box.h)), oc = out.getContext("2d");
+  const img = oc.createImageData(out.width, out.height), d = img.data;
+  for (let y = 0; y < out.height; y++) for (let x = 0; x < out.width; x++) {
+    for (const l of laneAt(box.x + x + 0.5, box.y + y + 0.5)) {
+      if (l.s < p.x || l.s >= p.x + it.w || l.d < 0 || l.d >= RUG_DEPTH) continue;
+      const u = Math.floor((l.s - p.x) * 16), v = Math.floor(l.d * 8), k = (v * pw + u) * 4;
+      if (!tex[k + 3]) continue;
+      const q = (y * out.width + x) * 4;
+      d[q] = tex[k]; d[q + 1] = tex[k + 1]; d[q + 2] = tex[k + 2]; d[q + 3] = 255;
+      break;
+    }
+  }
+  oc.putImageData(img, 0, 0);
+  const r = { canvas: out, x: box.x, y: box.y };
+  if (rugCache.size > 200) rugCache.clear();
+  rugCache.set(key, r);
+  return r;
+}
+function rugHit(p, it, L) {
+  return laneAt(L.x, L.y).some((l) => l.s >= p.x && l.s < p.x + it.w && l.d >= 0 && l.d < RUG_DEPTH);
+}
+
 function render(st) {
   const me = S.me;
   fxOpts(st);
   g.globalCompositeOperation = "source-over";
   g.globalAlpha = 1;
-  // 1. wallpaper (+ fixed trim)
-  g.drawImage(wallpaperCanvas((me && me.wallpaper) || "wp_plain"), 0, 0);
-  // 2. wall decor (top-left cell)
-  for (const [p, it] of itemsIn("wall").sort((a, b) => a[0].y - b[0].y || a[0].x - b[0].x)) {
-    drawItem(p, it, p.x * CELL, p.y * CELL, it.w * CELL, it.h * CELL);
+  // 1. back walls + floor (cached per wallpaper / flooring / room material)
+  g.drawImage(roomBase(me), 0, 0);
+  // 2. wall decor, painted flat then folded onto the walls
+  const walls = itemsIn("wall").sort((a, b) => a[0].y - b[0].y || a[0].x - b[0].x);
+  if (walls.length) {
+    let x0 = Infinity, x1 = -Infinity;
+    for (const [p, it] of walls) { x0 = Math.min(x0, colLeft(p.x)); x1 = Math.max(x1, colLeft(p.x) + it.w * CELL); }
+    foldLayer((s) => { for (const [p, it] of walls) drawItem(p, it, colLeft(p.x), wallRowY(p.y), it.w * CELL, it.h * CELL, s); }, x0, x1);
   }
-  // 3. flooring band
-  g.drawImage(floorCanvas((me && me.floor) || "fl_pine"), 0, FLOOR_Y);
-  // 4. rugs (flat on the floor band)
-  for (const [p, it] of itemsIn("rug").sort((a, b) => a[0].x - b[0].x)) drawRug(p, it, p.x * CELL);
-  // 5. floor furniture, left to right, bottoms on the floor line
-  for (const [p, it] of itemsIn("floor").sort((a, b) => a[0].x - b[0].x)) {
-    const pw = it.w * CELL, ph = it.h * CELL, x = p.x * CELL, y = FLOOR_Y - ph;
-    g.fillStyle = "rgba(0,0,0,.2)"; g.fillRect(x + 1, FLOOR_Y, pw - 2, 2);
-    drawItem(p, it, x, y, pw, ph);
-  }
-  // 6. burrow
-  if (!sprite(g, "burrow", frame10, BURROW.x, BURROW.y, {})) g.drawImage(burrowCanvas(), BURROW.x, BURROW.y);
-  // 7. wheel (+ tier hub overlay)
-  const tier = (me && me.wheelTier) | 0;
-  g.fillStyle = "rgba(0,0,0,.2)"; g.fillRect(WHEEL.cx - 19, FLOOR_Y, 38, 2);
-  if (sprite(g, "wheel", Math.floor(wheel.angle * 24) % 4, WHEEL.x, WHEEL.y, { angle: wheel.angle, tier })) {
-    if (tier > 0) sprite(g, `wheel_t${tier}`, frame10, WHEEL.x, WHEEL.y, { angle: wheel.angle, tier });
-  } else drawWheelPlaceholder(g, wheel.angle, tier);
-  // 8. hamster
-  drawHamster(st);
-  // 9. watt sparks + sleep Zs
+  // 3. rugs, flat on their lanes
+  for (const [p, it] of itemsIn("rug").sort((a, b) => a[0].x - b[0].x)) { const r = rugProjection(p, it); g.drawImage(r.canvas, r.x, r.y); }
+  // 4. everything standing on tiles: furniture, burrow, wheel, bed, hamster, back to front
+  drawStanding(me);
+  // 5. watt sparks + sleep Zs
   drawFx();
-  // 10. day/night tint, IDLE dim + burrow glow
+  // 6. day/night tint, IDLE dim + a warm glow over the bed
   const t = tintAt(utcHour());
   g.globalCompositeOperation = "multiply";
   g.fillStyle = `rgb(${t.mul.join(",")})`; g.fillRect(0, 0, LW, LH);
@@ -769,18 +1008,53 @@ function render(st) {
   g.fillStyle = `rgba(${t.haze[0]},${t.haze[1]},${t.haze[2]},${t.haze[3].toFixed(3)})`; g.fillRect(0, 0, LW, LH);
   if (dimLevel > 0.01) {
     g.globalCompositeOperation = "lighter";
-    const breathe = 0.85 + 0.15 * Math.sin(performance.now() / 900);
-    const grd = g.createRadialGradient(BURROW.cx, FLOOR_Y - 8, 2, BURROW.cx, FLOOR_Y - 8, 46);
+    const breathe = 0.85 + 0.15 * Math.sin(performance.now() / 900), gx = SPOT.bed.x, gy = SPOT.bed.y - 10;
+    const grd = g.createRadialGradient(gx, gy, 2, gx, gy, 46);
     grd.addColorStop(0, `rgba(255,170,70,${(0.32 * dimLevel * breathe).toFixed(3)})`);
     grd.addColorStop(1, "rgba(255,170,70,0)");
-    g.fillStyle = grd; g.fillRect(BURROW.cx - 50, FLOOR_Y - 56, 100, LH - FLOOR_Y + 56);
+    g.fillStyle = grd; g.fillRect(gx - 50, gy - 50, 100, 100);
     g.globalCompositeOperation = "source-over";
   }
-  // 11. placement ghost, zone guides, selection outline (after the tint so they read at night)
+  // 7. placement ghost, zone guides, selection outline (after the tint so they read at night)
   drawPlacement();
   // present: integer-scaled, no smoothing
   vctx.imageSmoothingEnabled = false;
   vctx.drawImage(buf, 0, 0, view.width, view.height);
+}
+// Billboards: every front-facing sprite stands bottom-centre on its tiles. Painter's order is the
+// ground line (screen y of the feet = iso depth i + j), then x. Contact shadows go down first.
+const SHADOW = () => diamondCanvas("rgba(0,0,0,.2)", null, null, 0.72);
+function drawStanding(me) {
+  const list = [];
+  const shadowCols = (x, w) => { for (let c = x; c < x + w; c++) { const [i, j] = colTile(c); drawTileOverlay(g, i, j, SHADOW()); } };
+  for (const [p, it] of itemsIn("floor")) {
+    const pw = it.w * CELL, ph = it.h * CELL, x = colLeft(p.x), fy = footY(p.x, it.w);
+    shadowCols(p.x, it.w);
+    list.push({ d: fy, x, draw: () => drawItem(p, it, x, fy - ph, pw, ph) });
+  }
+  list.push({ d: IBURROW.foot, x: IBURROW.x, draw: () => { if (!sprite(g, "burrow", frame10, IBURROW.x, IBURROW.y, {})) g.drawImage(burrowCanvas(), IBURROW.x, IBURROW.y); } });
+  const tier = (me && me.wheelTier) | 0, [wa, wb] = ROOM.RESERVED.wheel;
+  shadowCols(wa + 1, Math.max(1, wb - wa - 1));
+  const m = ham.mode === "move" ? ham.move : null;
+  const hamInWheel = ham.mode === "run" || (m && m.wheel), hamInBed = ham.mode === "sleep" || (m && m.bed);
+  list.push({ d: IWHEEL.foot, x: IWHEEL.x, draw: () => {
+    if (sprite(g, "wheel", Math.floor(wheel.angle * 24) % 4, IWHEEL.x, IWHEEL.y, { angle: wheel.angle, tier })) {
+      if (tier > 0) sprite(g, `wheel_t${tier}`, frame10, IWHEEL.x, IWHEEL.y, { angle: wheel.angle, tier });
+    } else drawWheelPlaceholder(g, wheel.angle, tier);
+    if (hamInWheel) drawHamster();
+  } });
+  const b = bedGeom();
+  drawTileOverlay(g, BED_TILE[0], BED_TILE[1], SHADOW());
+  list.push({ d: b.foot, x: b.x, draw: () => {
+    if (!sprite(g, b.id, frame10, b.x, b.y, {})) g.drawImage(placeholderItem({ id: b.id, name: "bed" }, b.w, b.h), b.x, b.y);
+    if (hamInBed) { drawHamster(); if (ham.mode === "sleep") sprite(g, `${b.id}_front`, frame10, b.x, b.y, {}); }
+  } });
+  if (!hamInWheel && !hamInBed) {
+    g.fillStyle = "rgba(0,0,0,.2)"; g.fillRect(Math.round(ham.x) - 6, Math.round(ham.gy) - 1, 12, 2); // his own little shadow
+    list.push({ d: ham.gy, x: ham.x, draw: drawHamster });
+  }
+  list.sort((a, c) => a.d - c.d || a.x - c.x);
+  for (const e of list) e.draw();
 }
 function drawHamster() {
   const skin = (S.me && S.me.skin) || "skin_classic";
@@ -857,12 +1131,20 @@ function reservedCols() {
   for (const [name, [a, b]] of Object.entries(ROOM.RESERVED || {})) for (let c = a; c <= b; c++) m.set(c, name);
   return m;
 }
-// Footprint in logical pixels. Wall: (x, y) is the top-left cell. Floor: stands on the floor line.
-// Rug: the floor band under the line.
-function footprint(it, x, y) {
-  if (it.zone === "wall") return { x: x * CELL, y: y * CELL, w: it.w * CELL, h: it.h * CELL };
-  if (it.zone === "rug") return { x: x * CELL, y: FLOOR_Y, w: it.w * CELL, h: LH - FLOOR_Y };
-  return { x: x * CELL, y: FLOOR_Y - it.h * CELL, w: it.w * CELL, h: it.h * CELL };
+// Where an item at server cell (x, y) shows on screen (iso logical pixels). Floor: its billboard
+// box. Rug: the bounding box of its two lanes. Wall: the bounding box of the folded rect (wallRect
+// is the same rect in flat strip coordinates).
+const wallRect = (it, x, y) => ({ x: colLeft(x), y: wallRowY(y), w: it.w * CELL, h: it.h * CELL });
+function isoRect(it, x, y) {
+  if (it.zone === "wall") {
+    const f = wallRect(it, x, y);
+    let top = Infinity, bot = -Infinity;
+    for (let px = f.x; px < f.x + f.w; px++) { const t = stripTop(clamp(px, WALL_X0, WALL_X1 - 1)) + f.y; top = Math.min(top, t); bot = Math.max(bot, t + f.h); }
+    return { x: f.x, y: top, w: f.w, h: bot - top };
+  }
+  if (it.zone === "rug") return laneBox(x, it.w);
+  const ph = it.h * CELL;
+  return { x: colLeft(x), y: footY(x, it.w) - ph, w: it.w * CELL, h: ph };
 }
 // Same checks, same order as server.js validatePlacement(); the server re-validates every move.
 function checkSpot(it, x, y, ignorePid = null) {
@@ -909,7 +1191,7 @@ function errorWords(j, ctx = {}) {
       const cat = ctx.it && ctx.it.cat;
       return cat === "wheel" ? "Your wheel already has that" : cat === "bed" ? "Your bed is already that good" : cat === "room" ? "Your room is already built of that (or better)" : "You already own that";
     }
-    case "reserved": return (ctx.which || whichReserved(ctx.it, ctx.x)) === "burrow" ? "That's the burrow. Squeektoshi sleeps there" : "That spot is the wheel's";
+    case "reserved": return (ctx.which || whichReserved(ctx.it, ctx.x)) === "burrow" ? "That's the burrow. It stays where it is" : "That spot is the wheel's";
     case "overlap": return ctx.with ? `The ${ctx.with.name} is already there` : "Something is already there";
     case "out_of_bounds": case "oob": return ctx.it && ctx.it.zone === "wall" ? "Wall decor has to hang on the wall" : "That doesn't fit there";
     case "unowned": return "None left to place. Buy another in the shop";
@@ -932,14 +1214,26 @@ function logical(e) {
   return { x: ((e.clientX - r.left) / r.width) * LW, y: ((e.clientY - r.top) / r.height) * LH, inside: e.clientX >= r.left && e.clientX < r.right && e.clientY >= r.top && e.clientY < r.bottom };
 }
 const wallYRange = (it) => [ROOM.WALL_TOP, ROOM.WALL_BOTTOM - it.h + 1];
-function cellAt(it, L) { // the ghost is centred on the pointer and clamped into its zone
+// Screen (iso) point -> the flat-room point the placement maths (and the server) speak. Floor + rugs:
+// screen -> the tile under the pointer -> its lane column (inverse of colTile), as that column's
+// centre. Wall: unfold the wall (strip coordinates), then rows count from the top like the flat wall.
+function toFlat(L, zone) {
+  if (zone === "wall") {
+    const px = clamp(Math.floor(L.x), WALL_X0, WALL_X1 - 1);
+    return { x: L.x - colLeft(0), y: L.y - stripTop(px) - wallRowY(0) };
+  }
+  const [i, j] = screenToTile(L.x, L.y);
+  return { x: (tileToCol(i, j) + 0.5) * CELL, y: FLOOR_Y };
+}
+function cellAt(it, Ls) { // the ghost is centred on the pointer and clamped into its zone
+  const L = toFlat(Ls, it.zone);
   const x = clamp(Math.round(L.x / CELL - it.w / 2), 0, ROOM.COLS - it.w);
   if (it.zone !== "wall") return { x, y: ROOM.FLOOR_ROW };
   const [y0, y1] = wallYRange(it);
   return { x, y: clamp(Math.round(L.y / CELL - it.h / 2), y0, y1) };
 }
-function dragCell(L) { // dragging keeps the grab offset: the item moves by whole cells
-  const d = P.drag, it = P.it;
+function dragCell(Ls) { // dragging keeps the grab offset: the item moves by whole cells (d.lx/ly: flat press point)
+  const d = P.drag, it = P.it, L = toFlat(Ls, it.zone);
   const x = clamp(d.x0 + Math.round((L.x - d.lx) / CELL), 0, ROOM.COLS - it.w);
   if (it.zone !== "wall") return { x, y: ROOM.FLOOR_ROW };
   const [y0, y1] = wallYRange(it);
@@ -956,11 +1250,14 @@ function updateGhost(L) {
 }
 function hitTest(L) {
   if (!S.me) return null;
-  const order = { floor: 0, rug: 1, wall: 2 }; // topmost layer first
-  const list = S.me.placed.map((p) => [p, S.catalog.get(p.item)]).filter(([, it]) => it && it.zone).sort((a, b) => order[a[1].zone] - order[b[1].zone]);
+  const order = { floor: 0, rug: 1, wall: 2 }; // topmost layer first; floor billboards front-most first
+  const depth = (p, it) => (it.zone === "floor" ? footY(p.x, it.w) : 0);
+  const list = S.me.placed.map((p) => [p, S.catalog.get(p.item)]).filter(([, it]) => it && it.zone)
+    .sort((a, b) => order[a[1].zone] - order[b[1].zone] || depth(...b) - depth(...a));
+  const inside = (f, x, y) => x >= f.x && x < f.x + f.w && y >= f.y && y < f.y + f.h;
+  const sy = L.y - stripTop(clamp(Math.floor(L.x), WALL_X0, WALL_X1 - 1)); // the pointer on the unfolded wall
   for (const [p, it] of list) {
-    const f = footprint(it, p.x, p.y);
-    if (L.x >= f.x && L.x < f.x + f.w && L.y >= f.y && L.y < f.y + f.h) return p;
+    if (it.zone === "rug" ? rugHit(p, it, L) : it.zone === "wall" ? inside(wallRect(it, p.x, p.y), L.x, sy) : inside(isoRect(it, p.x, p.y), L.x, L.y)) return p;
   }
   return null;
 }
@@ -1027,7 +1324,7 @@ function positionTool() {
   if (!it) { el.hidden = true; return; }
   $("toolName").textContent = it.name;
   el.hidden = false;
-  const f = footprint(it, p.x, p.y), cr = view.getBoundingClientRect(), sr = stage.getBoundingClientRect(), k = cr.width / LW;
+  const f = isoRect(it, p.x, p.y), cr = view.getBoundingClientRect(), sr = stage.getBoundingClientRect(), k = cr.width / LW;
   const tw = el.offsetWidth, th = el.offsetHeight;
   let left = cr.left - sr.left + (f.x + f.w / 2) * k, top = cr.top - sr.top + f.y * k - 6;
   if (top - th < 4) top = cr.top - sr.top + (f.y + f.h) * k + th + 6; // no room above: hang it below
@@ -1074,7 +1371,8 @@ view.addEventListener("pointermove", (e) => {
   const L = logical(e);
   if (press && !P.mode && Math.hypot(e.clientX - press.cx, e.clientY - press.cy) > 6) {
     const p = findPlaced(press.pid);
-    if (p) enterMove(p.pid, { x0: p.x, y0: p.y, lx: press.L.x, ly: press.L.y });
+    const pi = p && S.catalog.get(p.item);
+    if (p && pi) { const F = toFlat(press.L, pi.zone); enterMove(p.pid, { x0: p.x, y0: p.y, lx: F.x, ly: F.y }); }
     press = null;
   }
   if (P.mode) { if (e.pointerType === "mouse" || P.down || P.drag) updateGhost(L); }
@@ -1096,51 +1394,68 @@ addEventListener("keydown", (e) => {
   } else if ((e.key === "Delete" || e.key === "Backspace") && selPid && !P.mode) { e.preventDefault(); removePlaced(findPlaced(selPid)); }
 });
 
-// in-canvas overlay: zone guides, reserved columns, ghost, selection
-function frameRect(x, y, w, h) { g.fillRect(x, y, w, 1); g.fillRect(x, y + h - 1, w, 1); g.fillRect(x, y, 1, h); g.fillRect(x + w - 1, y, 1, h); }
-function ring(f, col) { // dark outer + bright inner: readable on cream walls and on the night sky
-  g.fillStyle = "rgba(12,10,8,.9)"; frameRect(f.x - 1, f.y - 1, f.w + 2, f.h + 2);
-  g.fillStyle = col; frameRect(f.x, f.y, f.w, f.h);
+// in-canvas overlay: zone guides, reserved columns, ghost, selection. Floor + rugs mark lane tiles;
+// wall overlays are painted on the flat wall strip and folded with it.
+function frameRect(x, y, w, h, c = g) { c.fillRect(x, y, w, 1); c.fillRect(x, y + h - 1, w, 1); c.fillRect(x, y, 1, h); c.fillRect(x + w - 1, y, 1, h); }
+function ring(f, col, c = g) { // dark outer + bright inner: readable on cream walls and on the night sky
+  c.fillStyle = "rgba(12,10,8,.9)"; frameRect(f.x - 1, f.y - 1, f.w + 2, f.h + 2, c);
+  c.fillStyle = col; frameRect(f.x, f.y, f.w, f.h, c);
 }
-function ants(x, y, w, h, t) { // marching ants, black/white dashes
+function ants(x, y, w, h, t, c = g) { // marching ants, black/white dashes
   const off = Math.floor(t / 120);
   let i = 0;
-  const dot = (px, py) => { g.fillStyle = ((i++ + off) >> 1) % 2 ? "#ffffff" : "#111111"; g.fillRect(px, py, 1, 1); };
+  const dot = (px, py) => { c.fillStyle = ((i++ + off) >> 1) % 2 ? "#ffffff" : "#111111"; c.fillRect(px, py, 1, 1); };
   for (let px = x; px < x + w; px++) dot(px, y);
   for (let py = y + 1; py < y + h; py++) dot(x + w - 1, py);
   for (let px = x + w - 2; px >= x; px--) dot(px, y + h - 1);
   for (let py = y + h - 2; py > y; py--) dot(x, py);
 }
+const OV = {
+  lane: () => diamondCanvas(null, "rgba(255,255,255,.38)"),
+  reserved: () => diamondCanvas("rgba(239,68,68,.2)", "rgba(239,68,68,.9)", "rgba(239,68,68,.55)"),
+  ok: () => diamondCanvas("rgba(34,197,94,.3)", "#4ade80"),
+  bad: () => diamondCanvas("rgba(239,68,68,.38)", "#f87171"),
+  sel: () => diamondCanvas(null, "rgba(255,255,255,.85)"),
+};
+function laneTiles(x, w, deep = 1) { const out = []; for (let c = x; c < x + w; c++) { const [i, j] = colTile(c); for (let k = 0; k < deep; k++) out.push(c <= ISO.CORNER ? [i + k, j] : [i, j + k]); } return out; }
 function drawPlacement() {
   const now = performance.now();
   if (P.mode && P.it) {
     const it = P.it;
-    // cell-corner dots over the zone (light + dark pixel pair so they show on any wallpaper)
-    const dots = (x, y) => { g.fillStyle = "rgba(255,255,255,.7)"; g.fillRect(x, y, 1, 1); g.fillStyle = "rgba(0,0,0,.45)"; g.fillRect(x + 1, y, 1, 1); };
-    if (it.zone === "wall") { for (let r = ROOM.WALL_TOP; r <= ROOM.WALL_BOTTOM + 1; r++) for (let c = 0; c <= ROOM.COLS; c++) dots(c * CELL, r * CELL); }
-    else for (let c = 0; c <= ROOM.COLS; c++) dots(c * CELL, FLOOR_Y + 1);
-    if (it.zone !== "wall") { // reserved wheel + burrow columns: hatched red on the floor band
-      for (const [a, b] of Object.values(ROOM.RESERVED || {})) {
-        const x0 = a * CELL, x1 = (b + 1) * CELL;
-        g.fillStyle = "rgba(239,68,68,.22)"; g.fillRect(x0, FLOOR_Y, x1 - x0, LH - FLOOR_Y);
-        g.fillStyle = "rgba(239,68,68,.55)";
-        for (let k = x0 - (LH - FLOOR_Y); k < x1; k += 4) for (let d = 0; d < LH - FLOOR_Y; d++) { const px = k + d; if (px >= x0 && px < x1) g.fillRect(px, LH - 1 - d, 1, 1); }
-        g.fillStyle = "rgba(239,68,68,.9)"; g.fillRect(x0, FLOOR_Y, x1 - x0, 1);
+    if (it.zone === "wall") { // cell-corner dots over the wall (light + dark pixel pair so they show on any wallpaper)
+      for (let r = ROOM.WALL_TOP; r <= ROOM.WALL_BOTTOM + 1; r++) for (let c = 0; c <= ROOM.COLS; c++) {
+        const x = Math.min(colLeft(c), WALL_X1 - 2), y = stripTop(x) + wallRowY(r);
+        g.fillStyle = "rgba(255,255,255,.7)"; g.fillRect(x, y, 1, 1); g.fillStyle = "rgba(0,0,0,.45)"; g.fillRect(x + 1, y, 1, 1);
       }
+    } else { // every lane tile outlined; the wheel's and the burrow's hatched red
+      const res = reservedCols();
+      for (let c = 0; c < ROOM.COLS; c++) { const [i, j] = colTile(c); drawTileOverlay(g, i, j, res.has(c) ? OV.reserved() : OV.lane()); }
     }
     if (P.cell) {
-      const f = footprint(it, P.cell.x, P.cell.y), ok = !!(P.valid && P.valid.ok) && P.flashUntil < now;
-      g.globalAlpha = 0.8;
-      if (it.zone === "rug") drawRug({ flip: P.flip }, it, f.x); else drawItem({ flip: P.flip }, it, f.x, f.y, f.w, f.h);
-      g.globalAlpha = 1;
-      g.fillStyle = ok ? "rgba(34,197,94,.18)" : "rgba(239,68,68,.32)"; g.fillRect(f.x, f.y, f.w, f.h);
-      ring(f, ok ? "#4ade80" : "#f87171");
-      if (it.zone === "floor") { g.fillStyle = ok ? "#4ade80" : "#f87171"; g.fillRect(f.x, FLOOR_Y + 1, f.w, 2); } // which floor columns it takes
+      const ok = !!(P.valid && P.valid.ok) && P.flashUntil < now, col = ok ? "#4ade80" : "#f87171";
+      if (it.zone === "wall") {
+        const f = wallRect(it, P.cell.x, P.cell.y);
+        foldLayer((s) => {
+          s.globalAlpha = 0.8; drawItem({ flip: P.flip }, it, f.x, f.y, f.w, f.h, s); s.globalAlpha = 1;
+          s.fillStyle = ok ? "rgba(34,197,94,.18)" : "rgba(239,68,68,.32)"; s.fillRect(f.x, f.y, f.w, f.h);
+          ring(f, col, s);
+        }, f.x - 1, f.x + f.w + 1);
+      } else {
+        for (const [i, j] of laneTiles(P.cell.x, it.w, it.zone === "rug" ? RUG_DEPTH : 1)) drawTileOverlay(g, i, j, ok ? OV.ok() : OV.bad());
+        g.globalAlpha = 0.8;
+        if (it.zone === "rug") { const r = rugProjection({ x: P.cell.x, flip: P.flip }, it); g.drawImage(r.canvas, r.x, r.y); }
+        else { const f = isoRect(it, P.cell.x, P.cell.y); drawItem({ flip: P.flip }, it, f.x, f.y, f.w, f.h); g.globalAlpha = 1; ring(f, col); }
+        g.globalAlpha = 1;
+      }
     }
   }
   if (selPid && !P.mode) {
     const p = findPlaced(selPid), it = p && S.catalog.get(p.item);
-    if (it) { const f = footprint(it, p.x, p.y); ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now); }
+    if (it && it.zone === "wall") { const f = wallRect(it, p.x, p.y); foldLayer((s) => ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now, s), f.x - 1, f.x + f.w + 1); }
+    else if (it) {
+      for (const [i, j] of laneTiles(p.x, it.w, it.zone === "rug" ? RUG_DEPTH : 1)) drawTileOverlay(g, i, j, OV.sel());
+      if (it.zone === "floor") { const f = isoRect(it, p.x, p.y); ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now); }
+    }
   }
 }
 
@@ -1151,9 +1466,10 @@ function thumbPaint(it) {
     if (sprite(tg, "wheel", 0, 0, 0, { angle: 0, tier: it.tier })) sprite(tg, it.sprite, 0, 0, 0, { angle: 0, tier: it.tier });
     else tg.drawImage(placeholderItem(it, 48, 48), 0, 1);
   }];
-  if (it.cat === "bed" || it.cat === "room") return [48, 48, () => { // tier ladders: own art lands with the iso room
-    if (!sprite(tg, it.sprite, 0, 0, 0, { tier: it.tier })) tg.drawImage(placeholderItem(it, 48, 48), 0, 0);
-  }];
+  if (it.cat === "bed" || it.cat === "room") { // bed art (bed_tN), or a corner of the room built of that material (room_tN)
+    const s = (window.SPRITES || {})[it.sprite], bw = (s && s.w) || 48, bh = (s && s.h) || 48;
+    return [bw, bh, () => { if (!sprite(tg, it.sprite, 0, 0, 0, { tier: it.tier })) tg.drawImage(placeholderItem(it, bw, bh), 0, 0); }];
+  }
   if (it.cat === "wallpaper" || it.cat === "floor") return [32, 32, () => {
     if (hasSprite(it.sprite)) { for (let y = 0; y < 32; y += 16) for (let x = 0; x < 32; x += 16) sprite(tg, it.sprite, 0, x, y, {}); }
     else tg.drawImage(it.cat === "floor" ? floorCanvas(it.id) : wallpaperCanvas(it.id), 0, 0, 32, 32, 0, 0, 32, 32);
@@ -1470,40 +1786,40 @@ function certPose(cert) {
 }
 // The player's room as it was at claim time, through the same painters the live room uses.
 function renderPortrait(cert, pose) {
-  const cv = canvas(LW, LH), c = cv.getContext("2d");
+  const cv = canvas(FLAT_W, FLAT_H), c = cv.getContext("2d");
   const room = (cert && cert.room) || {}, { fx, frame: fr } = pose;
   const placed = Array.isArray(room.placed) ? room.placed : [];
   const items = (zone) => placed.map((p) => [p, p && S.catalog.get(p.item)]).filter(([p, it]) => it && it.zone === zone && Number.isInteger(p.x) && Number.isInteger(p.y));
   c.drawImage(wallpaperCanvas(room.wallpaper || "wp_plain"), 0, 0);
   for (const [p, it] of items("wall").sort((a, b) => a[0].y - b[0].y || a[0].x - b[0].x)) drawItem(p, it, p.x * CELL, p.y * CELL, it.w * CELL, it.h * CELL, c, fx, fr);
   c.drawImage(floorCanvas(room.floor || "fl_pine"), 0, FLOOR_Y);
-  for (const [p, it] of items("rug").sort((a, b) => a[0].x - b[0].x)) drawRug(p, it, p.x * CELL, c, fx, fr);
+  for (const [p, it] of items("rug").sort((a, b) => a[0].x - b[0].x)) drawRugFlat(p, it, p.x * CELL, c, fx, fr);
   for (const [p, it] of items("floor").sort((a, b) => a[0].x - b[0].x)) {
     const pw = it.w * CELL, ph = it.h * CELL, x = p.x * CELL;
     c.fillStyle = "rgba(0,0,0,.2)"; c.fillRect(x + 1, FLOOR_Y, pw - 2, 2);
     drawItem(p, it, x, FLOOR_Y - ph, pw, ph, c, fx, fr);
   }
-  if (!sprite(c, "burrow", fr, BURROW.x, BURROW.y, {})) c.drawImage(burrowCanvas(), BURROW.x, BURROW.y);
+  if (!sprite(c, "burrow", fr, FLAT_BURROW.x, FLAT_BURROW.y, {})) c.drawImage(burrowCanvas(), FLAT_BURROW.x, FLAT_BURROW.y);
   const tier = clamp(cert.wheelTier | 0, 0, 5), angle = pose.angle;
-  c.fillStyle = "rgba(0,0,0,.2)"; c.fillRect(WHEEL.cx - 19, FLOOR_Y, 38, 2);
-  if (sprite(c, "wheel", Math.floor(angle * 24) % 4, WHEEL.x, WHEEL.y, { angle, tier })) {
-    if (tier > 0) sprite(c, `wheel_t${tier}`, fr, WHEEL.x, WHEEL.y, { angle, tier });
-  } else drawWheelPlaceholder(c, angle, tier);
+  c.fillStyle = "rgba(0,0,0,.2)"; c.fillRect(FLAT_WHEEL.cx - 19, FLOOR_Y, 38, 2);
+  if (sprite(c, "wheel", Math.floor(angle * 24) % 4, FLAT_WHEEL.x, FLAT_WHEEL.y, { angle, tier })) {
+    if (tier > 0) sprite(c, `wheel_t${tier}`, fr, FLAT_WHEEL.x, FLAT_WHEEL.y, { angle, tier });
+  } else drawWheelPlaceholder(c, angle, tier, FLAT_WHEEL);
   // the hamster, mid-run in the wheel
   const skin = cert.skin || "skin_classic", f = pose.run;
-  const dx = Math.round(SPOT.wheel.x - 12), dy = Math.round(SPOT.wheel.y - (f % 2 ? 1 : 0) - 24);
+  const dx = Math.round(FLAT_SPOT.wheel.x - 12), dy = Math.round(FLAT_SPOT.wheel.y - (f % 2 ? 1 : 0) - 24);
   if (!sprite(c, "hamster_run", f, dx, dy, { flip: false, skin, remap: (window.SKIN_REMAPS || {})[skin] })) c.drawImage(hamsterFrame("run", f, skin), dx, dy);
   // a few watt sparks lifting off the rim
   for (let i = 0; i < 4; i++) {
-    const a = -Math.PI / 2 + (pose.r() - 0.5) * 1.7, d = WHEEL.r + 3 + pose.r() * 20;
-    const x = Math.round(WHEEL.cx + Math.cos(a) * d), y = Math.round(WHEEL.cy + Math.sin(a) * d);
+    const a = -Math.PI / 2 + (pose.r() - 0.5) * 1.7, d = FLAT_WHEEL.r + 3 + pose.r() * 20;
+    const x = Math.round(FLAT_WHEEL.cx + Math.cos(a) * d), y = Math.round(FLAT_WHEEL.cy + Math.sin(a) * d);
     c.fillStyle = "rgba(245,166,35,.55)"; c.fillRect(x - Math.sign(Math.cos(a)), y + 1, 1, 1);
     c.fillStyle = "#ffd166"; c.fillRect(x, y, 1, 1);
   }
   // evening light at a third of the live tint's strength (lights are on: he's running)
   const t = tintAt(fx.utcHour), soft = (v) => Math.round(255 - (255 - v) * 0.35);
   c.globalCompositeOperation = "multiply";
-  c.fillStyle = `rgb(${t.mul.map(soft).join(",")})`; c.fillRect(0, 0, LW, LH);
+  c.fillStyle = `rgb(${t.mul.map(soft).join(",")})`; c.fillRect(0, 0, FLAT_W, FLAT_H);
   c.globalCompositeOperation = "source-over";
   return cv;
 }
@@ -1750,7 +2066,9 @@ $("certShare").onclick = async () => {
 };
 
 // debug handle for the browser console / verification
-window.__squeekroom = { S, ham, wheel, sparks, meter, liveStatus, tintAt, P, checkSpot, enterPlace, select, get selPid() { return selPid; }, get FX() { return FX; },
+window.__squeekroom = { S, ham, wheel, sparks, meter, liveStatus, tintAt, P, checkSpot, enterPlace, select,
+  get iso() { return { ISO, LW, LH, SPOT, IWHEEL, IBURROW, BED_TILE, colTile, colLeft, footY, tileToCol, screenToTile, wallBase, toFlat, isoRect, bedGeom, laneAt }; },
+  get selPid() { return selPid; }, get FX() { return FX; },
   renderNow() { const st = liveStatus(); tick10(); render(st); }, // paints one frame even when rAF is paused (hidden tab)
   renderCert, openCert, closeCert, certLeftWords, get cert() { return certUi.cert; } };
 

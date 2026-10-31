@@ -143,6 +143,26 @@ for (const [id, s] of Object.entries(S)) {
   };
   addCell(lv, id, `${s.w}x${s.h} · live · base ${s.base.frames.length}f`, s.w, s.h, draw, () => zoomScene(s.w, s.h, draw, id + " (live)"));
 }
+// iso room (v2): composite function sprites (room material corners = shop thumbnails), then every bed
+// with the hamster asleep in it, stacked like game.js does (bed, sleeper at bed.sleep, bed_tN_front)
+const cp = section("iso room: room material corners (shop thumbnails) · beds with the sleeper (bed, hamster, front layer)");
+for (const [id, s] of Object.entries(S)) {
+  if (typeof s !== "function" || !s.composite) continue;
+  const draw = (ctx, ms) => s(ctx, Math.floor(ms / 100), 0, 0, {});
+  addCell(cp, s.name ? `${id} (${s.name})` : id, `${s.w}x${s.h} · composite`, s.w, s.h, draw, () => zoomScene(s.w, s.h, draw, id));
+}
+for (let t = 0; t <= 5; t++) {
+  const b = S["bed_t" + t], fr = S["bed_t" + t + "_front"];
+  if (!b || typeof b === "function") continue;
+  const W = b.w + 4, H = b.h + 14;
+  const draw = (ctx, ms) => {
+    const bx = 2, by = H - b.h, [sx, sy] = b.sleep || [b.w >> 1, b.h - 3];
+    drawSprite(ctx, b, Math.floor(ms / 100), bx, by, {});
+    drawSprite(ctx, S.hamster_sleep, Math.floor(ms / 1200), bx + sx - 12, by + sy - 24, { flip: true });
+    if (fr) drawSprite(ctx, fr, Math.floor(ms / 100), bx, by, {});
+  };
+  addCell(cp, `bed_t${t} asleep`, b.name || "", W, H, draw, () => zoomScene(W, H, draw, `bed_t${t} with the sleeper`));
+}
 $("count").textContent = `${Object.keys(S).length} sprites · ${nf} frames`;
 
 // zoom overlay (12x): animated view + every frame
