@@ -880,7 +880,7 @@ test("leaderboard: by balance, shape, per-viewer raidable/you flags, 10 s cache,
   const st = raidWorld({ atk: { lifetimeWatts: 900, roomTier: 2 }, def: { watts: 20_000 }, poor: { watts: 8000 } });
   const lb = S.leaderboard(st, TA, T0);
   assert.deepEqual(lb.rows.map((r) => r.nick), ["def", "atk", "poor"]);
-  assert.deepEqual(lb.rows[1], { rank: 2, publicId: pidOf(TA), nick: "atk", watts: 10_000, lifetimeWatts: 900, roomTier: 2, raidable: false, revenge: false, you: true });
+  assert.deepEqual(lb.rows[1], { rank: 2, publicId: pidOf(TA), nick: "atk", name: "atk", verified: false, watts: 10_000, lifetimeWatts: 900, roomTier: 2, raidable: false, revenge: false, you: true });
   assert.deepEqual(lb.rows.map((r) => r.raidable), [true, false, true]); // 8k >= 70% of 10k
   assert.deepEqual(lb.raid, { open: true, cooldownMsLeft: 0 });
   assert.equal(lb.total, 3);
@@ -935,4 +935,248 @@ test("raid persistence: new fields default-patched on load, existing values kept
   assert.ok(Array.isArray(snap.raidFeed));
   assert.equal(snap.raid, null);
   assert.equal(typeof snap.burned, "number");
+});
+
+// ---------- wallet sign-in: lib/ethsig.js ----------
+const E = require("../lib/ethsig.js");
+const nodeCrypto = require("node:crypto");
+const KEY_A = 0xa11cen, KEY_B = 0xb0bn, KEY_C = 0xc0ffee1234567890abcdefn;
+
+test("keccak256: fixed Ethereum vectors (not SHA3-256), strings hash as UTF-8 bytes", () => {
+  assert.equal(E.keccak256Hex(""), "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470");
+  assert.equal(E.keccak256Hex("abc"), "4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45");
+  assert.equal(E.keccak256Hex("The quick brown fox jumps over the lazy dog"), "4d741b6f1eb29cb2a9b9911c82f56fa8d73b04959d3d9d222895df6c0b28aa15");
+  assert.notEqual(E.keccak256Hex(""), nodeCrypto.createHash("sha3-256").update("").digest("hex"));
+  assert.equal(E.keccak256Hex(Buffer.from("abc")), E.keccak256Hex("abc"));
+  assert.equal(E.keccak256Hex("—"), E.keccak256Hex(Buffer.from([0xe2, 0x80, 0x94])));
+  assert.equal(E.keccak256("x").length, 32);
+});
+
+test("keccak sponge: with the SHA3 pad byte it matches node:crypto sha3-256 across block boundaries", () => {
+  for (let n = 0; n <= 300; n++) {
+    const b = Buffer.alloc(n);
+    for (let i = 0; i < n; i++) b[i] = (i * 31 + n * 7) & 0xff;
+    assert.equal(E.sha3_256(b).toString("hex"), nodeCrypto.createHash("sha3-256").update(b).digest("hex"), `len ${n}`);
+  }
+});
+
+test("secp256k1: well-known addresses for keys 1..3; public keys match node's ECDH", () => {
+  assert.equal(E.addressFromPrivate(1n), "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf");
+  assert.equal(E.addressFromPrivate(2n), "0x2b5ad5c4795c026514f8317c7a215e218dccd6cf");
+  assert.equal(E.addressFromPrivate(3n), "0x6813eb9362372eef6200f3b1dbc3f819671cba69");
+  for (const bad of [0n, E.N, -1n, 5]) assert.throws(() => E.addressFromPrivate(bad), `key ${bad}`);
+  if (!nodeCrypto.getCurves().includes("secp256k1")) return;
+  const ecdh = nodeCrypto.createECDH("secp256k1");
+  for (const k of [1n, 2n, KEY_A, KEY_C, E.N - 1n, BigInt("0x" + E.keccak256Hex("seed"))]) {
+    ecdh.setPrivateKey(Buffer.from(k.toString(16).padStart(64, "0"), "hex"));
+    const [x, y] = E.publicKeyFromPrivate(k);
+    assert.equal(ecdh.getPublicKey("hex"), "04" + x.toString(16).padStart(64, "0") + y.toString(16).padStart(64, "0"), `key ${k}`);
+  }
+});
+
+test("personalDigest: EIP-191 prefix with the UTF-8 byte length", () => {
+  const prefixed = (s) => E.keccak256Hex(Buffer.concat([Buffer.from(`\x19Ethereum Signed Message:\n${Buffer.byteLength(s)}`), Buffer.from(s)]));
+  assert.equal(E.personalDigest("hello").toString("hex"), prefixed("hello"));
+  assert.equal(E.personalDigest("a — b").toString("hex"), prefixed("a — b")); // 7 bytes, 5 chars
+  assert.notEqual(E.personalDigest("a — b").toString("hex"), E.keccak256Hex("\x19Ethereum Signed Message:\n5a — b"));
+});
+
+test("signPersonal -> recoverPersonalSig roundtrip; deterministic, low-s; v 0/1 and high-s also accepted", () => {
+  const msgs = ["hello", "", "Squeekroom — sign in\nNonce: 00ff", "x".repeat(500)];
+  for (const k of [1n, 2n, KEY_A, KEY_B, KEY_C, E.N - 2n]) {
+    const addr = E.addressFromPrivate(k);
+    for (const m of msgs) {
+      const sig = E.signPersonal(m, k);
+      assert.match(sig, /^0x[0-9a-f]{128}(1b|1c)$/);
+      assert.equal(E.signPersonal(m, k), sig, "deterministic");
+      assert.equal(E.recoverPersonalSig(m, sig), addr, `key ${k} msg ${m.length}`);
+      const p = E.parseSignature(sig);
+      assert.ok(p.s <= E.N / 2n, "low-s");
+      // v as 0/1 and without the 0x prefix
+      const v01 = sig.slice(0, -2) + (p.recid ? "01" : "00");
+      assert.equal(E.recoverPersonalSig(m, v01), addr);
+      assert.equal(E.recoverPersonalSig(m, sig.slice(2)), addr);
+      // the malleable twin (n - s, flipped parity) recovers the same signer
+      const hi = "0x" + sig.slice(2, 66) + (E.N - p.s).toString(16).padStart(64, "0") + (p.recid ? "1b" : "1c");
+      assert.equal(E.recoverPersonalSig(m, hi), addr);
+      // another message does not recover this signer
+      assert.notEqual(E.recoverPersonalSig(m + "!", sig), addr);
+    }
+  }
+});
+
+test("recoverPersonalSig: malformed signatures and out-of-range r/s give null", () => {
+  const sig = E.signPersonal("hello", KEY_A);
+  const r = sig.slice(2, 66), s = sig.slice(66, 130);
+  const h = (v) => v.toString(16).padStart(64, "0");
+  for (const bad of [
+    undefined, null, 42, {}, "", "0x", sig.slice(0, -2), sig + "00", sig.replace(/.$/, "z"),
+    sig.slice(0, -2) + "1d", sig.slice(0, -2) + "02", // v 29 / 2
+    "0x" + h(0n) + s + "1b", "0x" + r + h(0n) + "1b", "0x" + h(E.N) + s + "1b", "0x" + r + h(E.N) + "1b",
+    "0x" + h(E.N + 5n) + s + "1b", "0x" + "f".repeat(64) + s + "1b",
+  ]) assert.equal(E.recoverPersonalSig("hello", bad), null, `${bad}`);
+  assert.equal(E.recoverPersonalSig("hello", Buffer.from(sig.slice(2), "hex")), E.addressFromPrivate(KEY_A)); // bytes work too
+});
+
+// ---------- wallet sign-in: server flow ----------
+function walletWorld() {
+  const st = { lastAdvanceAt: T0 - 60_000, burned: 0, raidFeed: [], players: {} };
+  for (const [t, nick, watts] of [[TA, "atk", 10_000], [TB, "def", 10_000], [TC, "poor", 1_000]]) {
+    st.players[t] = Object.assign(S.newPlayer(1000, T0, t), { nick, watts });
+  }
+  return st;
+}
+// Run the full sign-in for `token` with private key `key`; returns verifyWallet's result.
+function signIn(st, token, key, now = T0, { address } = {}) {
+  const n = S.issueWalletNonce(st, token, now);
+  assert.equal(n.ok, true);
+  return S.verifyWallet(st, token, { address: address || E.addressFromPrivate(key), signature: E.signPersonal(n.message, key) }, now + 1000);
+}
+
+test("wallet nonce: burner warning, publicId, 16-byte hex nonce, ISO time; 10 min; a new one replaces it", () => {
+  const st = walletWorld();
+  const r = S.issueWalletNonce(st, TA, T0);
+  assert.equal(r.ok, true);
+  assert.equal(r.expiresAt, T0 + 10 * 60_000);
+  assert.equal(S.WALLET.NONCE_TTL_MS, 600_000);
+  const lines = r.message.split("\n");
+  assert.equal(lines[0], "Squeekroom — sign in");
+  assert.ok(lines.includes("EXPERIMENTAL GAME — link a BURNER wallet only."));
+  assert.ok(lines.includes(`Room: ${pidOf(TA)}`));
+  assert.ok(lines.includes(`Issued At: ${new Date(T0).toISOString()}`));
+  const nonce = lines.find((l) => l.startsWith("Nonce: ")).slice(7);
+  assert.match(nonce, /^[0-9a-f]{32}$/);
+  assert.deepEqual(st.players[TA].walletNonce, { message: r.message, expiresAt: r.expiresAt }); // stored verbatim
+  const again = S.issueWalletNonce(st, TA, T0 + 5);
+  assert.notEqual(again.message, r.message, "fresh random nonce each time");
+  assert.equal(st.players[TA].walletNonce.message, again.message);
+  assert.equal(S.issueWalletNonce(st, TA, T0, "ab".repeat(16)).message, S.walletMessage(pidOf(TA), "ab".repeat(16), T0));
+  assert.equal(S.issueWalletNonce(st, "z".repeat(32), T0).error, "unknown_player");
+});
+
+test("wallet verify: happy path binds the lowercase address, spends the nonce, shows in the public view", () => {
+  const st = walletWorld();
+  const addr = E.addressFromPrivate(KEY_A);
+  const n = S.issueWalletNonce(st, TA, T0);
+  const sig = E.signPersonal(n.message, KEY_A);
+  const mixed = "0x" + addr.slice(2).toUpperCase();
+  const r = S.verifyWallet(st, TA, { address: mixed, signature: sig }, T0 + 60_000);
+  assert.deepEqual(r, { ok: true, wallet: addr });
+  const p = st.players[TA];
+  assert.equal(p.wallet, addr);
+  assert.equal(p.walletNonce, null);
+  // single-use: replaying the same proof needs a new message
+  assert.equal(S.verifyWallet(st, TA, { address: addr, signature: sig }, T0 + 61_000).error, "no_nonce");
+  const pub = S.publicPlayer(p, T0);
+  assert.deepEqual([pub.wallet, pub.username, pub.verified], [addr, null, true]);
+  assert.ok(!("walletNonce" in pub));
+  const anon = S.publicPlayer(st.players[TB], T0);
+  assert.deepEqual([anon.wallet, anon.username, anon.verified], [null, null, false]);
+});
+
+test("wallet verify: no_nonce, nonce_expired, bad_address, bad_signature, wrong signer -> wallet_mismatch", () => {
+  const st = walletWorld();
+  const addrA = E.addressFromPrivate(KEY_A);
+  assert.equal(S.verifyWallet(st, TA, { address: addrA, signature: "0x00" }, T0).error, "no_nonce");
+  // expiry at exactly 10 min; an expired message is dropped
+  let n = S.issueWalletNonce(st, TA, T0);
+  assert.equal(S.verifyWallet(st, TA, { address: addrA, signature: E.signPersonal(n.message, KEY_A) }, T0 + 600_000).error, "nonce_expired");
+  assert.equal(st.players[TA].walletNonce, null);
+  n = S.issueWalletNonce(st, TA, T0);
+  const good = E.signPersonal(n.message, KEY_A);
+  for (const address of [undefined, 42, "0x123", addrA.slice(2), addrA + "0"]) assert.equal(S.verifyWallet(st, TA, { address, signature: good }, T0).error, "bad_address", `${address}`);
+  for (const signature of [undefined, "", "0xdead", good.slice(0, -2) + "1d"]) assert.equal(S.verifyWallet(st, TA, { address: addrA, signature }, T0).error, "bad_signature", `${signature}`);
+  // signed by B but claiming A; signed by A over some other text
+  assert.equal(S.verifyWallet(st, TA, { address: addrA, signature: E.signPersonal(n.message, KEY_B) }, T0).error, "wallet_mismatch");
+  assert.equal(S.verifyWallet(st, TA, { address: addrA, signature: E.signPersonal(n.message + " ", KEY_A) }, T0).error, "wallet_mismatch");
+  assert.equal(S.verifyWallet(st, TA, { address: addrA, signature: E.signPersonal(S.walletMessage(pidOf(TA), "00".repeat(16), T0), KEY_A) }, T0).error, "wallet_mismatch");
+  // a proof for another player's message does not work here either
+  const nb = S.issueWalletNonce(st, TB, T0);
+  assert.equal(S.verifyWallet(st, TA, { address: addrA, signature: E.signPersonal(nb.message, KEY_A) }, T0).error, "wallet_mismatch");
+  assert.equal(st.players[TA].wallet, null);
+  // failures keep the pending message: the right signature still works
+  assert.ok(S.verifyWallet(st, TA, { address: addrA, signature: good }, T0 + 1).ok);
+  assert.equal(S.verifyWallet(st, "z".repeat(32), {}, T0).error, "unknown_player");
+});
+
+test("wallet verify: one wallet per player (wallet_taken); re-verifying or switching your own is fine", () => {
+  const st = walletWorld();
+  assert.ok(signIn(st, TA, KEY_A).ok);
+  const r = signIn(st, TB, KEY_A);
+  assert.deepEqual([r.ok, r.error], [false, "wallet_taken"]);
+  assert.equal(st.players[TB].wallet, null);
+  assert.ok(st.players[TB].walletNonce, "a refused bind keeps the pending message");
+  assert.ok(signIn(st, TA, KEY_A, T0 + 5000).ok); // same wallet again
+  assert.ok(signIn(st, TB, KEY_B).ok);
+  assert.ok(signIn(st, TA, KEY_C).ok); // A moves to another wallet ...
+  assert.equal(st.players[TA].wallet, E.addressFromPrivate(KEY_C));
+  assert.ok(signIn(st, TC, KEY_A).ok); // ... which frees the old one
+});
+
+test("wallet username: needs a wallet, 3-16 of [A-Za-z0-9_], unique ignoring case, may change", () => {
+  const st = walletWorld();
+  assert.equal(S.setUsername(st, TA, { username: "Squeaker" }).error, "wallet_required");
+  assert.ok(signIn(st, TA, KEY_A).ok);
+  assert.ok(signIn(st, TB, KEY_B).ok);
+  for (const username of [undefined, 42, "", "ab", "a".repeat(17), "has space", "dash-ed", "emoji\u{1F600}", "ünï", "semi;colon", ["abc"]]) {
+    assert.equal(S.setUsername(st, TA, { username }).error, "bad_username", `${username}`);
+  }
+  assert.equal(st.players[TA].username, null);
+  assert.deepEqual(S.setUsername(st, TA, { username: "Squeaker_01" }), { ok: true, username: "Squeaker_01" });
+  assert.ok(S.setUsername(st, TB, { username: "abc" }).ok);
+  assert.ok(S.setUsername(st, TB, { username: "a".repeat(16) }).ok);
+  assert.equal(S.setUsername(st, TB, { username: "squeaker_01" }).error, "username_taken");
+  assert.equal(S.setUsername(st, TB, { username: "SQUEAKER_01" }).error, "username_taken");
+  assert.ok(S.setUsername(st, TA, { username: "SQUEAKER_01" }).ok, "re-casing your own name is fine");
+  assert.ok(S.setUsername(st, TA, { username: "Wheelie" }).ok);
+  assert.ok(S.setUsername(st, TB, { username: "squeaker_01" }).ok, "a released name is free again");
+  assert.deepEqual([st.players[TA].username, st.players[TB].username], ["Wheelie", "squeaker_01"]);
+  assert.equal(S.WALLET.USERNAME_RE.source, "^[A-Za-z0-9_]{3,16}$");
+});
+
+test("leaderboard: verified players show their username as name; others fall back to the nick", () => {
+  const st = walletWorld();
+  st.players[TB].watts = 20_000;
+  const lb0 = S.leaderboard(st, null, T0);
+  assert.deepEqual(lb0.rows.map((r) => [r.name, r.verified]), [["def", false], ["atk", false], ["poor", false]]);
+  assert.ok(signIn(st, TA, KEY_A).ok);
+  assert.ok(S.setUsername(st, TA, { username: "Hammy" }).ok);
+  assert.ok(signIn(st, TC, KEY_C).ok); // verified, no username yet
+  const lb = S.leaderboard(st, null, T0 + 1); // within the 10 s cache: wallet + username changes invalidate it
+  assert.deepEqual(lb.rows.map((r) => [r.name, r.verified, r.nick]), [["def", false, "def"], ["Hammy", true, "atk"], ["poor", true, "poor"]]);
+  assert.equal(S.displayName(st.players[TA]), "Hammy");
+  assert.equal(S.displayName({ nick: "" }), "anon");
+  assert.ok(!JSON.stringify(lb).includes(E.addressFromPrivate(KEY_A)), "rows carry the verified flag, not the address");
+});
+
+test("raid feed: records display names at raid time", () => {
+  const st = walletWorld();
+  assert.ok(signIn(st, TA, KEY_A).ok);
+  assert.ok(S.setUsername(st, TA, { username: "Raider" }).ok);
+  const r = raid(st, TA, TB, 100, 2, T0, seq(LOSE));
+  assert.ok(r.ok);
+  assert.deepEqual([r.feed.atk, r.feed.def], ["Raider", "def"]);
+  assert.ok(signIn(st, TB, KEY_B).ok);
+  assert.ok(S.setUsername(st, TB, { username: "Guard" }).ok);
+  st.players[TA].lastRaidAt = 0;
+  const r2 = raid(st, TA, TB, 100, 2, T0 + 1, seq(LOSE));
+  assert.deepEqual([r2.feed.atk, r2.feed.def], ["Raider", "Guard"]);
+  assert.deepEqual([st.raidFeed[0].atk, st.raidFeed[0].def], ["Raider", "def"]); // older entries keep the old name
+  for (const e of st.raidFeed) assert.deepEqual(Object.keys(e).sort(), ["amount", "at", "atk", "atkId", "crit", "def", "defId", "win"]);
+});
+
+test("wallet persistence + config: fields default to null on load, kept when present; rules published", () => {
+  const n = S.newPlayer(1000, T0, TA);
+  assert.deepEqual([n.wallet, n.username, n.walletNonce], [null, null, null]);
+  const old = fresh({ watts: 5000 });
+  for (const k of ["wallet", "username", "walletNonce"]) delete old[k];
+  const keep = fresh({ wallet: "0xabc", username: "Kept", walletNonce: { message: "m", expiresAt: T0 } });
+  S.patchState({ height: 10, players: { [TA]: old, [TB]: keep } }, T0);
+  assert.deepEqual([old.wallet, old.username, old.walletNonce, old.watts], [null, null, null, 5000]);
+  assert.deepEqual([keep.wallet, keep.username, keep.walletNonce], ["0xabc", "Kept", { message: "m", expiresAt: T0 }]);
+  const cfg = S.configPayload();
+  assert.equal(cfg.wallet.enabled, true);
+  assert.equal(cfg.wallet.burnerWarning, true);
+  assert.equal(new RegExp(cfg.wallet.usernameRe).test("Ok_name"), true);
+  assert.equal(new RegExp(cfg.wallet.usernameRe).test("no"), false);
 });

@@ -4,6 +4,8 @@
 // Watts buy cosmetics; wheel and bed upgrades are the only items that raise generation.
 // While he runs, players may raid richer rooms (POST /api/raid): a won raid moves watts, a lost
 // stake is burned. GET /api/leaderboard lists every room by balance.
+// Optional wallet sign-in (POST /api/wallet/{nonce,verify,username}): a gasless personal_sign proof
+// binds an EVM address, which unlocks a unique username shown on the leaderboard.
 // Zero dependencies. Node 18+ (uses global fetch).
 //
 //   node server.js            live mode: settled height from SqueekCore.state() on Sepolia
@@ -17,6 +19,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const ethsig = require("./lib/ethsig.js");
 
 const PORT = Number(process.env.PORT || 8788);
 const API = process.env.SQUEEK_API || "https://api.squeekchain.com/v1";
@@ -205,6 +208,9 @@ function newPlayer(height, now = Date.now(), token = null) {
     commemorative: null,
     lastRaidAt: 0, // ms of this player's last resolved raid (attacker cooldown)
     raidedBy: [], // ring of {pid, at, avenged}: who raided this room (revenge waives the 70% rule once)
+    wallet: null, // lowercase 0x address once a personal_sign proof was verified
+    username: null, // shown on the leaderboard instead of the nick; needs a bound wallet
+    walletNonce: null, // pending sign-in {message, expiresAt}: single-use, 10 min
   };
 }
 // Bring an older player record up to the current shape (missing fields get their defaults).
@@ -216,11 +222,83 @@ function patchPlayer(p, token) {
   if (!Number.isInteger(p.roomTier)) p.roomTier = 0;
   if (!Number.isFinite(p.lastRaidAt)) p.lastRaidAt = 0;
   if (!Array.isArray(p.raidedBy)) p.raidedBy = [];
+  if (p.wallet === undefined) p.wallet = null;
+  if (p.username === undefined) p.username = null;
+  if (p.walletNonce === undefined) p.walletNonce = null;
   for (const k of LEGACY_FIELDS) delete p[k];
   return p;
 }
 function getPlayer(st, token) {
   return typeof token === "string" && TOKEN_RE.test(token) && Object.hasOwn(st.players, token) ? st.players[token] : null;
+}
+
+// ---------- wallet sign-in (optional; EIP-191 personal_sign, gasless) ----------
+// A player asks for a one-time message, signs it in their wallet, and the server recovers the signer
+// (lib/ethsig.js) from the exact stored text. A bound wallet unlocks a unique username, which the
+// leaderboard and raid feed show instead of the free-text nick. Players without a wallet are unaffected.
+const WALLET = {
+  NONCE_TTL_MS: 600_000, // a pending sign-in message lives 10 minutes and is spent by a successful verify
+  USERNAME_RE: /^[A-Za-z0-9_]{3,16}$/,
+  ADDRESS_RE: /^0x[0-9a-fA-F]{40}$/,
+};
+const displayName = (p) => (p && p.username) || (p && p.nick) || "anon";
+function walletMessage(publicId, nonceHex, now) {
+  return [
+    "Squeekroom — sign in",
+    "",
+    "EXPERIMENTAL GAME — link a BURNER wallet only.",
+    "Signing is free: no transaction, no gas. It only proves you own this address.",
+    "",
+    `Room: ${publicId}`,
+    `Nonce: ${nonceHex}`,
+    `Issued At: ${new Date(now).toISOString()}`,
+  ].join("\n");
+}
+// Issue (or replace) the player's pending sign-in message. nonceHex is injectable for tests.
+function issueWalletNonce(st, token, now = Date.now(), nonceHex = crypto.randomBytes(16).toString("hex")) {
+  const p = getPlayer(st, token);
+  if (!p) return fail("unknown_player");
+  p.walletNonce = { message: walletMessage(p.publicId, nonceHex, now), expiresAt: now + WALLET.NONCE_TTL_MS };
+  return { ok: true, message: p.walletNonce.message, expiresAt: p.walletNonce.expiresAt };
+}
+// body {address, signature}: the signature must recover to `address` over the pending message.
+// Order: nonce -> expiry -> address -> signature -> signer match -> uniqueness. Failures (other than
+// expiry) keep the pending message so the player can retry; success spends it.
+function verifyWallet(st, token, body, now = Date.now()) {
+  const p = getPlayer(st, token);
+  if (!p) return fail("unknown_player");
+  const pending = p.walletNonce;
+  if (!pending || typeof pending.message !== "string") return fail("no_nonce");
+  if (!(now < pending.expiresAt)) {
+    p.walletNonce = null;
+    return fail("nonce_expired");
+  }
+  const b = body && typeof body === "object" ? body : {};
+  if (typeof b.address !== "string" || !WALLET.ADDRESS_RE.test(b.address)) return fail("bad_address");
+  const address = b.address.toLowerCase();
+  const signer = ethsig.recoverPersonalSig(pending.message, b.signature);
+  if (!signer) return fail("bad_signature");
+  if (signer !== address) return fail("wallet_mismatch");
+  for (const q of Object.values(st.players)) if (q && q !== p && q.wallet === address) return fail("wallet_taken");
+  p.wallet = address;
+  p.walletNonce = null;
+  invalidateLeaderboard(st);
+  return { ok: true, wallet: address };
+}
+// body {username}: needs a bound wallet; 3-16 of [A-Za-z0-9_], unique case-insensitively; may change.
+function setUsername(st, token, body) {
+  const p = getPlayer(st, token);
+  if (!p) return fail("unknown_player");
+  if (!p.wallet) return fail("wallet_required");
+  const u = body && typeof body === "object" ? body.username : undefined;
+  if (typeof u !== "string" || !WALLET.USERNAME_RE.test(u)) return fail("bad_username");
+  const key = u.toLowerCase();
+  for (const q of Object.values(st.players)) {
+    if (q && q !== p && typeof q.username === "string" && q.username.toLowerCase() === key) return fail("username_taken");
+  }
+  p.username = u;
+  invalidateLeaderboard(st);
+  return { ok: true, username: u };
 }
 
 // ---------- economy (pure-ish: explicit args, no globals) ----------
@@ -549,7 +627,7 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
   if (!Array.isArray(def.raidedBy)) def.raidedBy = [];
   def.raidedBy = def.raidedBy.filter((e) => e && now - e.at < R.REVENGE_WINDOW_MS);
   pushRing(def.raidedBy, { pid: atk.publicId, at: now, avenged: false }, R.RAIDED_BY_MAX);
-  const feed = { at: now, atk: atk.nick, atkId: atk.publicId, def: def.nick, defId: def.publicId, win: r.win, amount: r.win ? r.loot : stake, crit: r.win ? r.crit : false };
+  const feed = { at: now, atk: displayName(atk), atkId: atk.publicId, def: displayName(def), defId: def.publicId, win: r.win, amount: r.win ? r.loot : stake, crit: r.win ? r.crit : false };
   if (!Array.isArray(st.raidFeed)) st.raidFeed = [];
   pushRing(st.raidFeed, feed, R.FEED_MAX);
   invalidateLeaderboard(st);
@@ -564,7 +642,7 @@ function leaderboardRows(st, now) {
   if (c && now >= c.at && now - c.at < R.LEADERBOARD_CACHE_MS) return c;
   const all = Object.values(st.players).filter((p) => p && p.publicId);
   all.sort((a, b) => b.watts - a.watts || b.lifetimeWatts - a.lifetimeWatts || (a.publicId < b.publicId ? -1 : a.publicId > b.publicId ? 1 : 0));
-  const rows = all.slice(0, R.LEADERBOARD_MAX).map((p, i) => ({ rank: i + 1, publicId: p.publicId, nick: p.nick, watts: p.watts, lifetimeWatts: p.lifetimeWatts, roomTier: p.roomTier | 0 }));
+  const rows = all.slice(0, R.LEADERBOARD_MAX).map((p, i) => ({ rank: i + 1, publicId: p.publicId, nick: p.nick, name: displayName(p), verified: !!p.wallet, watts: p.watts, lifetimeWatts: p.lifetimeWatts, roomTier: p.roomTier | 0 }));
   const out = { at: now, rows, total: all.length };
   LB_CACHE.set(st, out);
   return out;
@@ -847,6 +925,9 @@ function publicPlayer(p, now = Date.now()) {
     nextHeartbeatMs: p.lastHeartbeat > 0 ? Math.max(0, BALANCE.HEARTBEAT_MIN_INTERVAL_MS - (now - p.lastHeartbeat)) : 0,
     certEligible: certEligible(p),
     commemorative: p.commemorative,
+    wallet: p.wallet || null,
+    username: p.username || null,
+    verified: !!p.wallet,
   };
 }
 let playerCount = 0;
@@ -897,7 +978,10 @@ function snapshot(token) {
 // Static rules and catalog: fetched once per page load (GET /api/config), never polled.
 // Every BALANCE key is public tuning (nothing secret lives there), so it ships whole.
 function configPayload() {
-  return { demo: DEMO, core: CORE, api: API, balance: BALANCE, room: ROOM, catalog: CATALOG };
+  return {
+    demo: DEMO, core: CORE, api: API, balance: BALANCE, room: ROOM, catalog: CATALOG,
+    wallet: { enabled: true, usernameRe: WALLET.USERNAME_RE.source, burnerWarning: true, nonceTtlMs: WALLET.NONCE_TTL_MS },
+  };
 }
 
 // ---------- routes ----------
@@ -976,8 +1060,25 @@ const POST_ROUTES = {
     }
     return okMe(p, { result: r.result, feed: r.feed });
   },
+  // Wallet sign-in: nonce -> personal_sign in the wallet -> verify {address, signature} -> username.
+  "/api/wallet/nonce": (b, p, token) => {
+    const r = issueWalletNonce(state, token);
+    if (!r.ok) return err(WALLET_ERR_STATUS[r.error] || 400, r.error);
+    return [200, r];
+  },
+  "/api/wallet/verify": (b, p, token) => {
+    const r = verifyWallet(state, token, b);
+    if (!r.ok) return err(WALLET_ERR_STATUS[r.error] || 400, r.error);
+    return okMe(p, { wallet: r.wallet });
+  },
+  "/api/wallet/username": (b, p, token) => {
+    const r = setUsername(state, token, b);
+    if (!r.ok) return err(WALLET_ERR_STATUS[r.error] || 400, r.error);
+    return okMe(p, { username: r.username });
+  },
 };
 const RAID_ERR_STATUS = { hamster_asleep: 409, chain_unknown: 409, chain_stale: 409, cooldown: 429, bad_target: 404, unknown_player: 404, not_eligible: 403, self_target: 400 };
+const WALLET_ERR_STATUS = { unknown_player: 404, no_nonce: 409, nonce_expired: 410, wallet_taken: 409, username_taken: 409, wallet_required: 403 };
 const DEV_ROUTES = {
   "/api/dev/advance": (b) => {
     const n = b.n == null ? 1 : b.n;
@@ -1082,7 +1183,8 @@ module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certElig
 Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
   raidChance, resolveRaid, raidOdds, wealthTilt, stakeBounds, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
-  leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS });
+  leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS,
+  WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername });
 
 if (require.main === module) {
   load();
