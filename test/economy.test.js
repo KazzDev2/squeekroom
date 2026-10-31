@@ -1729,3 +1729,60 @@ test("fixtures: the wheel and the bed move on open floor tiles, 2 tiles apart", 
   assert.deepEqual(old.fixtures.bed, { i: 7, j: 2, flip: false });
   assert.deepEqual(S.publicPlayer(p).fixtures, p.fixtures);
 });
+
+// ---------- sleep by the live reading ----------
+const reading = (status, at, freshness = "online") => ({ coreStatus: status, freshness, updatedAt: new Date(at).toISOString() });
+
+test("asleep: a fresh live reading decides (asleep 20 s after it stops saying ACTIVE); else the chain", () => {
+  const st = { lastAdvanceAt: T0 - 5_000, players: {} };
+  // no reading: the chain alone
+  assert.equal(S.asleep(st, T0), false);
+  assert.equal(S.asleep({ ...st, lastAdvanceAt: T0 - BALANCE.IDLE_AFTER_MS }, T0), true);
+  // running
+  st.hamster = reading("ACTIVE", T0);
+  S.noteStatus(st, T0);
+  assert.equal(st.lastStatusActiveAt, T0);
+  assert.equal(S.asleep(st, T0), false);
+  // he stops: a pause for STATUS_PAUSE_MS, then asleep although the last block is recent
+  st.hamster = reading("IDLE", T0 + 10_000);
+  S.noteStatus(st, T0 + 10_000);
+  assert.equal(st.lastStatusActiveAt, T0, "an IDLE reading doesn't move the clock");
+  assert.equal(S.STATUS_PAUSE_MS, 20_000);
+  assert.equal(S.asleep(st, T0 + 19_999), false);
+  assert.equal(S.asleep(st, T0 + 20_000), true);
+  // ACTIVE again wakes him at once, whatever the chain says
+  st.hamster = reading("ACTIVE", T0 + 600_000);
+  assert.equal(S.asleep(st, T0 + 600_000), false);
+  // a reading older than 2 min, or marked stale, is ignored: the chain decides
+  st.hamster = reading("ACTIVE", T0);
+  assert.equal(S.asleep(st, T0 + 200_000), true); // no block for 205 s
+  st.hamster = reading("IDLE", T0 + 30_000, "stale");
+  assert.equal(S.asleep({ ...st, lastAdvanceAt: T0 + 25_000 }, T0 + 30_000), false); // a block 5 s ago
+  assert.equal(S.statusFresh(null, T0), false);
+});
+
+test("raids and bed income follow asleep(): closed 20 s after he stops, not 90 s", () => {
+  const st = { lastAdvanceAt: T0, lastBedTickAt: null, players: { a: fresh() }, hamster: reading("ACTIVE", T0) };
+  S.noteStatus(st, T0);
+  assert.equal(S.raidWindow(st.lastAdvanceAt, T0 + 1_000, null, st).open, true);
+  st.hamster = reading("IDLE", T0 + 25_000);
+  assert.deepEqual(S.raidWindow(st.lastAdvanceAt, T0 + 25_000, null, st), { open: false, reason: "hamster_asleep" });
+  assert.equal(S.raidWindow(st.lastAdvanceAt, T0 + 25_000).open, true, "the chain alone would still say open");
+  assert.equal(S.raidStatus(st, st.players.a, T0 + 25_000).open, false);
+  S.accrueBed(st, S.asleep(st, T0 + 25_000), T0 + 25_000);
+  S.accrueBed(st, S.asleep(st, T0 + 85_000), T0 + 85_000);
+  assert.equal(st.players.a.lifetimeWatts, 20, "a minute of bed income at 20 W/min");
+});
+
+test("replay: asleep within 30 s of every run's end, awake from every run's start", () => {
+  const st = replayWorld({ [TOKEN]: S.newPlayer(null, EP, TOKEN) });
+  const t0 = EP + 2 * DAY + 3 * MIN + 3_700;
+  let sawSleep = 0, sawRun = 0;
+  for (let x = t0; x <= t0 + SCHED.cycleMs; x += 10_000) {
+    S.replayTick(st, x, SCHED, 5204);
+    const loc = S.replayLocate(x, SCHED), z = S.asleep(st, x);
+    if (loc.seg.kind === "run" && loc.u > 0) { assert.equal(z, false, `awake in ${loc.seg.label}`); sawRun++; }
+    else if (loc.seg.kind === "sleep" && x - (loc.cycleStart + loc.seg.start) >= S.STATUS_PAUSE_MS + 10_000) { assert.equal(z, true, `asleep in ${loc.seg.label}`); sawSleep++; }
+  }
+  assert.ok(sawRun > 0 && sawSleep > 0);
+});

@@ -393,7 +393,7 @@ function accrue(player, delta, now = Date.now(), speedPct = 100) {
   return earned;
 }
 
-// ---------- sleep (judged by the chain) ----------
+// ---------- sleep: the live reading when there is one, else the chain ----------
 const CHAIN_FRESH_MS = 120_000; // live mode: no chain reading this recent -> can't tell he's asleep
 // Asleep by the chain: height was observed and has not advanced for IDLE_AFTER_MS.
 // chainReadAt (live mode): when the chain was last read successfully; a stale read is "not idle".
@@ -401,6 +401,27 @@ function chainIdle(lastAdvanceAt, now = Date.now(), chainReadAt = null) {
   if (!Number.isFinite(lastAdvanceAt) || lastAdvanceAt <= 0) return false; // height never observed
   if (chainReadAt != null && !(now - chainReadAt <= CHAIN_FRESH_MS)) return false;
   return now - lastAdvanceAt >= BALANCE.IDLE_AFTER_MS;
+}
+// The live reading (the status feed; synthesized in replay and demo) says within seconds when he stops,
+// where the chain needs IDLE_AFTER_MS without a block. So while a fresh reading exists it decides:
+// asleep once it hasn't said ACTIVE for STATUS_PAUSE_MS (a short stop mid-run isn't sleep). Bed income,
+// raids and the hamster on screen all follow this one answer. A missing or stale reading (feed down,
+// blocked) falls back to the chain, so a broken feed can't keep him awake.
+const STATUS_FRESH_MS = 120_000; // older than this the reading is no use (the client shows it as STALE)
+const STATUS_PAUSE_MS = 20_000;
+function statusFresh(h, now = Date.now()) {
+  if (!h || typeof h !== "object" || h.freshness === "stale") return false;
+  const at = Date.parse(h.updatedAt || h.observedAt || "");
+  return Number.isFinite(at) && now - at <= STATUS_FRESH_MS;
+}
+// Once per reading: remember when it last said he was running.
+function noteStatus(st, now = Date.now()) {
+  if (statusFresh(st.hamster, now) && st.hamster.coreStatus === "ACTIVE") st.lastStatusActiveAt = now;
+}
+function asleep(st, now = Date.now(), chainReadAt = null) {
+  const h = st.hamster;
+  if (statusFresh(h, now)) return h.coreStatus !== "ACTIVE" && !(now - (st.lastStatusActiveAt || 0) < STATUS_PAUSE_MS);
+  return chainIdle(st.lastAdvanceAt, now, chainReadAt);
 }
 
 // ---------- bed income ----------
@@ -677,14 +698,15 @@ function raidEligibility(attacker, defender, now) {
   return revenge ? { ok: true, revenge } : { ok: false, error: "not_eligible" };
 }
 // Raids are open only while he RUNS: height observed, chain reading fresh (live mode), not asleep.
-function raidWindow(lastAdvanceAt, now = Date.now(), chainReadAt = null) {
+// With a state `st`, asleep() decides (the live reading first); without one, the chain alone.
+function raidWindow(lastAdvanceAt, now = Date.now(), chainReadAt = null, st = null) {
   if (!Number.isFinite(lastAdvanceAt) || lastAdvanceAt <= 0) return { open: false, reason: "chain_unknown" };
   if (chainReadAt != null && !(now - chainReadAt <= CHAIN_FRESH_MS)) return { open: false, reason: "chain_stale" };
-  if (chainIdle(lastAdvanceAt, now, chainReadAt)) return { open: false, reason: "hamster_asleep" };
+  if (st ? asleep(st, now, chainReadAt) : chainIdle(lastAdvanceAt, now, chainReadAt)) return { open: false, reason: "hamster_asleep" };
   return { open: true, reason: null };
 }
 function raidStatus(st, player, now = Date.now(), chainReadAt = null) {
-  return { open: raidWindow(st.lastAdvanceAt, now, chainReadAt).open, raidsLeft: raidsLeft(player, now), perDay: BALANCE.RAID.PER_DAY, resetMs: msToUtcMidnight(now) };
+  return { open: raidWindow(st.lastAdvanceAt, now, chainReadAt, st).open, raidsLeft: raidsLeft(player, now), perDay: BALANCE.RAID.PER_DAY, resetMs: msToUtcMidnight(now) };
 }
 
 // publicId -> token index per state object (built lazily, extended on player creation; a miss
@@ -722,7 +744,7 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
   const R = BALANCE.RAID;
   const atk = getPlayer(st, token);
   if (!atk) return fail("unknown_player");
-  const w = raidWindow(st.lastAdvanceAt, now, chainReadAt);
+  const w = raidWindow(st.lastAdvanceAt, now, chainReadAt, st);
   if (!w.open) return fail(w.reason);
   if (raidsLeft(atk, now) <= 0) return { ok: false, error: "no_raids_left", resetMs: msToUtcMidnight(now) };
   const b = body && typeof body === "object" ? body : {};
@@ -1115,6 +1137,7 @@ function replayTick(st, now = Date.now(), sched = REPLAY_SCHEDULE, startHeight =
     replay: { speed: sched.speed, segment: r.segment, label: r.label, segmentEndsAt: r.segmentEndsAt, nextRunAt: r.nextRunAt },
   };
   st.hamster = r.hamster;
+  noteStatus(st, now);
   st.lastError = null;
   st.apiError = null;
   return st.height;
@@ -1160,8 +1183,10 @@ async function poll() {
   const now = Date.now();
   // Speed ring: one sample per tick even when nothing advanced, so the window ages while he sleeps.
   if (state.height != null && (REPLAY || DEMO || !state.lastError)) recordSpeedSample(state.height, now);
-  // 2. Bed income: while he sleeps (by the chain), every room earns for the time since the last tick.
-  accrueBed(state, chainIdle(state.lastAdvanceAt, now, chainReadAt()), now);
+  // 2. Bed income: while he sleeps (asleep(): the live reading, else the chain), every room earns for
+  //    the time since the last tick.
+  noteStatus(state, now); // every poll, whichever mode set the reading (demo readings aren't re-stamped)
+  accrueBed(state, asleep(state, now, chainReadAt()), now);
   // 3. Live hamster reading. Demo mode fakes it (and lets a fake run go back to sleep); replay
   //    already synthesized it in replayTick().
   if (DEMO) {
@@ -1187,6 +1212,7 @@ async function poll() {
         observedAt: m.observedAt || null,
         updatedAt: new Date().toISOString(),
       };
+      noteStatus(state);
       state.apiError = null;
     } catch (e) {
       state.apiError = String(e.message || e);
@@ -1211,6 +1237,7 @@ function setDemoHamster(status) {
     updatedAt: now,
     demo: true,
   };
+  noteStatus(state);
 }
 function demoBlocks(n) {
   if (state.height == null) advanceTo(DEMO_BASE_HEIGHT);
@@ -1330,7 +1357,7 @@ function snapshot(token) {
     night: night ? { startedAt: night.startedAt, endsAt: night.endsAt } : null,
     chain: state.chain || null,
     hamster: state.hamster,
-    idle: chainIdle(state.lastAdvanceAt, now, readAt), // asleep by the chain: bed income is flowing
+    idle: asleep(state, now, readAt), // asleep (live reading, else the chain): bed income flows, raids are closed
     speedPct: currentSpeedPct(now), // speed bonus on wheel income (100 = none), from the chain's cadence
     raid: viewer ? raidStatus(state, viewer, now, readAt) : null, // this viewer's raid window + cooldown
     raidFeed: (Array.isArray(state.raidFeed) ? state.raidFeed : []).slice(-BALANCE.RAID.FEED_SNAPSHOT), // oldest first
@@ -1486,6 +1513,7 @@ const DEV_ROUTES = {
     if (state.height == null) demoBlocks(0);
     state.lastAdvanceAt = Date.now() - BALANCE.IDLE_AFTER_MS - 60_000;
     setDemoHamster("IDLE");
+    state.lastStatusActiveAt = 0; // asleep by the live reading right away too
     return [200, { ok: true, height: state.height, lastAdvanceAt: state.lastAdvanceAt, idle: true }];
   },
 };
@@ -1561,7 +1589,7 @@ function listen() {
 module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible };
 // Extra helpers for tests (the plan's six names above stay the primary surface).
 Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
-  accrueBed, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
+  accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
   raidChance, resolveRaid, raidOdds, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS,
   WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername,

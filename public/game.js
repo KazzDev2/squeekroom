@@ -703,16 +703,14 @@ function spotFor(mode) {
   if (mode === "sleep") { const b = bedGeom(); return { x: b.sleepX, y: b.sleepY }; }
   return SPOT.sit;
 }
-// Not running means asleep in his bed: he goes the moment the live reading stops (no standing around
-// until the chain calls it, which is only what starts bed income) and wakes when he runs again. A short
-// pause mid-run (PAUSE_MS) keeps him standing in the wheel so a stutter doesn't send him to bed and back.
-const PAUSE_MS = 20_000;
-let lastRunAt = -Infinity;
+// He sleeps exactly when the server says so (S.idle: the live reading has said "not running" for 20 s,
+// which is also when bed income starts and raids close) and wakes the moment the reading says he runs.
+// In between, a stop he may resume from, he stands still in the wheel. With no usable reading at all
+// (stale, offline) he's asleep as far as we know.
 function wantMode(st) {
-  const now = performance.now();
-  if (st.active) { lastRunAt = now; return "run"; }
-  if (ham.mode === "run" && st.key === "idle" && !S.idle && now - lastRunAt < PAUSE_MS) return "run";
-  return "sleep";
+  if (st.active) return "run";
+  if (S.idle || st.key !== "idle") return "sleep";
+  return ham.mode === "sleep" ? "sleep" : "run";
 }
 const near = (a, b) => Math.hypot(a.x - b.x, a.y - b.y) < 1;
 function moveTo(name) {
