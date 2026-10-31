@@ -814,12 +814,29 @@ function patchState(st, now = Date.now()) {
   for (const [token, p] of Object.entries(st.players)) if (p && typeof p === "object") patchPlayer(p, token);
   return st;
 }
+// Bump STATE_RESET to wipe the saved state once on the next boot (a clean relaunch: every room,
+// balance and the replay anchor). The old file is kept beside it as state.<old id>.bak.json.
+const STATE_RESET = "2026-10-31-relaunch";
 function load() {
+  let saved = null;
   try {
-    const raw = fs.readFileSync(DATA_FILE, "utf8");
-    state = { ...state, ...JSON.parse(raw) };
+    saved = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
   } catch {}
+  if (saved && saved.resetId !== STATE_RESET) {
+    const bak = DATA_FILE.replace(/\.json$/, `.${saved.resetId || "pre-reset"}.bak.json`);
+    try {
+      fs.copyFileSync(DATA_FILE, bak);
+    } catch (e) {
+      console.error("state reset: backup failed:", e.message || e);
+    }
+    console.log(`state reset to ${STATE_RESET}: ${Object.keys(saved.players || {}).length} rooms wiped, old state kept at ${bak}`);
+    saved = null;
+  }
+  if (saved) state = { ...state, ...saved };
+  const fresh = state.resetId !== STATE_RESET;
+  state.resetId = STATE_RESET;
   patchState(state);
+  if (fresh) writeNow(); // persist the wipe at once, so a crash before the first save can't bring the old rooms back
 }
 // Coalesced, atomic save: at most one write per SAVE_DEBOUNCE_MS (a steady stream of changes
 // cannot starve it), written to a tmp file then renamed over state.json.
