@@ -49,7 +49,8 @@ All rooms live in one JSON file, so the host needs a persistent disk mounted at 
   - `GET /api/config` the static rules, fetched once per page load: `balance`, `room` grid, `catalog`, `demo`, `core`, `api`.
   - `GET /api/state?token=…` the dynamic data the page polls every 5 s: height, chain, live reading, `idle` (asleep by the chain: bed income is flowing), and `me` (created on first visit with a 400 W welcome grant).
   - `POST /api/buy {token, itemId}` price checked on the server. Wheel, bed and room-material upgrades each go strictly in order (one copy each; buying sets `wheelTier` / `bedTier` / `roomTier`); wallpaper, flooring and skins are single-copy; placeables are unlimited. Errors: `unknown_item`, `poor` (+ `need`), `wrong_tier`, `already_owned`.
-  - `POST /api/place {token, itemId, x, y, flip}`, `/api/move {token, pid, x, y, flip}`, `/api/remove {token, pid}` every placement is re-validated: zone, bounds, overlap, and the reserved wheel (floor cols 3–6) and burrow (16–18).
+  - `POST /api/place {token, itemId, x, y, flip}`, `/api/move {token, pid, x, y, flip}`, `/api/remove {token, pid}` every placement is re-validated: zone, bounds, overlap, and the reserved burrow (floor cols 16–18).
+  - `POST /api/fixture {token, which: "wheel"|"bed", i, j, flip?}` stands the wheel or the bed on open floor tile (i, j): off the wall lanes, on screen, and at least 2 tiles from the other one.
   - `POST /api/skin {token, skinId}`, `POST /api/style {token, wallpaper?, floor?}` equip something you own.
   - `POST /api/nick {token, nick}` your room's name (20 chars).
   - `POST /api/heartbeat {token}` the page sends this while it is visible; rate-limited to one stamp per 20 s.
@@ -81,11 +82,11 @@ Each room is ~1–2 KB, and the whole state is rewritten as one JSON file. That'
 
 ## Raids ("chaos mode")
 
-Open only while the hamster is RUNNING (the same chain signal that drives accrual), with one pacing rule: a 30-minute attacker cooldown. No incoming caps, no immunities — the protection is structural.
+Raids only work while the hamster is RUNNING (the same chain signal that drives accrual). Each player gets 10 raids per UTC day; a room can be raided any number of times.
 
-- Wager: stake `S` (50 → min(20% of your watts, 5,000)) at 1.5×, 2×, 3×, 5× or 10×.
+- Wager: stake `S` (50 up to your whole balance) at 1.5×, 2×, 3×, 5× or 10×. The raid screen shows the odds and the loot range, never the EV.
 - Win chance: `clamp((110%/M) × (1 − defense) × tilt, 2%, 90%)` — defense is the target's room material (wood 0% → diamond 25%), tilt is `(theirWatts/yourWatts)^0.25` clamped 0.75–1.5.
-- Win: loot `(M−1)×S` (×0.75–1.25 roll, 5% crit ×1.5), taken from the defender, capped at their balance. Lose: your stake is burned — the defender gets nothing, so being raided is strictly −EV at every tier.
+- Win: loot `(M−1)×S` (×0.75–1.25 roll, 5% crit ×1.5), taken from the defender, capped at 25% of their balance, so no single roll can empty a room. Past a stake of about `cap/(M−1)` a bigger stake only risks more. Lose: your stake is burned — the defender gets nothing, so being raided is strictly −EV at every tier.
 - You can only raid rooms holding ≥ 70% of your watts (punching down is impossible — this is what protects new rooms), except one revenge raid within 24 h of being hit. Attacker EV is `1.10×(1−d)×tilt − 1`: punching far up is +EV into anything, so the top of the leaderboard is everyone's target.
 - Zero minting: every raid is a pure transfer plus burn. Unspent watts are raid bait — upgrades are the bank.
 

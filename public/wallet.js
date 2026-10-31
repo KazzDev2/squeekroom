@@ -96,16 +96,16 @@ function start() {
   if (W.cfg.burnerWarning === false) { showPicker(); return; }
   const body = show("warn", "⚠ BEFORE YOU CONNECT", "optional · you can play without a wallet", { warn: true });
   const box = h("div", "wwarn");
-  box.appendChild(h("b", null, "⚠ EXPERIMENTAL GAME."));
-  box.append("Link a ");
-  box.appendChild(h("em", null, "BURNER"));
-  box.append(" wallet only — a fresh wallet with nothing in it. You'll sign one free message (no transaction, no gas, nothing leaves your wallet). ");
-  box.appendChild(h("em", null, "Never sign transactions this game did not clearly explain."));
+  box.appendChild(h("b", null, "⚠ Experimental game"));
+  box.append("Use a ");
+  box.appendChild(h("em", null, "burner"));
+  box.append(" wallet with nothing in it. You'll sign one free message. It costs no gas and moves nothing. ");
+  box.appendChild(h("em", null, "This game never asks for a transaction, so don't sign one."));
   body.appendChild(box);
-  body.appendChild(h("p", "wnote", "Linking proves you own an address and unlocks a unique username with a ✓ on the leaderboard. Your watts and room stay exactly as they are."));
+  body.appendChild(h("p", "wnote", "Linking gets you a unique username with a ✓ on the leaderboard. Your watts and room don't change."));
   const acts = h("div", "wacts");
   acts.appendChild(pxbtn("Cancel", true, closeModal));
-  acts.appendChild(pxbtn("I'm using a burner — continue", false, showPicker));
+  acts.appendChild(pxbtn("It's a burner, continue", false, showPicker));
   body.appendChild(acts);
   focusFirst(".pxbtn.alt"); // the safe choice has focus
 }
@@ -171,10 +171,10 @@ function renderPicker() {
     em.append("Install ");
     const links = [["MetaMask", "https://metamask.io/download/"], ["Rabby", "https://rabby.io/"], ["OKX Wallet", "https://www.okx.com/web3"]];
     links.forEach(([n, u], i) => { const a = h("a", null, n); a.href = u; a.target = "_blank"; a.rel = "noopener noreferrer"; em.appendChild(a); em.append(i === 0 ? ", " : i === 1 ? " or " : ""); });
-    em.append(" (then reload this page), or keep playing without one. Nothing in the game needs a wallet.");
+    em.append(" and reload, or just play without one. The game works fine without a wallet.");
     body.appendChild(em);
   }
-  body.appendChild(h("p", "wnote", "Only a free sign-in message, never a transaction. No WalletConnect / QR in this version."));
+  body.appendChild(h("p", "wnote", "You only sign a free message. Phone wallets (QR) aren't supported yet."));
   const acts = h("div", "wacts");
   if (!list.length && !W.searching) acts.appendChild(pxbtn("Look again", true, showPicker));
   acts.appendChild(pxbtn(list.length ? "Cancel" : "Keep playing", true, closeModal));
@@ -221,10 +221,10 @@ async function personalSign(provider, message, address) {
 }
 function walletFail(e, stage) {
   if (isReject(e)) {
-    B().toast(stage === "connect" ? "Connection cancelled in your wallet. No problem: connect any time." : "Signature cancelled in your wallet. Nothing was linked.");
+    B().toast(stage === "connect" ? "You cancelled in your wallet. Connect whenever you like." : "Signature cancelled in your wallet. Nothing was linked.");
     return backToPicker();
   }
-  if (isPending(e)) return backToPicker({ notice: "Your wallet already has a request waiting. Open the extension to finish or cancel it, then try again." });
+  if (isPending(e)) return backToPicker({ notice: "Your wallet has a request waiting. Finish or cancel it in the extension, then try again." });
   const msg = String((e && e.message) || "").slice(0, 160);
   return backToPicker({ error: `${stage === "connect" ? "Couldn't connect" : "Couldn't get a signature"}${msg ? `: ${msg}` : "."} Try again, or pick another wallet.` });
 }
@@ -232,7 +232,7 @@ function serverWords(j, address) {
   const e = (j && j.error) || "network";
   switch (e) {
     case "network": return "Can't reach the room server. Check your connection and try again.";
-    case "wallet_taken": return "This wallet is already linked to another room. Use a different burner wallet for this room.";
+    case "wallet_taken": return "That wallet is linked to another room. Use a different burner.";
     case "wallet_mismatch": return `The signature came from a different account than the one your wallet connected${address ? ` (${short(address)})` : ""}. Switch to that account and try again.`;
     case "bad_signature": return "Your wallet returned a signature the server couldn't read. Try again, or pick another wallet.";
     case "bad_address": return "Your wallet shared an address the server couldn't read. Try another account or wallet.";
@@ -261,7 +261,7 @@ async function connect(entry) {
     const n = await b.post("/api/wallet/nonce", {});
     if (!alive()) return;
     if (!n.ok || typeof n.j.message !== "string") return serverFail(n, address);
-    showWait("step 2 of 2 · sign (free)", `Sign the message in ${entry.name} with ${short(address)}. It's free: no transaction, no gas.`, n.j.message);
+    showWait("step 2 of 2 · sign (free)", `Sign the message in ${entry.name} with ${short(address)}. It's free.`, n.j.message);
     let signature;
     try { signature = await personalSign(entry.provider, n.j.message, address); }
     catch (e) { if (alive()) walletFail(e, "sign"); return; }
@@ -276,7 +276,7 @@ async function connect(entry) {
       return v.j.me.username ? showPanel() : showNameStep();
     }
     const e = v.j && v.j.error;
-    if ((e === "nonce_expired" || e === "no_nonce") && attempt === 0) { b.toast("That sign-in message expired. Here's a fresh one: please sign again."); continue; }
+    if ((e === "nonce_expired" || e === "no_nonce") && attempt === 0) { b.toast("That message expired. Sign this new one."); continue; }
     return serverFail(v, address);
   }
 }
@@ -327,7 +327,7 @@ function nameForm(body, { cur, saveLabel, onSaved, extraBtn }) {
     inp.classList.toggle("bad", !!serverMsg || (!!p && !p.quiet && !!inp.value));
     inp.classList.toggle("good", !p && !serverMsg);
     hint.className = "whint" + (serverMsg ? " bad" : p ? (p.quiet ? "" : " bad") : " good");
-    hint.textContent = serverMsg || (p ? p.msg : "Looks good. Unique names only: we'll check when you save.");
+    hint.textContent = serverMsg || (p ? p.msg : "Looks good. We'll check it's free when you save.");
     save.disabled = busy || !!p;
     return !p;
   };
@@ -363,7 +363,7 @@ function nameForm(body, { cur, saveLabel, onSaved, extraBtn }) {
 function showNameStep() {
   const m = me();
   const body = show("name", "✓ WALLET LINKED", m && m.wallet ? short(m.wallet) : "");
-  body.appendChild(h("p", "wnote", "Pick a username (optional). It replaces your room name on the leaderboard and in the raid feed, with a ✓. You can change it later from the wallet button."));
+  body.appendChild(h("p", "wnote", "Pick a username if you want one. It shows instead of your room name, with a ✓. You can change it later."));
   nameForm(body, { cur: null, saveLabel: "Save username", onSaved: () => closeModal(), extraBtn: pxbtn("Skip", true, closeModal) });
 }
 
@@ -379,7 +379,7 @@ function showPanel() {
   ad.appendChild(cp);
   body.appendChild(ad);
   nameForm(body, { cur: m.username || null, saveLabel: m.username ? "Change username" : "Save username", onSaved: () => showPanel(), extraBtn: pxbtn("Done", true, closeModal) });
-  body.appendChild(h("p", "wnote", "Burner wallets only. This game will never ask you for a transaction."));
+  body.appendChild(h("p", "wnote", "Burner wallets only. The game never asks for a transaction."));
 }
 
 // ---------- wiring ----------

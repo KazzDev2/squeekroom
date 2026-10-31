@@ -11,7 +11,9 @@ const $ = (id) => document.getElementById(id);
 // The live room draws that model through the iso projection below; the certificate portrait
 // (renderPortrait) still paints the flat view, so the FLAT_* geometry stays alongside.
 const FLAT_W = 320, FLAT_H = 192;
-let ROOM = { COLS: 20, ROWS: 12, CELL: 16, FLOOR_ROW: 11, WALL_TOP: 2, WALL_BOTTOM: 7, RESERVED: { wheel: [3, 6], burrow: [16, 18] } };
+let ROOM = { COLS: 20, ROWS: 12, CELL: 16, FLOOR_ROW: 11, WALL_TOP: 2, WALL_BOTTOM: 7, RESERVED: { burrow: [16, 18] },
+  ISO_NI: 11, ISO_NJ: 10, FIX_MAX_SUM: 14, FIX_GAP: 2, FIXTURE_DEFAULTS: { wheel: { i: 1, j: 5, flip: false }, bed: { i: 7, j: 2, flip: false } } };
+const CERT_WHEEL_COLS = [3, 6]; // the certificate's flat room keeps the wheel where it always stood
 let CELL = 16, FLOOR_Y = 176; // flat view: furniture bottoms stand on this line; the floor band is below it
 const BASEBOARD = 6; // flat view: wall trim height just above the floor line
 let FLAT_WHEEL = { cx: 80, cy: 150, r: 23, x: 56, y: 126 }; // 48 x 48 box centred on floor cols 3..6
@@ -44,7 +46,6 @@ let FLAT_SPOT = { wheel: { x: 80, y: 170 } };
 const ISO = { CORNER: 9, NI: 11, NJ: 10, X0: 168, Y0: 102, WALL_H: 100, PAD: 8, SLAB: 5, FOOT: 3 };
 const LW = ISO.PAD * 2 + (ISO.NI + ISO.NJ) * 16; // 352
 const LH = 240; // the floor's front tip (empty floor) runs off the bottom edge: keeps 3x scale on 1080p
-const BED_TILE = [7, 2]; // open floor in front of cols 13..14, two tiles off the right wall, left of the burrow
 let IWHEEL = { cx: 96, cy: 124, r: 23, x: 72, y: 100, foot: 150 }, IBURROW = { cx: 296, x: 272, y: 144, foot: 176 };
 let SPOT = { wheel: { x: 96, y: 144 }, sit: { x: 136, y: 160 }, bed: { x: 248, y: 185 } };
 const isoTileCenter = (i, j) => ({ x: ISO.X0 + (i - j) * 16, y: ISO.Y0 + (i + j) * 8 + 8 });
@@ -69,18 +70,47 @@ function applyRoom(room) {
   if (room && typeof room === "object") ROOM = { ...ROOM, ...room };
   CELL = ROOM.CELL || 16;
   FLOOR_Y = ROOM.FLOOR_ROW * CELL;
-  const [wa, wb] = ROOM.RESERVED.wheel, [ba, bb] = ROOM.RESERVED.burrow;
+  const [wa, wb] = CERT_WHEEL_COLS, [ba, bb] = ROOM.RESERVED.burrow;
   const wcx = ((wa + wb + 1) * CELL) / 2, bcx = ((ba + bb + 1) * CELL) / 2;
   FLAT_WHEEL = { cx: wcx, cy: FLOOR_Y - 26, r: 23, x: wcx - 24, y: FLOOR_Y - 50 };
   FLAT_BURROW = { cx: bcx, x: bcx - 24, y: FLOOR_Y - 32, w: 48, h: 32 };
   FLAT_SPOT = { wheel: { x: wcx, y: FLAT_WHEEL.cy + FLAT_WHEEL.r - 3 } };
-  // iso: the wheel and the burrow stand on their reserved lane tiles, front-facing
-  const iwx = colLeft(wa) + ((wb - wa + 1) * 16) / 2, iwf = footY(wa, wb - wa + 1);
-  IWHEEL = { cx: iwx, cy: iwf - 26, r: 23, x: iwx - 24, y: iwf - 50, foot: iwf };
+  // iso: the burrow stands on its reserved lane tiles; the wheel and the bed follow the player's fixtures
   const ibx = colLeft(ba) + ((bb - ba + 1) * 16) / 2, ibf = footY(ba, bb - ba + 1);
   IBURROW = { cx: ibx, x: ibx - 24, y: ibf - 32, foot: ibf };
-  const sit = isoTileCenter(2, ISO.CORNER + 2 - (wb + 1)), bed = isoTileCenter(BED_TILE[0], BED_TILE[1]); // sit: in front of the column right of the wheel
-  SPOT = { wheel: { x: iwx, y: IWHEEL.cy + IWHEEL.r - 3 }, sit: { x: sit.x, y: sit.y + 2 }, bed: { x: bed.x, y: bed.y + ISO.FOOT } };
+  placeFixtures();
+}
+// ---------- fixtures: the wheel and the bed stand on open floor tiles (i, j) and move like furniture ----------
+// They ride the placement UI as pseudo placements with pid "fx:wheel" / "fx:bed" (x = i, y = j).
+const FIX_ITEM = { wheel: { id: "fx_wheel", name: "Wheel", zone: "fixture", fixture: "wheel", w: 1, h: 1 }, bed: { id: "fx_bed", name: "Bed", zone: "fixture", fixture: "bed", w: 1, h: 1 } };
+const fixOf = (pid) => (typeof pid === "string" && pid.startsWith("fx:") ? pid.slice(3) : null);
+let myFixtures = null; // S.me.fixtures, set by applyMe (S itself is declared further down)
+function fixture(k) {
+  const f = myFixtures && myFixtures[k];
+  return f && Number.isInteger(f.i) && Number.isInteger(f.j) ? f : ROOM.FIXTURE_DEFAULTS[k];
+}
+// same rules as server.js moveFixture(): open floor (off the wall lanes, on screen), FIX_GAP apart
+function checkFixture(k, i, j) {
+  if (!(Number.isInteger(i) && Number.isInteger(j) && i >= 1 && i < ROOM.ISO_NI && j >= 1 && j < ROOM.ISO_NJ && i + j <= ROOM.FIX_MAX_SUM)) return { ok: false, error: "out_of_bounds" };
+  const o = fixture(k === "wheel" ? "bed" : "wheel");
+  if (Math.max(Math.abs(o.i - i), Math.abs(o.j - j)) < ROOM.FIX_GAP) return { ok: false, error: "too_close", which: k };
+  return { ok: true };
+}
+const IW = () => window.IsoWheel || null;
+// The wheel's screen geometry on tile (i, j): the 3D wheel when sprites_iso_wheel.js loaded, else the
+// front-facing billboard standing on that tile. run = the running hamster's bottom-centre.
+function wheelAt(i, j, flip) {
+  const so = tileSouth(i, j), w = IW();
+  if (w) { const b = w.bounds(so.x, so.y, flip), r = w.runSpot(so.x, so.y, flip); return { box: b, run: r, cx: b.x + b.w / 2, cy: b.y + b.h / 2, r: Math.min(b.w, b.h) / 2 - 2, foot: so.y - 8 + ISO.FOOT }; }
+  const foot = so.y - 8 + ISO.FOOT, box = { x: so.x - 24, y: foot - 50, w: 48, h: 50 };
+  return { box, run: { x: so.x, y: foot - 26 + 23 - 3 }, cx: so.x, cy: foot - 26, r: 23, foot };
+}
+function placeFixtures() {
+  const w = fixture("wheel"), b = fixture("bed"), g0 = wheelAt(w.i, w.j, !!w.flip);
+  IWHEEL = { cx: g0.cx, cy: g0.cy, r: g0.r, x: g0.box.x, y: g0.box.y, foot: g0.foot };
+  const si = w.i + 1 < ROOM.ISO_NI && !(w.i + 1 === b.i && w.j === b.j) ? [w.i + 1, w.j] : [w.i, Math.min(w.j + 1, ROOM.ISO_NJ - 1)];
+  const sit = isoTileCenter(si[0], si[1]), bed = isoTileCenter(b.i, b.j);
+  SPOT = { wheel: { x: g0.run.x, y: g0.run.y }, sit: { x: sit.x, y: sit.y + 2 }, bed: { x: bed.x, y: bed.y + ISO.FOOT } };
 }
 applyRoom();
 
@@ -482,7 +512,7 @@ function applyState(j) {
   S.speedPct = typeof j.speedPct === "number" ? j.speedPct : 100; // speed bonus on wheel income (100 = none)
   if (typeof j.serverTime === "number") S.skew = j.serverTime - Date.now();
   if (j.me) { applyMe(j.me, first, { at: j.serverTime, soft: S.idle }); if (!first) noteTrickle(); }
-  else if (j.meError) toast(j.meError === "server_full" ? "The server is full right now." : `Could not load your room (${j.meError}).`, "err");
+  else if (j.meError) toast(j.meError === "server_full" ? "The server is full." : `Couldn't load your room (${j.meError}).`, "err");
   if (j.raid !== undefined) applyRaidStatus(j.raid);
   if (typeof j.burned === "number") S.burned = j.burned;
   if (Array.isArray(j.raidFeed)) applyFeed(j.raidFeed);
@@ -497,6 +527,8 @@ function applyMe(me, first = false, opts = {}) {
   if (typeof opts.at === "number") { if (opts.at < S.meAt) return; S.meAt = opts.at; }
   const prev = S.me;
   S.me = me;
+  myFixtures = me.fixtures || null;
+  placeFixtures();
   S.watching = !!me.watching;
   if (first || !prev) meter.shown = me.watts;
   else if (me.lifetimeWatts > prev.lifetimeWatts) onAccrual(me.lifetimeWatts - prev.lifetimeWatts, !!opts.soft);
@@ -572,14 +604,14 @@ function renderHud() {
     const bonus = Math.max(me.bonusPct || 0, (S.balance && S.balance.LIVE_BONUS_PCT) || 120) - 100; // me.bonusPct lags the first heartbeat
     const speed = Math.round((S.speedPct || 100) - 100); // he's settling blocks fast: wheel watts x speedPct
     // hidden while idle: the trailing window keeps the pct up for a few minutes after a run, but no blocks settle then
-    const speedChip = speed > 0 && !S.idle ? `<span class="chip on" title="Speed bonus: blocks are settling fast, wheel watts +${speed}%">⚡ +${speed}%</span>` : "";
+    const speedChip = speed > 0 && !S.idle ? `<span class="chip on" title="Blocks are coming fast: wheel watts +${speed}%">⚡ +${speed}%</span>` : "";
     $("watchLine").innerHTML = watching || speedChip ? `${watching ? `watching<span class="chip on">+${bonus}%</span>` : ""}${speedChip}` : "&nbsp;";
     renderBedLine(me, watching ? 100 + bonus : 100);
   }
   renderRaidChip();
   renderFeed();
-  if (LB.open) renderLb(); // keeps "updated Ns ago" and the cooldown lines ticking
-  if (RU.open && !RU.result && raidPhase() === "cool") renderRaid();
+  if (LB.open) renderLb(); // keeps "updated Ns ago" and the raids-left line ticking
+  if (RU.open && !RU.result && raidPhase() === "spent") renderRaid(); // the reset countdown
   stepMeter(0); // paints the meter text even when rAF is throttled
   $("demo").hidden = !S.demo;
   const nb = $("night");
@@ -596,7 +628,7 @@ function renderBedLine(me, bonusPct) {
   let html = `bed T${me.bedTier | 0} · ${mult.toFixed(2)}×`;
   if (S.idle) html += `<span class="chip on">${+((me.bedWattsPerMin || 0) * bonusPct / 100).toFixed(2)} W/min</span>`;
   el.innerHTML = html;
-  el.title = S.idle ? "He's asleep: your bed is earning (every room earns, online or not)" : "Bed income: while he sleeps (no block for 10 minutes) every room earns from its bed, online or not";
+  el.title = S.idle ? "He's asleep, so your bed is earning" : "Your bed earns while he sleeps, online or not";
 }
 function stepMeter() {
   const now = performance.now();
@@ -635,7 +667,7 @@ $("night").onclick = async () => {
 };
 $("sleep").onclick = async () => {
   const r = await post("/api/dev/sleep", {});
-  if (r.ok) toast("The chain has been quiet for 11 minutes. He's asleep: beds are earning.");
+  if (r.ok) toast("He's asleep now. Beds are earning.");
   else toast(r.j.error === "night_running" ? "A night is running. Wait for it to end." : `nap failed: ${r.j.error || r.status}`);
   refresh();
 };
@@ -646,19 +678,20 @@ $("sleep").onclick = async () => {
 // blinking. Switching passes through a short SIT at that same spot, with hop/walk moves between.
 const SIT_MS = 1400;
 const ham = { init: false, mode: "sleep", x: SPOT.bed.x, y: SPOT.bed.y, gy: SPOT.bed.y, face: -1, move: null, sitLeft: 0, runPhase: 0, blink: 0, breath: 0 };
-// The bed he sleeps in: me.bedTier's sprite standing on BED_TILE; sleep = where his bottom-centre goes.
-// With iso art (iso_bed_tN, unflipped) its iso vertex sits on BED_TILE's south vertex; id is then the
-// iso id, so the "_front" overlay drawn at the same origin is iso_bed_tN_front.
-function bedGeom() {
+// The bed he sleeps in: me.bedTier's sprite standing on the bed fixture's tile (i, j); sleep = where his
+// bottom-centre goes. With iso art (iso_bed_tN) its iso vertex sits on that tile's south vertex (mirrored
+// when flipped); id is then the iso id, so the "_front" overlay drawn at the same origin is iso_bed_tN_front.
+function bedGeom(at = null) {
+  const f = at || fixture("bed"), flip = !!f.flip, c = isoTileCenter(f.i, f.j), foot = c.y + ISO.FOOT;
   const tier = clamp((S.me && S.me.bedTier) | 0, 0, 5), flat = `bed_t${tier}`;
   const s = (window.SPRITES || {})[flat];
   const w = (s && s.w) || 28, h = (s && s.h) || 10, sl = (s && s.sleep) || [w >> 1, h - 3];
-  const x = Math.round(SPOT.bed.x - w / 2), y = SPOT.bed.y - h;
-  const geom = { id: flat, tier, x, y, w, h, foot: SPOT.bed.y, sleepX: x + sl[0], sleepY: y + sl[1] };
+  const x = Math.round(c.x - w / 2), y = foot - h;
+  const geom = { id: flat, tier, flip, i: f.i, j: f.j, x, y, w, h, foot, sleepX: x + (flip ? w - sl[0] : sl[0]), sleepY: y + sl[1] };
   const is = isoArt(flat);
   if (!is) return geom;
-  const o = isoOrigin(is, tileSouth(BED_TILE[0], BED_TILE[1]), false), isl = Array.isArray(is.sleep) ? is.sleep : null;
-  return { ...geom, id: `iso_${flat}`, x: o.x, y: o.y, w: is.w, h: is.h, sleepX: isl ? o.x + isl[0] : geom.sleepX, sleepY: isl ? o.y + isl[1] : geom.sleepY };
+  const o = isoOrigin(is, tileSouth(f.i, f.j), flip), isl = Array.isArray(is.sleep) ? is.sleep : null;
+  return { ...geom, id: `iso_${flat}`, x: o.x, y: o.y, w: is.w, h: is.h, sleepX: isl ? o.x + (flip ? is.w - isl[0] : isl[0]) : geom.sleepX, sleepY: isl ? o.y + isl[1] : geom.sleepY };
 }
 function spotFor(mode) {
   if (mode === "run") return SPOT.wheel;
@@ -680,7 +713,7 @@ function moveTo(name) {
   if (Math.abs(to.x - from.x) > 0.5) ham.face = to.x < from.x ? -1 : 1;
   ham.mode = "move";
 }
-function settle(mode) { ham.mode = mode; ham.face = mode === "run" ? 1 : mode === "sleep" ? -1 : ham.face; }
+function settle(mode) { ham.mode = mode; ham.face = mode === "run" ? (fixture("wheel").flip ? -1 : 1) : mode === "sleep" ? -1 : ham.face; }
 function stepHamster(dt, st) {
   const want = wantMode(st);
   if (!ham.init && S.loaded && S.me) { // first reading: start in place, no transition
@@ -709,10 +742,11 @@ function stepHamster(dt, st) {
     if (ham.mode === "rest") moveTo(want); // already at the sit spot
     else moveTo("sit");
   } else if (ham.mode === "run") {
+    ham.x = SPOT.wheel.x; ham.y = ham.gy = SPOT.wheel.y; ham.face = fixture("wheel").flip ? -1 : 1; // the wheel may have moved
     ham.runPhase += (dt / 1000) * (4 + 10 * clamp(st.speed / 1600, 0, 1)); // run-cycle steps per second scale with speed
   } else if (ham.mode === "sleep") {
-    const s = spotFor("sleep"); ham.x = s.x; ham.y = ham.gy = s.y; // a bed upgrade moves the pillow
-  }
+    const s = spotFor("sleep"); ham.x = s.x; ham.y = ham.gy = s.y; // a bed upgrade (or a moved bed) moves the pillow
+  } else if (ham.mode === "rest" && !near({ x: ham.x, y: ham.gy }, SPOT.sit)) moveTo("sit"); // the wheel moved: walk over
 }
 
 // ---------- wheel ----------
@@ -1111,28 +1145,50 @@ function drawStanding(me) {
   }
   const [ba, bb] = ROOM.RESERVED.burrow, ab = isoSpan("burrow", ba, bb - ba + 1, false);
   list.push({ d: ab ? ab.d : IBURROW.foot, x: IBURROW.x, draw: drawBurrow });
-  const tier = (me && me.wheelTier) | 0, [wa, wb] = ROOM.RESERVED.wheel;
-  shadowCols(wa + 1, Math.max(1, wb - wa - 1));
   const m = ham.mode === "move" ? ham.move : null;
   const hamInWheel = ham.mode === "run" || (m && m.wheel), hamInBed = ham.mode === "sleep" || (m && m.bed);
-  list.push({ d: IWHEEL.foot, x: IWHEEL.x, draw: () => {
-    if (sprite(g, "wheel", Math.floor(wheel.angle * 24) % 4, IWHEEL.x, IWHEEL.y, { angle: wheel.angle, tier })) {
-      if (tier > 0) sprite(g, `wheel_t${tier}`, frame10, IWHEEL.x, IWHEEL.y, { angle: wheel.angle, tier });
-    } else drawWheelPlaceholder(g, wheel.angle, tier);
-    if (hamInWheel) drawHamster();
-  } });
+  const moving = P.mode === "move" ? fixOf(P.pid) : null; // a fixture being moved fades in place
+  const wf = fixture("wheel");
+  drawTileOverlay(g, wf.i, wf.j, SHADOW());
+  list.push({ d: IWHEEL.foot, x: IWHEEL.x, draw: () => drawWheel(wf.i, wf.j, !!wf.flip, (me && me.wheelTier) | 0, hamInWheel, moving === "wheel" ? 0.35 : 1) });
   const b = bedGeom();
-  drawTileOverlay(g, BED_TILE[0], BED_TILE[1], SHADOW());
-  list.push({ d: b.foot, x: b.x, draw: () => {
-    if (!sprite(g, b.id, frame10, b.x, b.y, {})) g.drawImage(placeholderItem({ id: b.id, name: "bed" }, b.w, b.h), b.x, b.y);
-    if (hamInBed) { drawHamster(); if (ham.mode === "sleep") sprite(g, `${b.id}_front`, frame10, b.x, b.y, {}); } // iso: iso_bed_tN_front, same origin
-  } });
+  drawTileOverlay(g, b.i, b.j, SHADOW());
+  list.push({ d: b.foot, x: b.x, draw: () => drawBed(b, hamInBed, moving === "bed" ? 0.35 : 1) });
   if (!hamInWheel && !hamInBed) {
     g.fillStyle = "rgba(0,0,0,.2)"; g.fillRect(Math.round(ham.x) - 6, Math.round(ham.gy) - 1, 12, 2); // his own little shadow
     list.push({ d: ham.gy, x: ham.x, draw: drawHamster });
   }
   list.sort((a, c) => a.d - c.d || a.x - c.x);
   for (const e of list) e.draw();
+}
+// the wheel on tile (i, j): back layer, the running hamster, front layer (3D), or the old billboard
+function drawWheel(i, j, flip, tier, withHam = false, alpha = 1, c = g) {
+  c.globalAlpha = alpha;
+  const w = IW();
+  if (w) {
+    const so = tileSouth(i, j), o = { angle: wheel.angle, tier, flip, t: performance.now() };
+    w.draw(c, "back", so.x, so.y, o);
+    if (withHam) drawHamster();
+    w.draw(c, "front", so.x, so.y, o);
+  } else {
+    const B = wheelAt(i, j, flip).box, W = { cx: B.x + 24, cy: B.y + 24, r: 23, x: B.x, y: B.y };
+    if (sprite(c, "wheel", Math.floor(wheel.angle * 24) % 4, W.x, W.y, { angle: wheel.angle, tier })) {
+      if (tier > 0) sprite(c, `wheel_t${tier}`, frame10, W.x, W.y, { angle: wheel.angle, tier });
+    } else drawWheelPlaceholder(c, wheel.angle, tier, W);
+    if (withHam) drawHamster();
+  }
+  c.globalAlpha = 1;
+}
+function drawBed(b, withHam = false, alpha = 1, c = g) {
+  c.globalAlpha = alpha;
+  if (!sprite(c, b.id, frame10, b.x, b.y, { flip: b.flip })) c.drawImage(placeholderItem({ id: b.id, name: "bed" }, b.w, b.h), b.x, b.y);
+  if (withHam) { drawHamster(); if (ham.mode === "sleep") sprite(c, `${b.id}_front`, frame10, b.x, b.y, { flip: b.flip }); } // iso: iso_bed_tN_front, same origin
+  c.globalAlpha = 1;
+}
+function fixtureRect(k, i, j, flip) {
+  if (k === "wheel") return wheelAt(i, j, flip).box;
+  const b = bedGeom({ i, j, flip });
+  return { x: b.x, y: b.y, w: b.w, h: b.h };
 }
 function drawHamster() {
   const skin = (S.me && S.me.skin) || "skin_classic";
@@ -1290,7 +1346,12 @@ function loop(now) {
 
 // ---------- placement: client mirror of the server rules ----------
 const span = (ax, aw, bx, bw) => ax < bx + bw && bx < ax + aw;
-const findPlaced = (pid) => (pid && S.me && S.me.placed.find((p) => p.pid === pid)) || null;
+function findPlaced(pid) {
+  const k = fixOf(pid);
+  if (k) { if (!S.me) return null; const f = fixture(k); return { pid, item: FIX_ITEM[k].id, x: f.i, y: f.j, flip: !!f.flip, fixture: k }; }
+  return (pid && S.me && S.me.placed.find((p) => p.pid === pid)) || null;
+}
+const itemOf = (p) => (p && p.fixture ? FIX_ITEM[p.fixture] : p && S.catalog.get(p.item));
 const unplaced = (id) => (S.me ? (S.me.owned[id] || 0) - S.me.placed.filter((p) => p.item === id).length : 0);
 function reservedCols() {
   const m = new Map();
@@ -1302,6 +1363,7 @@ function reservedCols() {
 // two lanes. Wall: the bounding box of the folded rect (wallRect is the same rect in flat strip coordinates).
 const wallRect = (it, x, y) => ({ x: colLeft(x), y: wallRowY(y), w: it.w * CELL, h: it.h * CELL });
 function isoRect(it, x, y, flip = false) {
+  if (it.zone === "fixture") return fixtureRect(it.fixture, x, y, flip);
   if (it.zone === "wall") {
     const f = wallRect(it, x, y);
     let top = Infinity, bot = -Infinity;
@@ -1360,13 +1422,15 @@ function errorWords(j, ctx = {}) {
       return cat === "wheel" ? "Your wheel already has that" : cat === "bed" ? "Your bed is already that good" : cat === "room" ? "Your room is already built of that (or better)" : "You already own that";
     }
     case "reserved": return (ctx.which || whichReserved(ctx.it, ctx.x)) === "burrow" ? "That's the burrow. It stays where it is" : "That spot is the wheel's";
+    case "too_close": return ctx.which === "bed" ? "Too close to the wheel" : "Too close to the bed";
+    case "bad_fixture": return "That can't move";
     case "overlap": return ctx.with ? `The ${ctx.with.name} is already there` : "Something is already there";
-    case "out_of_bounds": case "oob": return ctx.it && ctx.it.zone === "wall" ? "Wall decor has to hang on the wall" : "That doesn't fit there";
-    case "unowned": return "None left to place. Buy another in the shop";
+    case "out_of_bounds": case "oob": return ctx.it && ctx.it.zone === "wall" ? "Wall decor goes on the wall" : ctx.it && ctx.it.zone === "fixture" ? "Keep it on the open floor" : "Doesn't fit there";
+    case "unowned": return "None left. Buy another in the shop";
     case "bad_coords": return "Pick a spot inside the room";
     case "unknown_pid": return "That was already moved or removed";
     case "unknown_item": case "not_placeable": return "That isn't in the shop";
-    case "bad_token": case "unknown_player": return "Your room hasn't loaded yet. Try again in a moment";
+    case "bad_token": case "unknown_player": return "Your room is still loading";
     case "network": return "Can't reach the room server";
     default: return `Something went wrong (${e})`;
   }
@@ -1386,6 +1450,7 @@ const wallYRange = (it) => [ROOM.WALL_TOP, ROOM.WALL_BOTTOM - it.h + 1];
 // screen -> the tile under the pointer -> its lane column (inverse of colTile), as that column's
 // centre. Wall: unfold the wall (strip coordinates), then rows count from the top like the flat wall.
 function toFlat(L, zone) {
+  if (zone === "fixture") return { x: L.x, y: L.y }; // fixtures speak tiles: keep the screen point
   if (zone === "wall") {
     const px = clamp(Math.floor(L.x), WALL_X0, WALL_X1 - 1);
     return { x: L.x - colLeft(0), y: L.y - stripTop(px) - wallRowY(0) };
@@ -1393,7 +1458,12 @@ function toFlat(L, zone) {
   const [i, j] = screenToTile(L.x, L.y);
   return { x: (tileToCol(i, j) + 0.5) * CELL, y: FLOOR_Y };
 }
+function fixtureCell(x, y) { // screen point -> the open-floor tile under it, clamped off the wall lanes
+  const [i, j] = screenToTile(x, y);
+  return { x: clamp(Math.floor(i), 1, ROOM.ISO_NI - 1), y: clamp(Math.floor(j), 1, ROOM.ISO_NJ - 1) };
+}
 function cellAt(it, Ls) { // the ghost is centred on the pointer and clamped into its zone
+  if (it.zone === "fixture") return fixtureCell(Ls.x, Ls.y);
   const L = toFlat(Ls, it.zone);
   const x = clamp(Math.round(L.x / CELL - it.w / 2), 0, ROOM.COLS - it.w);
   if (it.zone !== "wall") return { x, y: ROOM.FLOOR_ROW };
@@ -1402,6 +1472,7 @@ function cellAt(it, Ls) { // the ghost is centred on the pointer and clamped int
 }
 function dragCell(Ls) { // dragging keeps the grab offset: the item moves by whole cells (d.lx/ly: flat press point)
   const d = P.drag, it = P.it, L = toFlat(Ls, it.zone);
+  if (it.zone === "fixture") { const c = isoTileCenter(d.x0, d.y0); return fixtureCell(c.x + L.x - d.lx, c.y + L.y - d.ly); }
   const x = clamp(d.x0 + Math.round((L.x - d.lx) / CELL), 0, ROOM.COLS - it.w);
   if (it.zone !== "wall") return { x, y: ROOM.FLOOR_ROW };
   const [y0, y1] = wallYRange(it);
@@ -1416,7 +1487,7 @@ function updateGhost(L) {
   // Tuber-Simulator-style auto-facing: until the player flips manually, items
   // along the left wall lane mirror to face into the room, right lane faces left.
   if (P.mode === "place" && !P.userFlip) P.flip = c.x + P.it.w / 2 < ROOM.COLS / 2;
-  P.valid = checkSpot(P.it, c.x, c.y, P.mode === "move" ? P.pid : null);
+  P.valid = P.it.zone === "fixture" ? checkFixture(P.it.fixture, c.x, c.y) : checkSpot(P.it, c.x, c.y, P.mode === "move" ? P.pid : null);
   renderPlacing();
 }
 function hitTest(L) {
@@ -1426,6 +1497,9 @@ function hitTest(L) {
   const list = S.me.placed.map((p) => [p, S.catalog.get(p.item)]).filter(([, it]) => it && it.zone)
     .sort((a, b) => order[a[1].zone] - order[b[1].zone] || depth(...b) - depth(...a));
   const inside = (f, x, y) => x >= f.x && x < f.x + f.w && y >= f.y && y < f.y + f.h;
+  // the wheel and the bed stand in front of every lane: they win, front-most first
+  const fx = ["wheel", "bed"].map((k) => findPlaced("fx:" + k)).sort((a, b) => b.x + b.y - (a.x + a.y));
+  for (const p of fx) if (inside(fixtureRect(p.fixture, p.x, p.y, p.flip), L.x, L.y)) return p;
   const sy = L.y - stripTop(clamp(Math.floor(L.x), WALL_X0, WALL_X1 - 1)); // the pointer on the unfolded wall
   for (const [p, it] of list) {
     if (it.zone === "rug" ? rugHit(p, it, L) : it.zone === "wall" ? inside(wallRect(it, p.x, p.y), L.x, sy) : inside(isoRect(it, p.x, p.y, p.flip), L.x, L.y)) return p;
@@ -1441,7 +1515,7 @@ function enterPlace(itemId) {
   if (matchMedia("(max-width:860px)").matches) stage.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 function enterMove(pid, drag = null) {
-  const p = findPlaced(pid), it = p && S.catalog.get(p.item);
+  const p = findPlaced(pid), it = itemOf(p);
   if (!it) return;
   selPid = pid;
   Object.assign(P, { mode: "move", it, pid, flip: !!p.flip, cell: { x: p.x, y: p.y }, valid: { ok: true }, drag, from: { x: p.x, y: p.y, flip: !!p.flip }, down: false });
@@ -1458,7 +1532,8 @@ async function commit() {
   const { it, cell, mode, pid } = P, valid = P.valid || {};
   if (mode === "move" && P.from && cell.x === P.from.x && cell.y === P.from.y && P.flip === P.from.flip) { cancelMode(); return; } // dropped where it was
   P.busy = true;
-  const r = mode === "place"
+  const r = it.zone === "fixture" ? await post("/api/fixture", { which: it.fixture, i: cell.x, j: cell.y, flip: P.flip })
+    : mode === "place"
     ? await post("/api/place", { itemId: it.id, x: cell.x, y: cell.y, flip: P.flip })
     : await post("/api/move", { pid, x: cell.x, y: cell.y, flip: P.flip });
   P.busy = false;
@@ -1470,7 +1545,7 @@ async function commit() {
     afterMode();
     return;
   }
-  toast(errorWords(r.j, { it, x: cell.x, which: valid.which, with: valid.with }), "err");
+  toast(errorWords(r.j, { it, x: cell.x, which: it.zone === "fixture" ? it.fixture : valid.which, with: valid.with }), "err");
   P.flashUntil = performance.now() + 450;
   if (P.drag || r.j.error === "unknown_pid" || r.j.error === "unowned") { cancelMode(); refresh(); } // a refused drag snaps home
   renderPlacing();
@@ -1478,11 +1553,12 @@ async function commit() {
 function select(pid) { selPid = findPlaced(pid) ? pid : null; renderPlacing(); positionTool(); }
 async function flipPlaced(p) {
   if (!p) return;
-  const r = await post("/api/move", { pid: p.pid, x: p.x, y: p.y, flip: !p.flip });
-  if (r.ok && r.j.me) applyMe(r.j.me); else toast(errorWords(r.j, { it: S.catalog.get(p.item) }), "err");
+  const r = p.fixture ? await post("/api/fixture", { which: p.fixture, i: p.x, j: p.y, flip: !p.flip })
+    : await post("/api/move", { pid: p.pid, x: p.x, y: p.y, flip: !p.flip });
+  if (r.ok && r.j.me) applyMe(r.j.me); else toast(errorWords(r.j, { it: itemOf(p) }), "err");
 }
 async function removePlaced(p) {
-  if (!p) return;
+  if (!p || p.fixture) return; // the wheel and the bed stay in the room
   const it = S.catalog.get(p.item);
   const r = await post("/api/remove", { pid: p.pid });
   if (r.ok && r.j.me) { selPid = null; applyMe(r.j.me); toast(`${it ? it.name : "It"} is back in your things`); }
@@ -1491,9 +1567,10 @@ async function removePlaced(p) {
 // floating toolbar above the selected item
 function positionTool() {
   const el = $("itemTool");
-  const p = selPid && !P.mode ? findPlaced(selPid) : null, it = p && S.catalog.get(p.item);
+  const p = selPid && !P.mode ? findPlaced(selPid) : null, it = itemOf(p);
   if (!it) { el.hidden = true; return; }
   $("toolName").textContent = it.name;
+  el.querySelector('[data-act="remove"]').hidden = !!p.fixture;
   el.hidden = false;
   const f = isoRect(it, p.x, p.y, p.flip), cr = view.getBoundingClientRect(), sr = stage.getBoundingClientRect(), k = cr.width / LW;
   const tw = el.offsetWidth, th = el.offsetHeight;
@@ -1525,7 +1602,7 @@ function renderPlacing() {
   const why = $("placingWhy");
   if (!P.cell) { why.textContent = coarse.matches ? "· tap a spot in the room" : "· click a spot in the room · F flips · Esc cancels"; why.className = ""; }
   else if (P.valid && P.valid.ok) { why.textContent = coarse.matches ? "· tap to put it here" : "· click to put it here"; why.className = ""; }
-  else { why.textContent = "· " + errorWords(P.valid || {}, { it: P.it, x: P.cell.x, which: P.valid && P.valid.which, with: P.valid && P.valid.with }); why.className = "bad"; }
+  else { why.textContent = "· " + errorWords(P.valid || {}, { it: P.it, x: P.cell.x, which: P.it.zone === "fixture" ? P.it.fixture : P.valid && P.valid.which, with: P.valid && P.valid.with }); why.className = "bad"; }
 }
 
 // pointer handling (pattern from squeekplace: pointer events + capture, tap vs drag by distance)
@@ -1542,7 +1619,7 @@ view.addEventListener("pointermove", (e) => {
   const L = logical(e);
   if (press && !P.mode && Math.hypot(e.clientX - press.cx, e.clientY - press.cy) > 6) {
     const p = findPlaced(press.pid);
-    const pi = p && S.catalog.get(p.item);
+    const pi = itemOf(p);
     if (p && pi) { const F = toFlat(press.L, pi.zone); enterMove(p.pid, { x0: p.x, y0: p.y, lx: F.x, ly: F.y }); }
     press = null;
   }
@@ -1565,7 +1642,7 @@ addEventListener("keydown", (e) => {
   if (e.key === "Escape") { if (P.mode) cancelMode(); else select(null); }
   else if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey && !e.altKey) {
     if (P.mode) { P.flip = !P.flip; P.userFlip = true; renderPlacing(); } else if (selPid) flipPlaced(findPlaced(selPid));
-  } else if ((e.key === "Delete" || e.key === "Backspace") && selPid && !P.mode) { e.preventDefault(); removePlaced(findPlaced(selPid)); }
+  } else if ((e.key === "Delete" || e.key === "Backspace") && selPid && !P.mode && !fixOf(selPid)) { e.preventDefault(); removePlaced(findPlaced(selPid)); }
 });
 
 // in-canvas overlay: zone guides, reserved columns, ghost, selection. Floor + rugs mark lane tiles;
@@ -1594,7 +1671,17 @@ const OV = {
 function laneTiles(x, w, deep = 1) { const out = []; for (let c = x; c < x + w; c++) { const [i, j] = colTile(c); for (let k = 0; k < deep; k++) out.push(c <= ISO.CORNER ? [i + k, j] : [i, j + k]); } return out; }
 function drawPlacement() {
   const now = performance.now();
-  if (P.mode && P.it) {
+  if (P.mode && P.it && P.it.zone === "fixture") { // open-floor tiles, the target tile, a ghost of the fixture
+    const it = P.it, k = it.fixture;
+    for (let i = 1; i < ROOM.ISO_NI; i++) for (let j = 1; j < ROOM.ISO_NJ; j++) if (i + j <= ROOM.FIX_MAX_SUM) drawTileOverlay(g, i, j, OV.lane());
+    if (P.cell) {
+      const ok = !!(P.valid && P.valid.ok) && P.flashUntil < now, { x: ci, y: cj } = P.cell;
+      drawTileOverlay(g, ci, cj, ok ? OV.ok() : OV.bad());
+      if (k === "wheel") drawWheel(ci, cj, P.flip, (S.me && S.me.wheelTier) | 0, false, 0.8);
+      else drawBed(bedGeom({ i: ci, j: cj, flip: P.flip }), false, 0.8);
+      ring(fixtureRect(k, ci, cj, P.flip), ok ? "#4ade80" : "#f87171");
+    }
+  } else if (P.mode && P.it) {
     const it = P.it;
     if (it.zone === "wall") { // cell-corner dots over the wall (light + dark pixel pair so they show on any wallpaper)
       for (let r = ROOM.WALL_TOP; r <= ROOM.WALL_BOTTOM + 1; r++) for (let c = 0; c <= ROOM.COLS; c++) {
@@ -1624,8 +1711,9 @@ function drawPlacement() {
     }
   }
   if (selPid && !P.mode) {
-    const p = findPlaced(selPid), it = p && S.catalog.get(p.item);
-    if (it && it.zone === "wall") { const f = wallRect(it, p.x, p.y); foldLayer((s) => ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now, s), f.x - 1, f.x + f.w + 1); }
+    const p = findPlaced(selPid), it = itemOf(p);
+    if (it && it.zone === "fixture") { drawTileOverlay(g, p.x, p.y, OV.sel()); const f = fixtureRect(p.fixture, p.x, p.y, p.flip); ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now); }
+    else if (it && it.zone === "wall") { const f = wallRect(it, p.x, p.y); foldLayer((s) => ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now, s), f.x - 1, f.x + f.w + 1); }
     else if (it) {
       for (const [i, j] of laneTiles(p.x, it.w, it.zone === "rug" ? RUG_DEPTH : 1)) drawTileOverlay(g, i, j, OV.sel());
       if (it.zone === "floor") { const f = isoRect(it, p.x, p.y, p.flip); ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now); }
@@ -1802,8 +1890,8 @@ async function cardAction(c) {
     }
     applyMe(r.j.me);
     spendFeedback(c, it.price);
-    if (it.cat === "wheel") toast(`${it.name} installed: ${(it.multPct / 100).toFixed(2)}× watts per block`, "ok");
-    else if (it.cat === "bed") toast(`${it.name} installed: ${(it.multPct / 100).toFixed(2)}× bed watts while he sleeps`, "ok");
+    if (it.cat === "wheel") toast(`${it.name}: ${(it.multPct / 100).toFixed(2)}× watts per block`, "ok");
+    else if (it.cat === "bed") toast(`${it.name}: ${(it.multPct / 100).toFixed(2)}× bed watts`, "ok");
     else if (it.cat === "room") toast(`Your room is now ${it.material || it.name}`, "ok");
     else if (!it.zone) await equip(it); // a new wallpaper / floor / skin goes straight on
     else enterPlace(it.id); // a new placeable goes straight into your hand
@@ -1850,7 +1938,7 @@ function renderInventory() {
   if (!rows.length) {
     const s = document.createElement("span");
     s.className = "empty";
-    s.textContent = !me ? "" : me.placed.length ? "Everything you own is out in the room. Tap a thing in the room to move it." : "Nothing yet. Things you buy wait here.";
+    s.textContent = !me ? "" : me.placed.length ? "Everything is in the room. Tap something to move it." : "Nothing yet. Things you buy show up here.";
     box.appendChild(s);
     return;
   }
@@ -2140,7 +2228,7 @@ function renderCertHud(me) {
   const life = $("life"), cb = $("certBtn"), cert = me.commemorative;
   life.classList.toggle("locked", !cert && !me.certEligible);
   life.classList.toggle("ready", !cert && !!me.certEligible);
-  const tip = cert ? `Certificate Nº ${cert.serial} is yours. Open it` : me.certEligible ? "You can claim your commemorative certificate" : `Commemorative certificate: ${certLeftWords(me)}`;
+  const tip = cert ? `Open certificate Nº ${cert.serial}` : me.certEligible ? "Your certificate is ready to claim" : `Certificate: ${certLeftWords(me)}`;
   if (life.title !== tip) { life.title = tip; life.setAttribute("aria-label", `${$("lifeLine").textContent}. ${tip}`); }
   cb.hidden = !cert && !me.certEligible;
   cb.classList.toggle("claimed", !!cert);
@@ -2238,15 +2326,15 @@ $("certShare").onclick = async () => {
   if (file && navigator.canShare && navigator.canShare({ files: [file] })) data.files = [file];
   else data.url = location.origin + "/";
   try { await navigator.share(data); }
-  catch (e) { if (!e || e.name !== "AbortError") toast("Sharing didn't work here. Save the PNG instead.", "err"); }
+  catch (e) { if (!e || e.name !== "AbortError") toast("Sharing doesn't work here. Save the PNG instead.", "err"); }
 };
 
 // ---------- raids: header chip, leaderboard, raid modal, result, feed ----------
-// The server rolls and re-validates every raid (window, cooldown, eligibility, stake); the client
-// only mirrors the maths so each option shows its odds, loot range and EV before you commit.
+// The server rolls and re-validates every raid (window, daily allowance, eligibility, stake); the
+// client mirrors the maths so each option shows its odds and loot. EV is never shown on purpose.
 const RAID_DEFAULTS = { EDGE_PCT: 110, MULT_PCT: [150, 200, 300, 500, 1000], DEFENSE_PCT: [0, 5, 10, 15, 20, 25], TILT_EXP: 0.25, TILT_MIN_PCT: 75, TILT_MAX_PCT: 150,
-  P_MIN_PCT: 2, P_MAX_PCT: 90, LOOT_U_MIN_PCT: 75, LOOT_U_MAX_PCT: 125, CRIT_CHANCE_PCT: 5, CRIT_MULT_PCT: 150, STAKE_MIN: 50, STAKE_MAX: 5000,
-  STAKE_MAX_BALANCE_PCT: 20, ELIGIBLE_MIN_PCT: 70, REVENGE_WINDOW_MS: 86_400_000, COOLDOWN_MS: 1_800_000 };
+  P_MIN_PCT: 2, P_MAX_PCT: 90, LOOT_U_MIN_PCT: 75, LOOT_U_MAX_PCT: 125, CRIT_CHANCE_PCT: 5, CRIT_MULT_PCT: 150, LOOT_MAX_DEF_PCT: 25, STAKE_MIN: 50,
+  ELIGIBLE_MIN_PCT: 70, REVENGE_WINDOW_MS: 86_400_000, PER_DAY: 10 };
 const RB = () => ({ ...RAID_DEFAULTS, ...((S.balance && S.balance.RAID) || {}) });
 // p = clamp((EDGE / M) x (1 - d) x clamp((def / me) ^ 0.25, 0.75, 1.5), 0.02, 0.90), M as a percentage
 function raidP(multPct, defTier, myWatts, defWatts) {
@@ -2256,18 +2344,15 @@ function raidP(multPct, defTier, myWatts, defWatts) {
   const d = R.DEFENSE_PCT[defTier | 0] ?? R.DEFENSE_PCT[0];
   return clamp((R.EDGE_PCT / multPct) * (1 - d / 100) * tilt, R.P_MIN_PCT / 100, R.P_MAX_PCT / 100);
 }
-function raidStakeBounds(watts) {
-  const R = RB();
-  return { min: R.STAKE_MIN, max: Math.min(Math.floor((Math.max(0, watts) * R.STAKE_MAX_BALANCE_PCT) / 100), R.STAKE_MAX) };
-}
+function raidStakeBounds(watts) { return { min: RB().STAKE_MIN, max: Math.max(0, Math.floor(watts)) }; }
+const lootCap = (defWatts) => Math.floor((Math.max(0, defWatts) * RB().LOOT_MAX_DEF_PCT) / 100);
 function lootRange(multPct, stake, defWatts) {
-  const R = RB(), cap = Math.max(0, defWatts), base = (multPct - 100) * stake;
+  const R = RB(), cap = lootCap(defWatts), base = (multPct - 100) * stake;
   return [Math.min(Math.floor((base * R.LOOT_U_MIN_PCT) / 10_000), cap), Math.min(Math.floor((base * R.LOOT_U_MAX_PCT) / 10_000), cap)];
 }
 const multLabel = (m) => `${+(m / 100).toFixed(2)}×`;
 const pctText = (p) => { const v = p * 100; return `${v < 10 ? +v.toFixed(1) : Math.round(v)}%`; };
-const evText = (ev) => { const v = Math.round(ev * 1000) / 10; return `${v > 0 ? "+" : v < 0 ? "−" : "±"}${Math.abs(v)}%`; };
-const durText = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+const durText = (ms) => { const m = Math.max(1, Math.ceil(ms / 60_000)); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`; };
 const agoText = (at) => {
   const s = Math.max(0, Math.round((Date.now() + S.skew - at) / 1000));
   return s < 45 ? "now" : s < 3600 ? `${Math.round(s / 60)}m` : s < 86_400 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86_400)}d`;
@@ -2275,31 +2360,33 @@ const agoText = (at) => {
 function elx(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 const myPid = () => (S.me && S.me.publicId) || null;
 
-// raid window + this player's cooldown (snapshot every 5 s, the leaderboard, raid replies)
+// raid window + this player's raids left today (snapshot every 5 s, the leaderboard, raid replies)
 S.raid = null; S.raidFeed = []; S.burned = 0;
 function applyRaidStatus(raid) {
   if (!raid || typeof raid !== "object") { S.raid = null; return; }
-  S.raid = { open: !!raid.open, cdUntil: Date.now() + Math.max(0, Number(raid.cooldownMsLeft) || 0) };
+  const per = Number(raid.perDay) || RB().PER_DAY;
+  S.raid = { open: !!raid.open, left: Number.isFinite(raid.raidsLeft) ? raid.raidsLeft : per, perDay: per, resetAt: Date.now() + Math.max(0, Number(raid.resetMs) || 0) };
 }
-const cooldownLeft = () => (S.raid ? Math.max(0, S.raid.cdUntil - Date.now()) : 0);
-function raidPhase() { // none | open | cool | locked
+const raidsLeftNow = () => (S.raid ? (Date.now() >= S.raid.resetAt ? S.raid.perDay : S.raid.left) : 0);
+const resetIn = () => (S.raid ? Math.max(0, S.raid.resetAt - Date.now()) : 0);
+function raidPhase() { // none | open | spent | locked
   if (!S.raid || !S.me) return "none";
   if (!S.raid.open) return "locked";
-  return cooldownLeft() > 0 ? "cool" : "open";
+  return raidsLeftNow() > 0 ? "open" : "spent";
 }
-const lockedWhy = () => (S.idle ? "Squeektoshi is sleeping" : "no fresh chain reading");
+const lockedWhy = () => (S.idle ? "he's asleep" : "waiting for a block");
 let chipSig = "";
 function renderRaidChip() {
   const el = $("raidChip"), ph = raidPhase();
   el.hidden = ph === "none";
   if (ph === "none") return;
-  const html = ph === "open" ? "⚔ RAIDS OPEN" : ph === "cool" ? `⚔ RAIDS OPEN <span class="cd">next raid ${durText(cooldownLeft())}</span>` : `😴 raids locked — ${lockedWhy()}`;
+  const html = `⚔ Raid <span class="cd">${ph === "locked" ? lockedWhy() : `${raidsLeftNow()} left`}</span>`;
   const sig = ph + html;
   if (sig === chipSig) return;
   chipSig = sig;
   el.className = `raidchip ${ph}`;
   el.innerHTML = html;
-  el.title = ph === "locked" ? "Raids open only while Squeektoshi runs. Open the leaderboard" : ph === "cool" ? "Your raid is cooling down. Open the leaderboard" : "Raid a richer room. Open the leaderboard";
+  el.title = ph === "locked" ? "Raids only work while Squeektoshi runs" : ph === "spent" ? `Out of raids. More in ${durText(resetIn())}` : "Leaderboard";
   el.setAttribute("aria-expanded", String(LB.open));
 }
 
@@ -2370,9 +2457,9 @@ function closeLb() {
 }
 function raidStateWords() {
   const ph = raidPhase();
-  if (ph === "open") return ["open", "<b>⚔ RAIDS OPEN</b> Squeektoshi is running. Tap a red room to raid it."];
-  if (ph === "cool") return ["open", `<b>⚔ RAIDS OPEN</b> Your next raid in <b>${durText(cooldownLeft())}</b> (one raid per 30 min).`];
-  if (ph === "locked") return ["", `<b>😴 RAIDS LOCKED</b> ${S.idle ? "Squeektoshi is sleeping. Raids open again when he runs." : "No fresh chain reading right now. Raids open while he runs."}`];
+  if (ph === "open") return ["open", `<b>${raidsLeftNow()}/${S.raid.perDay}</b> raids left today`];
+  if (ph === "spent") return ["", `Out of raids. More in <b>${durText(resetIn())}</b>`];
+  if (ph === "locked") return ["", S.idle ? "Squeektoshi is asleep. Raids open when he runs." : "Waiting for a fresh block."];
   return ["", "Loading…"];
 }
 function renderLb() {
@@ -2382,8 +2469,7 @@ function renderLb() {
   const st = $("lbState");
   st.className = "lbstate" + (cls ? " " + cls : "");
   const targets = d ? d.rows.filter(rowRaidable).length : 0;
-  const extra = me ? `<br>You hold <b>${fmt(me.watts)} W</b>: rooms with ≥ ${fmt(minTarget())} W are fair game${d ? ` (${targets} target${targets === 1 ? "" : "s"})` : ""}.` : "";
-  st.innerHTML = words + extra;
+  st.innerHTML = words + (me && d && cls ? ` · ${targets} target${targets === 1 ? "" : "s"}` : "");
   const age = LB.at ? Math.round((Date.now() - LB.at) / 1000) : null;
   $("lbMeta").textContent = !d ? (LB.err ? "can't reach the room server" : "loading…") : `${fmt(d.total)} room${d.total === 1 ? "" : "s"} · ${LB.err ? `couldn't refresh, showing ${age}s old` : age < 3 ? "just updated" : `updated ${age}s ago`}`;
   const sig = d ? `${LB.at}|${me ? me.watts : ""}|${raidPhase()}` : "none";
@@ -2403,17 +2489,15 @@ function renderLb() {
     const who = elx("span", "who"), nm = elx("span", "nm", rowName(r));
     if (r.verified) nm.appendChild(verifiedBadge());
     if (you) nm.appendChild(elx("span", "tag you", "YOU"));
-    if (r.revenge) nm.appendChild(elx("span", "tag rev", "REVENGE!"));
+    if (r.revenge) nm.appendChild(elx("span", "tag rev", "REVENGE"));
     who.appendChild(nm);
     who.appendChild(elx("span", "mt", rowMatLine(r)));
     row.appendChild(who);
     const wt = elx("span", "wt", `${fmt(r.watts)} W`);
     if (raidable && me) {
-      const ev = raidP(200, r.roomTier, me.watts, r.watts) * 2 - 1;
-      const sm = elx("small"); sm.appendChild(elx("span", ev >= 0 ? "pos" : "neg", `EV ${evText(ev)}`)); wt.appendChild(sm);
-      wt.appendChild(elx("span", "go", "RAID ⚔"));
-    } else wt.appendChild(elx("small", null, you ? (r.rank === 1 ? "the crown: pure prey" : "you") : "< 70% of you"));
-    row.title = raidable ? `Raid ${rowName(r)}${r.revenge ? " (revenge)" : ""}` : you ? "Your room" : `Below 70% of your watts (< ${fmt(minTarget())} W): punch up only`;
+      wt.appendChild(elx("span", "go", "RAID"));
+    } else if (!you) wt.appendChild(elx("small", null, "too small"));
+    row.title = raidable ? `Raid ${rowName(r)}${r.revenge ? " (revenge)" : ""}` : you ? "Your room" : `Under 70% of your watts (${fmt(minTarget())} W). You can only raid up.`;
     row.setAttribute("aria-label", `Rank ${r.rank}, ${rowName(r)}${r.verified ? " (wallet verified)" : ""}${you ? " (you)" : ""}, ${roomMaterial(r.roomTier | 0)} room, ${fmt(r.watts)} watts${raidable ? ", raidable" : ""}${r.revenge ? ", revenge" : ""}`);
     row.appendChild(wt);
     li.appendChild(row);
@@ -2436,7 +2520,7 @@ function openRaid(row) {
   if (!row || !S.me) return;
   if (!RU.open) RU.back = document.activeElement;
   RU.open = true; RU.row = row; RU.result = null; RU.busy = false;
-  if (!RU.stake) { const b = raidStakeBounds(S.me.watts); RU.stake = clamp(Math.floor(b.max / 2), b.min, Math.max(b.min, b.max)); }
+  if (!RU.stake) { const b = raidStakeBounds(S.me.watts); RU.stake = clamp(Math.floor(b.max / 10), b.min, Math.max(b.min, b.max)); }
   $("raidErr").textContent = "";
   $("raidForm").style.display = "flex";
   $("raidResult").hidden = true;
@@ -2464,8 +2548,8 @@ function buildMults() {
   for (const m of RB().MULT_PCT) {
     const b = elx("button", "mult");
     b.type = "button"; b.setAttribute("role", "radio"); b.dataset.m = String(m);
-    b.innerHTML = `<span class="mx"></span><span class="pc"></span><span class="lt"></span><span class="ev"></span>`;
-    b.querySelector(".mx").innerHTML = m >= 1000 ? `${multLabel(m)}<small>HEIST</small>` : multLabel(m);
+    b.innerHTML = `<span class="mx"></span><span class="pc"></span>`;
+    b.querySelector(".mx").textContent = multLabel(m);
     b.onclick = () => { RU.mult = m; ls.set("sr_mult", String(m)); renderRaid(); };
     box.appendChild(b);
   }
@@ -2480,10 +2564,10 @@ function buildMults() {
 // Why the RAID button can't fire right now (null = it can). The server re-checks all of it anyway.
 function raidBlock(t, sb) {
   const ph = raidPhase();
-  if (ph === "locked") return { lock: true, msg: `<b>😴 RAIDS LOCKED</b> ${S.idle ? "Squeektoshi is sleeping. Raids open again the moment he runs." : "No fresh chain reading right now. Raids open while he runs."}` };
-  if (ph === "cool") return { lock: true, msg: `<b>⏳ COOLING DOWN</b> Your next raid in ${durText(cooldownLeft())}. One raid per 30 minutes.` };
-  if (sb.max < sb.min) return { lock: true, msg: `<b>TOO POOR TO RAID</b> Stakes start at ${fmt(sb.min)} W and can be at most 20% of your watts: you need ${fmt(Math.ceil((sb.min * 100) / RB().STAKE_MAX_BALANCE_PCT))} W.` };
-  if (!rowRaidable(t)) return { lock: true, msg: `<b>OUT OF REACH</b> ${escapeHtml(rowName(t))} holds less than 70% of your watts now (needs ≥ ${fmt(minTarget())} W). Punch up only.` };
+  if (ph === "locked") return { lock: true, msg: S.idle ? "Squeektoshi is asleep. Raids open when he runs." : "Waiting for a fresh block." };
+  if (ph === "spent") return { lock: true, msg: `No raids left today. More in ${durText(resetIn())}.` };
+  if (sb.max < sb.min) return { lock: true, msg: `You need at least ${fmt(sb.min)} W to raid.` };
+  if (!rowRaidable(t)) return { lock: true, msg: `${escapeHtml(rowName(t))} has under 70% of your watts now.` };
   return null;
 }
 function renderRaid(force = false) {
@@ -2495,30 +2579,23 @@ function renderRaid(force = false) {
     tb.dataset.sig = tsig;
     tb.innerHTML = "";
     const img = elx("img"); img.src = matSwatchUrl(t.roomTier); img.alt = ""; tb.appendChild(img);
-    const who = elx("div"); { const tn = elx("div", "tn", rowName(t)); if (t.verified) tn.appendChild(verifiedBadge()); who.appendChild(tn); } who.appendChild(elx("div", "tm", `#${t.rank} · ${rowMatLine(t)}`));
-    tb.appendChild(who);
-    const w = elx("div", "tw", `${fmt(t.watts)} W`); w.appendChild(elx("small", null, "their watts")); tb.appendChild(w);
+    const tn = elx("div", "tn", rowName(t)); if (t.verified) tn.appendChild(verifiedBadge());
+    tb.appendChild(tn);
+    tb.appendChild(elx("div", "tw", `${fmt(t.watts)} W`));
   }
   const rev = !!t.revenge;
   $("raidBox").classList.toggle("revenge", rev);
   $("raidRev").hidden = !rev;
-  $("raidTitle").textContent = rev ? "⚔ REVENGE RAID" : "⚔ RAID";
-  $("raidSub").textContent = rev ? `pay ${rowName(t)} back` : `one roll · win their watts or burn your stake`;
+  $("raidTitle").textContent = rev ? "Revenge" : "Raid";
   if (RU.result) return; // the result view is showing
   const sb = stakeNow(), S0 = sb.v, myW = me.watts;
-  // multiplier rows
-  let selP = 0;
+  // multiplier choices: odds only
   for (const b of $("raidMults").children) {
-    const m = Number(b.dataset.m), p = raidP(m, t.roomTier, myW, t.watts), ev = p * (m / 100) - 1, [lo, hi] = lootRange(m, S0, t.watts);
-    if (m === RU.mult) selP = p;
+    const m = Number(b.dataset.m), p = raidP(m, t.roomTier, myW, t.watts);
     b.setAttribute("aria-checked", String(m === RU.mult));
     b.tabIndex = m === RU.mult ? 0 : -1;
-    b.querySelector(".pc").innerHTML = `${pctText(p)}<small>WIN</small>`;
-    b.querySelector(".lt").innerHTML = `+${fmt(lo)}–${fmt(hi)} W<small>LOOT IF WON</small>`;
-    const evEl = b.querySelector(".ev");
-    evEl.className = "ev " + (ev >= 0 ? "pos" : "neg");
-    evEl.innerHTML = `${evText(ev)}<small>EV</small>`;
-    b.setAttribute("aria-label", `${multLabel(m)}${m >= 1000 ? " heist" : ""}: ${pctText(p)} win chance, loot ${fmt(lo)} to ${fmt(hi)} watts, expected value ${evText(ev)}`);
+    b.querySelector(".pc").textContent = pctText(p);
+    b.setAttribute("aria-label", `${multLabel(m)}, ${pctText(p)} chance to win`);
   }
   // stake controls (left alone while being typed in)
   const num = $("stakeNum"), rng2 = $("stakeRange"), maxShown = Math.max(sb.min, sb.max);
@@ -2526,15 +2603,9 @@ function renderRaid(force = false) {
   if (document.activeElement !== num) num.value = String(S0);
   rng2.value = String(S0);
   rng2.disabled = num.disabled = sb.max < sb.min;
-  $("stakeBounds").textContent = sb.max < sb.min ? "you can't stake yet" : `${fmt(sb.min)}–${fmt(sb.max)} W${sb.max === R.STAKE_MAX ? " (cap)" : " (20% of yours)"}`;
-  // summary + EV warning
-  const m = RU.mult, ev = selP * (m / 100) - 1, [lo, hi] = lootRange(m, S0, t.watts), critHi = Math.min(Math.floor((hi * R.CRIT_MULT_PCT) / 100), t.watts);
-  const sum = $("raidSum");
-  sum.className = "rsum" + (ev < 0 ? " negev" : "");
-  sum.innerHTML = `<b class="pos">Win ${pctText(selP)}</b>: take <b>${fmt(lo)}–${fmt(hi)} W</b> from ${escapeHtml(rowName(t))} (${R.CRIT_CHANCE_PCT}% crit: up to ${fmt(critHi)} W)<br>`
-    + `<b class="neg">Lose ${pctText(1 - selP)}</b>: your <b>${fmt(S0)} W</b> stake is burned. Nobody gets it.<br>`
-    + `EV <b class="${ev >= 0 ? "pos" : "neg"}">${evText(ev)}</b> = ${ev >= 0 ? "+" : "−"}${fmt(Math.abs(ev * S0))} W per raid on average`
-    + (ev < 0 ? `<span class="warn">⚠ Negative EV: their ${roomMaterial(t.roomTier | 0).toLowerCase()} walls${t.watts < myW ? " and smaller purse" : ""} make this a losing bet on average.</span>` : "");
+  // what's at stake, one line
+  const m = RU.mult, [lo, hi] = lootRange(m, S0, t.watts);
+  $("raidSum").innerHTML = `<span><small>win</small><b class="pos">+${lo === hi ? fmt(hi) : `${fmt(lo)}–${fmt(hi)}`} W</b></span><span><small>lose</small><b class="neg">−${fmt(S0)} W</b></span>`;
   // lock banner + button
   const blk = raidBlock(t, sb), lock = $("raidLock");
   lock.hidden = !blk;
@@ -2542,7 +2613,8 @@ function renderRaid(force = false) {
   const go = $("raidGo");
   go.disabled = !!blk || RU.busy;
   go.classList.toggle("busy", RU.busy);
-  go.textContent = RU.busy ? "ROLLING…" : rev ? `⚔ REVENGE! (${fmt(S0)} W)` : `⚔ RAID! (${fmt(S0)} W at ${multLabel(m)})`;
+  go.textContent = RU.busy ? "Rolling…" : `${rev ? "Revenge" : "Raid"} · ${multLabel(m)}`;
+  $("raidLeft").textContent = S.raid ? `${raidsLeftNow()} of ${S.raid.perDay} raids left today` : "";
 }
 function escapeHtml(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
 function setStake(v) { RU.stake = Math.round(Number(v)) || 0; RU.stake = stakeNow().v; ls.set("sr_stake", String(RU.stake)); renderRaid(); }
@@ -2554,7 +2626,7 @@ $("stakeNum").addEventListener("input", (e) => {
 });
 $("stakeNum").addEventListener("change", (e) => { e.target.style.borderColor = ""; setStake(e.target.value); e.target.value = String(stakeNow().v); });
 $("stakeNum").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } });
-document.querySelectorAll("#raidForm [data-q]").forEach((b) => (b.onclick = () => { const sb = stakeNow(); setStake(b.dataset.q === "max" ? sb.max : sb.min); }));
+document.querySelectorAll("#raidForm [data-q]").forEach((b) => (b.onclick = () => { const sb = stakeNow(); setStake(Math.max(sb.min, Math.floor((sb.max * Number(b.dataset.q)) / 100))); }));
 $("raidGo").onclick = doRaid;
 $("raidClose").onclick = closeRaid;
 $("resClose").onclick = closeRaid;
@@ -2572,15 +2644,15 @@ function raidKey(e) {
 function raidErrorWords(j) {
   const e = (j && j.error) || "network", t = raidTarget();
   switch (e) {
-    case "hamster_asleep": return "Too late: Squeektoshi just fell asleep. Raids are locked until he runs again.";
-    case "chain_unknown": return "Raids are locked: the room server hasn't seen a block yet.";
-    case "chain_stale": return "Raids are locked: the chain reading went stale. They reopen with a fresh block.";
-    case "cooldown": return `Still cooling down: your next raid in ${durText(j.cooldownMsLeft || 0)}.`;
-    case "bad_target": return "That room doesn't exist any more.";
-    case "not_eligible": return `${t ? rowName(t) : "They"} dropped below 70% of your watts. Punch up only (or wait for revenge).`;
-    case "self_target": return "You can't raid your own room.";
-    case "bad_mult": return "Pick a multiplier first.";
-    case "bad_stake": case "stake_out_of_range": return j.max < j.min ? `You can't stake yet: stakes start at ${fmt(j.min)} W (max 20% of your watts).` : `Stake must be a whole number from ${fmt(j.min)} to ${fmt(j.max)} W.`;
+    case "hamster_asleep": return "Too late, he just fell asleep.";
+    case "chain_unknown": return "No blocks seen yet.";
+    case "chain_stale": return "Waiting for a fresh block.";
+    case "no_raids_left": return `No raids left today. More in ${durText(j.resetMs || 0)}.`;
+    case "bad_target": return "That room is gone.";
+    case "not_eligible": return `${t ? rowName(t) : "They"} dropped under 70% of your watts.`;
+    case "self_target": return "That's your own room.";
+    case "bad_mult": return "Pick a multiplier.";
+    case "bad_stake": case "stake_out_of_range": return j.max < j.min ? `You need at least ${fmt(j.min)} W to raid.` : `Stake ${fmt(j.min)} to ${fmt(j.max)} W.`;
     default: return errorWords(j);
   }
 }
@@ -2595,7 +2667,7 @@ async function doRaid() {
   RU.busy = false;
   if (r.ok && r.j && r.j.result) { onRaidResult(r.j, t); return; }
   const j = r.j || {}, e = j.error;
-  if (e === "cooldown") applyRaidStatus({ open: true, cooldownMsLeft: j.cooldownMsLeft });
+  if (e === "no_raids_left") applyRaidStatus({ open: true, raidsLeft: 0, perDay: S.raid && S.raid.perDay, resetMs: j.resetMs });
   else if (e === "hamster_asleep" || e === "chain_unknown" || e === "chain_stale") { if (S.raid) S.raid.open = false; else applyRaidStatus({ open: false }); }
   else if (e === "stake_out_of_range" || e === "bad_stake") { if (Number.isFinite(j.max) && j.max >= j.min) RU.stake = clamp(sb.v, j.min, j.max); refresh(); }
   if (e === "not_eligible" || e === "bad_target") loadLb();
@@ -2611,7 +2683,7 @@ async function doRaid() {
 function onRaidResult(j, t) {
   const res = j.result, before = S.me ? S.me.watts : 0;
   if (j.me) applyMe(j.me, false, { at: Date.now() + S.skew - 250 });
-  applyRaidStatus({ open: true, cooldownMsLeft: RB().COOLDOWN_MS });
+  if (S.raid) S.raid.left = Number.isFinite(res.raidsLeft) ? res.raidsLeft : Math.max(0, S.raid.left - 1);
   if (j.feed) { const k = feedKey(j.feed); if (!S.raidFeed.some((e) => feedKey(e) === k)) S.raidFeed = [...S.raidFeed, j.feed].slice(-20); FEED.seen.add(k); FEED.fresh = new Set([k]); FEED.sig = ""; renderFeed(); }
   chipSig = "";
   renderRaidChip();
@@ -2629,8 +2701,8 @@ function showRaidResult(res, t, before) {
   $("resCrit").hidden = !(win && res.crit);
   const m = res.multPct || RU.mult;
   if (win) {
-    $("resBig").textContent = res.revenge ? "REVENGE TAKEN!" : "RAID WON!";
-    $("resDet").textContent = `You took ${fmt(res.loot)} W from ${rowName(t)} · ${multLabel(m)} at ${pctText(res.p)} odds · next raid in ${durText(RB().COOLDOWN_MS)}`;
+    $("resBig").textContent = res.revenge ? "Revenge!" : "You won";
+    $("resDet").textContent = `from ${rowName(t)} at ${multLabel(m)}`;
     countUp($("resAmt"), res.loot, res.crit ? 1700 : 1200);
     for (let i = 0; i < (res.crit ? 36 : 22); i++) {
       const a = Math.random() * Math.PI * 2, d = 60 + Math.random() * 110, p = elx("i", "fxp coin");
@@ -2640,11 +2712,11 @@ function showRaidResult(res, t, before) {
     }
     raidFx(res.crit ? "crit" : "win");
     gainFlash(res.loot);
-    toast(`${res.crit ? "CRIT! " : ""}You raided ${rowName(t)}: +${fmt(res.loot)} W`, "ok");
+    toast(`${res.crit ? "Crit! " : ""}+${fmt(res.loot)} W from ${rowName(t)}`, "ok");
   } else {
-    $("resBig").textContent = "RAID FAILED";
+    $("resBig").textContent = "You lost";
     $("resAmt").textContent = `−${fmt(res.stakeLost || res.stake)} W`;
-    $("resDet").textContent = `Stake burned to ash at ${pctText(res.p)} odds. ${rowName(t)} keeps everything · next raid in ${durText(RB().COOLDOWN_MS)}`;
+    $("resDet").textContent = `stake burned at ${multLabel(m)}`;
     for (let i = 0; i < 28; i++) {
       const p = elx("i", "fxp ember");
       p.style.left = `${5 + Math.random() * 90}%`;
@@ -2734,7 +2806,7 @@ function applyFeed(list) {
 // someone raided me between two polls: make sure I notice
 function raidedMe(e) {
   const w = !!e.win;
-  toast(w ? `⚔ ${e.atk} raided you${e.crit ? " with a CRIT" : ""}! −${fmt(e.amount)} W. Revenge is open for 24 h.` : `🛡 ${e.atk} tried to raid you and burned ${fmt(e.amount)} W. Revenge is open for 24 h.`, w ? "err" : undefined);
+  toast(w ? `${e.atk} raided you: −${fmt(e.amount)} W` : `${e.atk} tried to raid you and lost ${fmt(e.amount)} W`, w ? "err" : undefined);
   for (const id of ["feed", "stage"]) { const n = $(id); n.classList.remove("hit"); void n.offsetWidth; n.classList.add("hit"); setTimeout(() => n.classList.remove("hit"), 1600); }
   if (w) { const m = $("meter"); m.classList.remove("poor"); void m.offsetWidth; m.classList.add("poor"); setTimeout(() => m.classList.remove("poor"), 900); }
   raidFx("hit");
@@ -2751,18 +2823,18 @@ function feedLine(e, mine) {
   const name = (s) => elx("b", null, s || "anon");
   const parts = [];
   if (e.win) {
-    parts.push("⚔ ", atkMe ? name("YOU") : name(e.atk), " raided ", defMe ? name("YOU") : name(e.def), " ");
+    parts.push(atkMe ? name("You") : name(e.atk), " raided ", defMe ? name("you") : name(e.def), " ");
     parts.push(elx("span", "w", `${atkMe ? "+" : "−"}${amt} W`));
-    if (e.crit) parts.push(" ", elx("span", "critf", "CRIT!"));
+    if (e.crit) parts.push(" ", elx("span", "critf", "crit"));
   } else {
-    parts.push("💥 ", atkMe ? name("YOU") : name(e.atk), atkMe ? " failed on " : defMe ? " tried to raid " : " failed to raid ", defMe ? name("YOU") : name(e.def), " ");
-    parts.push(elx("span", "b", `${amt} W burned`));
+    parts.push(atkMe ? name("You") : name(e.atk), " failed on ", defMe ? name("you") : name(e.def), " ");
+    parts.push(elx("span", "b", `−${amt} W`));
   }
   for (const p of parts) tx.append(p);
   li.appendChild(tx);
   if (defMe && !atkMe && Date.now() + S.skew - e.at < RB().REVENGE_WINDOW_MS) {
-    const rv = elx("button", "rv", "REVENGE");
-    rv.type = "button"; rv.title = `Raid ${e.atk} back (ignores the 70% rule, once)`;
+    const rv = elx("button", "rv", "revenge");
+    rv.type = "button"; rv.title = `Raid ${e.atk} back`;
     rv.onclick = (ev) => { ev.stopPropagation(); revengeOn(e.atkId); };
     li.appendChild(rv);
   }
@@ -2774,7 +2846,7 @@ async function revengeOn(pid) {
   openLb();
   await loadLb();
   const r = LB.data && LB.data.rows.find((x) => x.publicId === pid);
-  if (r) openRaid(r); else toast("They aren't on the leaderboard right now.", "err");
+  if (r) openRaid(r); else toast("They're not on the leaderboard.", "err");
 }
 function renderFeed() {
   const box = $("feed");
@@ -2790,7 +2862,7 @@ function renderFeed() {
   $("feedCount").textContent = list.length ? `· ${list.length}` : "";
   const ol = $("feedList");
   ol.innerHTML = "";
-  if (!list.length) { ol.appendChild(elx("li", "empty", "No raids yet. Raids open while Squeektoshi runs: punch up!")); return; }
+  if (!list.length) { ol.appendChild(elx("li", "empty", "No raids yet.")); return; }
   for (let i = list.length - 1; i >= 0; i--) ol.appendChild(feedLine(list[i], mine));
   setTimeout(() => { FEED.fresh = new Set(); }, 1300);
 }
@@ -2798,7 +2870,7 @@ function renderFeed() {
 // debug handle for the browser console / verification
 window.__squeekroom = { S, ham, wheel, sparks, meter, pops, spawnPop, liveStatus, tintAt, P, checkSpot, enterPlace, select,
   raid: { LB, RU, FEED, raidP, raidStakeBounds, lootRange, openLb, closeLb, openRaid, closeRaid, loadLb, raidFx, applyFeed },
-  get iso() { return { ISO, LW, LH, SPOT, IWHEEL, IBURROW, BED_TILE, colTile, colLeft, footY, tileToCol, screenToTile, wallBase, toFlat, isoRect, bedGeom, laneAt, isoSpan, isoFloor }; },
+  get iso() { return { ISO, LW, LH, SPOT, IWHEEL, IBURROW, fixture, checkFixture, fixtureRect, colTile, colLeft, footY, tileToCol, screenToTile, wallBase, toFlat, isoRect, bedGeom, laneAt, isoSpan, isoFloor }; },
   get selPid() { return selPid; }, get FX() { return FX; },
   renderNow() { const st = liveStatus(); tick10(); render(st); }, // paints one frame even when rAF is paused (hidden tab)
   renderCert, openCert, closeCert, certLeftWords, get cert() { return certUi.cert; } };

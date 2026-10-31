@@ -68,7 +68,9 @@ const BALANCE = {
   SPEED: { WINDOW_MS: 600_000, BASE_BPM: 4, MAX_PCT: 150, WARMUP_MS: 120_000 },
   // Raids: wager a stake on a multiplier against a richer room while he RUNS. Win chance
   // p = clamp((EDGE / M) x (1 - defense) x tilt, P_MIN, P_MAX), so attacker EV = S x (p x M - 1)
-  // does not depend on M (the multiplier only dials variance). A loss burns the stake (nobody gets it).
+  // does not depend on M (the multiplier only dials variance) until the loot cap bites: past
+  // stake ~ cap / (M - 1), a bigger stake only risks more. A loss burns the stake (nobody gets it).
+  // The UI shows odds and loot, never EV: working that out is part of the game.
   RAID: {
     EDGE_PCT: 110,
     MULT_PCT: [150, 200, 300, 500, 1000], // M = 1.5, 2, 3, 5, 10 ("Heist")
@@ -82,13 +84,12 @@ const BALANCE = {
     LOOT_U_MAX_PCT: 125,
     CRIT_CHANCE_PCT: 5,
     CRIT_MULT_PCT: 150,
-    STAKE_MIN: 50,
-    STAKE_MAX: 5000,
-    STAKE_MAX_BALANCE_PCT: 20, // stake <= floor(20% of the attacker's balance)
+    LOOT_MAX_DEF_PCT: 25, // one raid takes at most 25% of the defender's balance (stakes are uncapped)
+    STAKE_MIN: 50, // no maximum: a player may stake anything up to their whole balance
     ELIGIBLE_MIN_PCT: 70, // targets must hold >= 70% of the attacker's balance (punch-up only)...
     REVENGE_WINDOW_MS: 86_400_000, // ...unless they raided the attacker within 24 h (once per provocation)
     RAIDED_BY_MAX: 20,
-    COOLDOWN_MS: 1_800_000, // per attacker
+    PER_DAY: 10, // raids per attacker per UTC day; being raided has no limit
     FEED_MAX: 50,
     FEED_SNAPSHOT: 20,
     LEADERBOARD_MAX: 200,
@@ -107,7 +108,15 @@ const ROOM = {
   FLOOR_ROW: 11,
   WALL_TOP: 2,
   WALL_BOTTOM: 7,
-  RESERVED: { wheel: [3, 6], burrow: [16, 18] }, // inclusive floor-column ranges
+  RESERVED: { burrow: [16, 18] }, // inclusive floor-column ranges
+  // The wheel and the bed stand on open floor tiles (i, j) of the iso room, away from the wall lanes
+  // (i = 0 / j = 0). Tiles with i + j > FIX_MAX_SUM fall off the bottom of the view. The two fixtures
+  // keep FIX_GAP tiles apart (Chebyshev) so neither hides the other or the hamster.
+  ISO_NI: 11,
+  ISO_NJ: 10,
+  FIX_MAX_SUM: 14,
+  FIX_GAP: 2,
+  FIXTURE_DEFAULTS: { wheel: { i: 1, j: 5, flip: false }, bed: { i: 7, j: 2, flip: false } },
 };
 const RESERVED_COLS = new Set();
 for (const [a, b] of Object.values(ROOM.RESERVED)) for (let c = a; c <= b; c++) RESERVED_COLS.add(c);
@@ -191,6 +200,31 @@ const TIER_FIELD = { wheel: "wheelTier", bed: "bedTier", room: "roomTier" };
 const tierField = (cat) => (Object.hasOwn(TIER_FIELD, cat) ? TIER_FIELD[cat] : null);
 const DEFAULTS = { skin: "skin_classic", wallpaper: "wp_plain", floor: "fl_pine" };
 
+// ---------- fixtures: the wheel and the bed ----------
+const FIXTURES = ["wheel", "bed"];
+const defaultFixtures = () => ({ wheel: { ...ROOM.FIXTURE_DEFAULTS.wheel }, bed: { ...ROOM.FIXTURE_DEFAULTS.bed } });
+const fixtureTileOk = (i, j) => Number.isInteger(i) && Number.isInteger(j) && i >= 1 && i < ROOM.ISO_NI && j >= 1 && j < ROOM.ISO_NJ && i + j <= ROOM.FIX_MAX_SUM;
+const fixturesApart = (a, b) => Math.max(Math.abs(a.i - b.i), Math.abs(a.j - b.j)) >= ROOM.FIX_GAP;
+function validFixtures(f) {
+  if (!f || typeof f !== "object") return false;
+  for (const k of FIXTURES) if (!f[k] || !fixtureTileOk(f[k].i, f[k].j) || typeof f[k].flip !== "boolean") return false;
+  return fixturesApart(f.wheel, f.bed);
+}
+// Move the wheel or the bed to floor tile (i, j); flip is optional (keeps the current facing).
+function moveFixture(player, body) {
+  const b = body && typeof body === "object" ? body : {};
+  if (!FIXTURES.includes(b.which)) return fail("bad_fixture");
+  if (!fixtureTileOk(b.i, b.j)) return fail("out_of_bounds");
+  if (b.flip != null && typeof b.flip !== "boolean") return fail("bad_flip");
+  const other = player.fixtures[b.which === "wheel" ? "bed" : "wheel"];
+  if (!fixturesApart({ i: b.i, j: b.j }, other)) return fail("too_close");
+  const f = player.fixtures[b.which];
+  f.i = b.i;
+  f.j = b.j;
+  if (typeof b.flip === "boolean") f.flip = b.flip;
+  return { ok: true, fixture: f };
+}
+
 // ---------- players ----------
 const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
 // Public, non-secret handle for a player (safe to show others; the token never leaves its owner).
@@ -213,11 +247,14 @@ function newPlayer(height, now = Date.now(), token = null) {
     floor: DEFAULTS.floor,
     owned: { [DEFAULTS.skin]: 1, [DEFAULTS.wallpaper]: 1, [DEFAULTS.floor]: 1 },
     placed: [],
+    fixtures: defaultFixtures(), // where the wheel and the bed stand: {wheel: {i, j, flip}, bed: {...}}
     lastHeartbeat: 0,
     activeDays: 0,
     lastActiveDay: null,
     commemorative: null,
-    lastRaidAt: 0, // ms of this player's last resolved raid (attacker cooldown)
+    lastRaidAt: 0, // ms of this player's last resolved raid
+    raidDay: null, // UTC day ("YYYY-MM-DD") that raidsToday counts
+    raidsToday: 0, // raids made on raidDay (BALANCE.RAID.PER_DAY a day)
     raidedBy: [], // ring of {pid, at, avenged}: who raided this room (revenge waives the 70% rule once)
     wallet: null, // lowercase 0x address once a personal_sign proof was verified
     username: null, // shown on the leaderboard instead of the nick; needs a bound wallet
@@ -232,6 +269,9 @@ function patchPlayer(p, token) {
   if (!Number.isFinite(p.bedFrac)) p.bedFrac = 0;
   if (!Number.isInteger(p.roomTier)) p.roomTier = 0;
   if (!Number.isFinite(p.lastRaidAt)) p.lastRaidAt = 0;
+  if (p.raidDay === undefined) p.raidDay = null;
+  if (!Number.isInteger(p.raidsToday)) p.raidsToday = 0;
+  if (!validFixtures(p.fixtures)) p.fixtures = defaultFixtures();
   if (!Array.isArray(p.raidedBy)) p.raidedBy = [];
   if (p.wallet === undefined) p.wallet = null;
   if (p.username === undefined) p.username = null;
@@ -568,22 +608,23 @@ function raidChance(attacker, defender, multPct) {
   return raidOdds(multPct, raidDefensePct(defender), wealthTilt(attacker.watts, defender.watts));
 }
 // One resolution, rolls in a fixed order: win, then loot U, then crit (a loss uses one roll).
-// Pure: returns the outcome, mutates nothing.
+// Loot is capped at LOOT_MAX_DEF_PCT of the defender's balance, crit included, so no single roll can
+// empty a room however big the stake. Pure: returns the outcome, mutates nothing.
 function resolveRaid(attacker, defender, stake, multPct, rng = Math.random) {
   const R = BALANCE.RAID;
   const p = raidChance(attacker, defender, multPct);
   if (!(rng() < p)) return { win: false, p, stakeLost: stake };
   const uPct = R.LOOT_U_MIN_PCT + (R.LOOT_U_MAX_PCT - R.LOOT_U_MIN_PCT) * rng();
-  const cap = Math.max(0, defender.watts);
+  const cap = lootCap(defender.watts);
   let loot = Math.min(Math.floor(((multPct - 100) * stake * uPct) / 10_000), cap);
   const crit = rng() < R.CRIT_CHANCE_PCT / 100;
   if (crit) loot = Math.min(Math.floor((loot * R.CRIT_MULT_PCT) / 100), cap);
   return { win: true, p, loot: Math.max(0, loot), crit };
 }
-// Stake bounds for a balance: [50, min(floor(20% of balance), 5000)] (max < min: can't raid).
+const lootCap = (defWatts) => Math.floor((Math.max(0, defWatts) * BALANCE.RAID.LOOT_MAX_DEF_PCT) / 100);
+// Stake bounds for a balance: [50, the whole balance] (max < min: can't raid).
 function stakeBounds(watts) {
-  const R = BALANCE.RAID;
-  return { min: R.STAKE_MIN, max: Math.min(Math.floor((Math.max(0, watts) * R.STAKE_MAX_BALANCE_PCT) / 100), R.STAKE_MAX) };
+  return { min: BALANCE.RAID.STAKE_MIN, max: Math.max(0, Math.floor(watts)) };
 }
 // The multiplier as shown (1.5, 2, 3, 5, 10) or as its percentage (150 .. 1000). null if neither.
 function parseMultPct(v) {
@@ -593,7 +634,9 @@ function parseMultPct(v) {
   const pct = Math.round(v * 100);
   return L.includes(pct) && Math.abs(v * 100 - pct) < 1e-9 ? pct : null;
 }
-const raidCooldownLeft = (p, now) => (p.lastRaidAt > 0 ? clamp(p.lastRaidAt + BALANCE.RAID.COOLDOWN_MS - now, 0, BALANCE.RAID.COOLDOWN_MS) : 0);
+// Daily allowance: PER_DAY raids per UTC day; the count resets at 00:00 UTC.
+const raidsLeft = (p, now) => (p.raidDay === utcDay(now) ? Math.max(0, BALANCE.RAID.PER_DAY - (p.raidsToday | 0)) : BALANCE.RAID.PER_DAY);
+const msToUtcMidnight = (now) => 86_400_000 - (now % 86_400_000);
 // The oldest unavenged provocation by `pid` against `player` within the revenge window, or null.
 function pendingRevenge(player, pid, now) {
   const list = Array.isArray(player.raidedBy) ? player.raidedBy : [];
@@ -614,7 +657,7 @@ function raidWindow(lastAdvanceAt, now = Date.now(), chainReadAt = null) {
   return { open: true, reason: null };
 }
 function raidStatus(st, player, now = Date.now(), chainReadAt = null) {
-  return { open: raidWindow(st.lastAdvanceAt, now, chainReadAt).open, cooldownMsLeft: raidCooldownLeft(player, now) };
+  return { open: raidWindow(st.lastAdvanceAt, now, chainReadAt).open, raidsLeft: raidsLeft(player, now), perDay: BALANCE.RAID.PER_DAY, resetMs: msToUtcMidnight(now) };
 }
 
 // publicId -> token index per state object (built lazily, extended on player creation; a miss
@@ -646,7 +689,7 @@ const pushRing = (arr, entry, max) => {
 };
 
 // Validate and resolve one raid by the player behind `token` on body {target (publicId), stake, mult}.
-// Order: window -> cooldown -> target -> eligibility/revenge -> multiplier -> stake. Mutates st only
+// Order: window -> daily allowance -> target -> eligibility/revenge -> multiplier -> stake. Mutates st only
 // on success. opts.chainReadAt: live-mode freshness (null in demo); opts.rng: injectable for tests.
 function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng = Math.random } = {}) {
   const R = BALANCE.RAID;
@@ -654,8 +697,7 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
   if (!atk) return fail("unknown_player");
   const w = raidWindow(st.lastAdvanceAt, now, chainReadAt);
   if (!w.open) return fail(w.reason);
-  const left = raidCooldownLeft(atk, now);
-  if (left > 0) return { ok: false, error: "cooldown", cooldownMsLeft: left };
+  if (raidsLeft(atk, now) <= 0) return { ok: false, error: "no_raids_left", resetMs: msToUtcMidnight(now) };
   const b = body && typeof body === "object" ? body : {};
   const defToken = tokenForPublicId(st, b.target);
   if (!defToken) return fail("bad_target");
@@ -678,6 +720,9 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
     st.burned = (Number.isFinite(st.burned) ? st.burned : 0) + stake;
   }
   atk.lastRaidAt = now;
+  const day = utcDay(now);
+  atk.raidsToday = atk.raidDay === day ? (atk.raidsToday | 0) + 1 : 1;
+  atk.raidDay = day;
   if (el.revenge) el.revenge.avenged = true; // the 70% waiver was used: this provocation is spent
   if (!Array.isArray(def.raidedBy)) def.raidedBy = [];
   def.raidedBy = def.raidedBy.filter((e) => e && now - e.at < R.REVENGE_WINDOW_MS);
@@ -686,7 +731,7 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
   if (!Array.isArray(st.raidFeed)) st.raidFeed = [];
   pushRing(st.raidFeed, feed, R.FEED_MAX);
   invalidateLeaderboard(st);
-  return { ok: true, result: { ...r, stake, multPct, revenge: !!el.revenge }, feed, attacker: atk, defender: def };
+  return { ok: true, result: { ...r, stake, multPct, revenge: !!el.revenge, raidsLeft: raidsLeft(atk, now) }, feed, attacker: atk, defender: def };
 }
 
 // Every player by current balance (top LEADERBOARD_MAX), projected once per LEADERBOARD_CACHE_MS
@@ -1196,6 +1241,7 @@ function publicPlayer(p, now = Date.now()) {
     floor: p.floor,
     owned: p.owned,
     placed: p.placed,
+    fixtures: p.fixtures,
     activeDays: p.activeDays,
     watching: bonusPct > 100,
     bonusPct,
@@ -1296,6 +1342,12 @@ const POST_ROUTES = {
     if (typeof b.flip === "boolean") e.flip = b.flip;
     return okMe(p, { placed: e });
   },
+  // {which: "wheel"|"bed", i, j, flip?}: stand the wheel or the bed on another floor tile
+  "/api/fixture": (b, p) => {
+    const r = moveFixture(p, b);
+    if (!r.ok) return err(400, r.error);
+    return okMe(p, { fixture: r.fixture });
+  },
   "/api/remove": (b, p) => {
     const i = typeof b.pid === "string" ? p.placed.findIndex((q) => q.pid === b.pid) : -1;
     if (i < 0) return err(404, "unknown_pid");
@@ -1358,7 +1410,7 @@ const POST_ROUTES = {
     return okMe(p, { username: r.username });
   },
 };
-const RAID_ERR_STATUS = { hamster_asleep: 409, chain_unknown: 409, chain_stale: 409, cooldown: 429, bad_target: 404, unknown_player: 404, not_eligible: 403, self_target: 400 };
+const RAID_ERR_STATUS = { hamster_asleep: 409, chain_unknown: 409, chain_stale: 409, no_raids_left: 429, bad_target: 404, unknown_player: 404, not_eligible: 403, self_target: 400 };
 const WALLET_ERR_STATUS = { unknown_player: 404, no_nonce: 409, nonce_expired: 410, wallet_taken: 409, username_taken: 409, wallet_required: 403 };
 const DEV_ROUTES = {
   "/api/dev/advance": (b) => {
@@ -1465,7 +1517,7 @@ module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certElig
 // Extra helpers for tests (the plan's six names above stay the primary surface).
 Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
-  raidChance, resolveRaid, raidOdds, wealthTilt, stakeBounds, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
+  raidChance, resolveRaid, raidOdds, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS,
   WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername,
   REPLAY_NIGHT, REPLAY_API_SINK, REPLAY_MIN_SLEEP_MS, replaySchedule, replayLocate, replayCumulativeBlocks, cumulativeBlocks: replayCumulativeBlocks,
