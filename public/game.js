@@ -3229,7 +3229,7 @@ addEventListener("keydown", (e) => { // capture phase: it can't be dismissed, an
 }, true);
 
 // debug handle for the browser console / verification
-window.__squeekroom = { S, ham, wheel, sparks, meter, pops, spawnPop, liveStatus, tintAt, P, checkSpot, enterPlace, select,
+window.__squeekroom = { S, tut: { TUT, W: TUT_W, H: TUT_H }, ham, wheel, sparks, meter, pops, spawnPop, liveStatus, tintAt, P, checkSpot, enterPlace, select,
   raid: { LB, RU, FEED, raidP, raidStakeBounds, lootRange, openLb, closeLb, openRaid, closeRaid, loadLb, raidFx, applyFeed },
   get iso() { return { ISO, LW, LH, SPOT, IWHEEL, IBURROW, fixture, checkFixture, fixtureRect, colTile, colLeft, footY, tileToCol, screenToTile, wallBase, toFlat, isoRect, bedGeom, laneAt, isoSpan, isoFloor }; },
   get selPid() { return selPid; }, get FX() { return FX; },
