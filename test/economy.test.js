@@ -1431,3 +1431,121 @@ test("replay config: api is a same-origin base without /status, so the browser k
   assert.equal(cfg.replay.cycleMs, 8 * HOUR);
   assert.equal(cfg.demo, false);
 });
+
+// ---------- speed bonus (the chain's own cadence) ----------
+const SPD = { windowMs: 600_000, baseBpm: 4, maxPct: 150, warmupMs: 120_000 };
+const at = (msAgo, h) => ({ t: T0 - msAgo, h });
+
+test("speed: balance knobs", () => {
+  assert.deepEqual(BALANCE.SPEED, { WINDOW_MS: 600_000, BASE_BPM: 4, MAX_PCT: 150, WARMUP_MS: 120_000 });
+  // the server's own path maps the knobs onto speedPctFrom's options (not a bare spread of BALANCE.SPEED)
+  assert.deepEqual(S.speedOpts(BALANCE.SPEED.BASE_BPM), SPD);
+  assert.equal(S.speedPctFrom([at(600_000, 0), at(0, 50)], T0, S.speedOpts(4)), 125);
+});
+
+test("speedPctFrom: no samples or under the warmup -> 100 (restart, catch-up after downtime)", () => {
+  assert.equal(S.speedPctFrom([], T0, SPD), 100);
+  assert.equal(S.speedPctFrom(null, T0, SPD), 100);
+  // only samples older than the window: nothing to measure
+  assert.equal(S.speedPctFrom([at(700_000, 0), at(650_000, 500)], T0, SPD), 100);
+  // 1,000 blocks in 60 s (a catch-up burst right after boot) is still 100: span < WARMUP_MS
+  assert.equal(S.speedPctFrom([at(60_000, 0), at(0, 1000)], T0, SPD), 100);
+  assert.equal(S.speedPctFrom([at(119_999, 0), at(0, 1000)], T0, SPD), 100);
+  assert.equal(S.speedPctFrom([at(120_000, 0), at(0, 1000)], T0, SPD), 150, "exactly the warmup counts");
+});
+
+test("speedPctFrom: blocks/min from the oldest sample inside the window to the newest", () => {
+  // the 15-min-old sample is outside the window; the 10-min one sits on its edge (inclusive)
+  const ring = [at(900_000, 0), at(600_000, 10), at(300_000, 30), at(0, 60)];
+  assert.equal(S.speedPctFrom(ring, T0, SPD), 125); // 50 blocks / 10 min = 5 bpm vs 4
+  assert.equal(S.speedPctFrom([at(300_000, 0), at(0, 24)], T0, SPD), 120); // 24 / 5 min = 4.8 bpm
+  assert.equal(S.speedPctFrom([at(300_000, 0), at(0, 23)], T0, SPD), 115); // 4.6 bpm -> 115
+  // the window keeps ageing on poll samples that did not advance: 5 min after a burst it reads lower
+  assert.equal(S.speedPctFrom([at(600_000, 0), at(300_000, 60), at(0, 60)], T0, SPD), 150); // 6 bpm
+  assert.equal(S.speedPctFrom([at(600_000, 0), at(300_000, 25), at(0, 25)], T0, SPD), 100); // 2.5 bpm
+  // a sample from "the future" (clock step) is ignored
+  assert.equal(S.speedPctFrom([at(300_000, 0), at(0, 24), at(-5_000, 999)], T0, SPD), 120);
+});
+
+test("speedPctFrom: clamped to [100, MAX_PCT], never below, never above", () => {
+  assert.equal(S.speedPctFrom([at(600_000, 0), at(0, 0)], T0, SPD), 100); // stalled
+  assert.equal(S.speedPctFrom([at(600_000, 50), at(0, 10)], T0, SPD), 100); // height went back
+  assert.equal(S.speedPctFrom([at(600_000, 0), at(0, 10)], T0, SPD), 100); // 1 bpm, slower than base
+  assert.equal(S.speedPctFrom([at(600_000, 0), at(0, 100_000)], T0, SPD), 150);
+  assert.equal(S.speedPctFrom([at(600_000, 0), at(0, 100_000)], T0, { ...SPD, maxPct: 130 }), 130);
+  for (let n = 0; n <= 200; n += 7) {
+    const pct = S.speedPctFrom([at(600_000, 0), at(0, n)], T0, SPD);
+    assert.ok(Number.isInteger(pct) && pct >= 100 && pct <= 150, `${n} blocks -> ${pct}`);
+  }
+});
+
+test("speed replay baseline: the schedule's mean run cadence, scaling with REPLAY_SPEED", () => {
+  const near1 = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} vs ${b}`);
+  // 3x: 1,078 blocks over 145 run-minutes (20 + 30 + 30 + 15 + 15 + 15 + 10 + 10)
+  near1(S.replayRunMeanBpm(S.replaySchedule(3)), 1078 / 145);
+  // 6x: runs halve to 72.5 min; rests floor at 20 min (267.5 min cycle) -> round(1078 x 6 x 267.5 / 1440) = 1202
+  const six = S.replaySchedule(6);
+  assert.equal(six.blocksPerCycle, 1202);
+  near1(S.replayRunMeanBpm(six), 1202 / 72.5);
+  assert.ok(S.replayRunMeanBpm(six) > 2 * S.replayRunMeanBpm(S.replaySchedule(3)) * 0.95, "about 2x the 3x baseline");
+  // the same cadence pays less bonus against a faster replay's baseline
+  const ring = [at(600_000, 0), at(0, 120)]; // 12 bpm
+  const at3 = S.speedPctFrom(ring, T0, { ...SPD, baseBpm: S.replayRunMeanBpm(S.replaySchedule(3)) });
+  const at6 = S.speedPctFrom(ring, T0, { ...SPD, baseBpm: S.replayRunMeanBpm(six) });
+  assert.equal(at3, 150);
+  assert.equal(at6, 100);
+});
+
+test("speed in replay: mid-run ramps reach the cap, every long sleep brings it back to 100", () => {
+  const sched = S.replaySchedule(3);
+  const opts = { ...SPD, baseBpm: S.replayRunMeanBpm(sched) };
+  const ring = [];
+  let max = 0, sawBonus = false;
+  const t0 = sched.epochMs + 1;
+  for (let t = t0; t < t0 + sched.cycleMs; t += 10_000) {
+    S.recordSpeedSample(sched.blocksPerCycle + S.replayCumulativeBlocks(t, sched), t, ring, opts.windowMs);
+    const pct = S.speedPctFrom(ring, t, opts);
+    max = Math.max(max, pct);
+    if (pct > 100) sawBonus = true;
+    const p = S.replayLocate(t, sched);
+    // 10+ minutes into any sleep the window holds no new block
+    if (p.seg.kind === "sleep" && t - (p.cycleStart + p.seg.start) >= opts.windowMs) assert.equal(pct, 100, `sleep at ${t - t0}`);
+  }
+  assert.ok(sawBonus && max === 150, `max ${max}`);
+  assert.ok(ring.length <= (2 * opts.windowMs) / 10_000 + 1, "ring keeps only 2 x WINDOW_MS");
+});
+
+test("accrue: scales with speedPct (wheel only), defaults to 100", () => {
+  assert.equal(accrue(fresh(), 10, T0), 100);
+  assert.equal(accrue(fresh(), 10, T0, 100), 100);
+  assert.equal(accrue(fresh(), 10, T0, 150), 150);
+  assert.equal(accrue(fresh(), 10, T0, 125), 125);
+  // stacks with tier and watching: 10 x 10 x 1.25 x 1.2 x 1.5 = 225
+  assert.equal(accrue(fresh({ wheelTier: 1, lastHeartbeat: T0 }), 10, T0, 150), 225);
+  assert.equal(accrue(fresh({ wheelTier: 1 }), 1, T0, 130), 16); // 16.25 -> 16, integers only
+  // it credits through the same path as every wheel watt (balance + lifetime -> the earn popups)
+  const p = fresh();
+  accrue(p, 4, T0, 150);
+  assert.equal(p.watts, W0 + 60);
+  assert.equal(p.lifetimeWatts, 60);
+  const st = { lastAccruedHeight: 1000, height: 1000, players: { a: fresh(), b: fresh({ wheelTier: 2 }) } };
+  S.accrueAll(st, 1010, T0, 150);
+  assert.equal(st.players.a.watts, W0 + 150);
+  assert.equal(st.players.b.watts, W0 + 240);
+  S.accrueAll(st, 1020, T0);
+  assert.equal(st.players.a.watts, W0 + 250, "accrueAll defaults to 100");
+});
+
+test("speed: bed income ignores it; a state other than the server's own never gets it; snapshot reports it", () => {
+  // bed: 1.5 W/min whatever the cadence (bedCredit/accrueBed take no speed input)
+  const p = fresh();
+  assert.equal(S.bedCredit(p, 120_000, T0), 3);
+  const st = { lastAccruedHeight: 1000, height: 1000, lastBedTickAt: T0 - 60_000, players: { a: fresh() } };
+  assert.equal(S.accrueBed(st, true, T0), 1); // 1.5 W (carry .5)
+  // advanceTo on a test state: plain income however fast the height moves
+  const own = { startHeight: 1000, height: 1000, lastAccruedHeight: 1000, players: { a: fresh() } };
+  for (let i = 1; i <= 12; i++) S.advanceTo(1000 + 100 * i, T0 + i * 60_000, own);
+  assert.equal(own.players.a.watts, W0 + 12_000);
+  // the server's own ring is empty here (nothing advanced it): no bonus, and the field is published
+  assert.equal(S.snapshot().speedPct, 100);
+});

@@ -479,6 +479,7 @@ function applyState(j) {
   S.hamster = j.hamster;
   S.night = j.night;
   S.idle = j.idle === true;
+  S.speedPct = typeof j.speedPct === "number" ? j.speedPct : 100; // speed bonus on wheel income (100 = none)
   if (typeof j.serverTime === "number") S.skew = j.serverTime - Date.now();
   if (j.me) { applyMe(j.me, first, { at: j.serverTime, soft: S.idle }); if (!first) noteTrickle(); }
   else if (j.meError) toast(j.meError === "server_full" ? "The server is full right now." : `Could not load your room (${j.meError}).`, "err");
@@ -569,7 +570,10 @@ function renderHud() {
     renderCertHud(me);
     const watching = S.watching || me.watching;
     const bonus = Math.max(me.bonusPct || 0, (S.balance && S.balance.LIVE_BONUS_PCT) || 120) - 100; // me.bonusPct lags the first heartbeat
-    $("watchLine").innerHTML = watching ? `watching<span class="chip on">+${bonus}%</span>` : "&nbsp;";
+    const speed = Math.round((S.speedPct || 100) - 100); // he's settling blocks fast: wheel watts x speedPct
+    // hidden while idle: the trailing window keeps the pct up for a few minutes after a run, but no blocks settle then
+    const speedChip = speed > 0 && !S.idle ? `<span class="chip on" title="Speed bonus: blocks are settling fast, wheel watts +${speed}%">⚡ +${speed}%</span>` : "";
+    $("watchLine").innerHTML = watching || speedChip ? `${watching ? `watching<span class="chip on">+${bonus}%</span>` : ""}${speedChip}` : "&nbsp;";
     renderBedLine(me, watching ? 100 + bonus : 100);
   }
   renderRaidChip();

@@ -61,6 +61,11 @@ const BALANCE = {
   BED_RATE_PER_MIN: 1.5, // tier 0 (must be a multiple of 0.1: the math runs in tenths of a watt)
   BED_MULT_PCT: [100, 125, 160, 200, 260, 350], // bedTier 0..5
   BED_TICK_MAX_MS: 60_000, // one poller tick credits at most this much time (no catch-up after downtime)
+  // Speed bonus: wheel income x speedPct/100, where speedPct = clamp(100 x blocks/min over the last
+  // WINDOW_MS / baseline, 100, MAX_PCT). Baseline: BASE_BPM live; in replay, the schedule's mean
+  // cadence across its runs (so the ramp's 0.5x edges pay 100% and its 1.5x middle up to 150%).
+  // Less than WARMUP_MS of history (restart, cadence unknown) -> 100. Bed income is not affected.
+  SPEED: { WINDOW_MS: 600_000, BASE_BPM: 4, MAX_PCT: 150, WARMUP_MS: 120_000 },
   // Raids: wager a stake on a multiplier against a richer room while he RUNS. Win chance
   // p = clamp((EDGE / M) x (1 - defense) x tilt, P_MIN, P_MAX), so attacker EV = S x (p x M - 1)
   // does not depend on M (the multiplier only dials variance). A loss burns the stake (nobody gets it).
@@ -311,9 +316,9 @@ function setUsername(st, token, body) {
 function liveBonusPct(player, now = Date.now()) {
   return player.lastHeartbeat > 0 && now - player.lastHeartbeat <= BALANCE.HEARTBEAT_WINDOW_MS ? BALANCE.LIVE_BONUS_PCT : 100;
 }
-function wattsFor(delta, tier, bonusPct) {
+function wattsFor(delta, tier, bonusPct, speedPct = 100) {
   const mult = BALANCE.WHEEL_MULT_PCT[tier] ?? BALANCE.WHEEL_MULT_PCT[0];
-  return Math.round((delta * BALANCE.BASE_WATTS_PER_BLOCK * mult * bonusPct) / 10_000);
+  return Math.round((delta * BALANCE.BASE_WATTS_PER_BLOCK * mult * bonusPct * speedPct) / 1_000_000);
 }
 const utcDay = (now) => new Date(now).toISOString().slice(0, 10);
 // Generated watts (wheel or bed): balance + lifetime, and one active day per UTC day.
@@ -327,9 +332,10 @@ function creditWatts(player, earned, now) {
   }
 }
 // Credit `delta` settled blocks to one player. Returns watts earned (integer).
-function accrue(player, delta, now = Date.now()) {
+// speedPct: the speed bonus (100..BALANCE.SPEED.MAX_PCT) measured for this advance; wheel only.
+function accrue(player, delta, now = Date.now(), speedPct = 100) {
   if (!Number.isInteger(delta) || delta <= 0) return 0;
-  const earned = wattsFor(delta, player.wheelTier | 0, liveBonusPct(player, now));
+  const earned = wattsFor(delta, player.wheelTier | 0, liveBonusPct(player, now), speedPct);
   if (earned <= 0) return 0;
   creditWatts(player, earned, now);
   return earned;
@@ -375,8 +381,8 @@ function accrueBed(st, idle, now = Date.now()) {
   return total;
 }
 // Credit every player for blocks lastAccruedHeight..newHeight. Also catches up server downtime.
-// A player never earns for blocks settled before they joined.
-function accrueAll(st, newHeight, now = Date.now()) {
+// A player never earns for blocks settled before they joined. speedPct applies to the whole advance.
+function accrueAll(st, newHeight, now = Date.now(), speedPct = 100) {
   if (st.lastAccruedHeight == null) {
     st.lastAccruedHeight = newHeight;
     return 0;
@@ -385,11 +391,54 @@ function accrueAll(st, newHeight, now = Date.now()) {
   let total = 0;
   for (const p of Object.values(st.players)) {
     const since = p.joinHeight == null ? st.lastAccruedHeight : Math.max(st.lastAccruedHeight, p.joinHeight);
-    if (newHeight > since) total += accrue(p, newHeight - since, now);
+    if (newHeight > since) total += accrue(p, newHeight - since, now, speedPct);
   }
   st.lastAccruedHeight = newHeight;
   return total;
 }
+
+// ---------- speed bonus (judged by the chain's own cadence) ----------
+// The settled height is the only trusted signal (never the status API). speedPct over a ring of
+// {t, h} samples, oldest first: the oldest sample inside [now - windowMs, now] against the newest
+// one gives blocks/min; under warmupMs of history (or none) it is 100, so a restart or a catch-up
+// after downtime never pays a windfall. Pure.
+function speedPctFrom(samples, now, { windowMs, baseBpm, maxPct, warmupMs }) {
+  if (!Array.isArray(samples) || !(baseBpm > 0)) return 100;
+  let oldest = null;
+  let latest = null;
+  for (const s of samples) {
+    if (!s || !Number.isFinite(s.h) || !(s.t <= now)) continue;
+    if (s.t >= now - windowMs && (!oldest || s.t < oldest.t)) oldest = s;
+    if (!latest || s.t >= latest.t) latest = s;
+  }
+  if (!oldest) return 100;
+  const span = now - oldest.t;
+  if (span < warmupMs) return 100;
+  const bpm = (latest.h - oldest.h) / (span / 60_000);
+  return clamp(Math.round((100 * bpm) / baseBpm), 100, maxPct);
+}
+// Replay baseline: the schedule's mean cadence across its run segments (blocks per run-minute). Pure.
+function replayRunMeanBpm(sched) {
+  const runMs = sched.segments.reduce((a, s) => a + (s.kind === "run" ? s.ms : 0), 0);
+  return runMs > 0 ? sched.blocksPerCycle / (runMs / 60_000) : 0;
+}
+// The server's own ring (in memory only, never in state.json): a sample on every advance of the live
+// state and one per poll tick, so the window keeps ageing while he sleeps.
+const SPEED_RING_MAX = 4096;
+const speedSamples = [];
+function recordSpeedSample(h, now = Date.now(), ring = speedSamples, windowMs = BALANCE.SPEED.WINDOW_MS) {
+  if (!Number.isFinite(h)) return;
+  ring.push({ t: now, h });
+  let drop = 0;
+  while (drop < ring.length - 1 && ring[drop].t < now - 2 * windowMs) drop++;
+  drop = Math.max(drop, ring.length - SPEED_RING_MAX);
+  if (drop > 0) ring.splice(0, drop);
+}
+const resetSpeedSamples = () => void (speedSamples.length = 0);
+// BALANCE.SPEED knobs -> speedPctFrom options, against a baseline in blocks/min.
+const speedOpts = (baseBpm, B = BALANCE.SPEED) => ({ windowMs: B.WINDOW_MS, baseBpm, maxPct: B.MAX_PCT, warmupMs: B.WARMUP_MS });
+// The live speed bonus now. SPEED_BASE_BPM is fixed at boot (below REPLAY_SCHEDULE).
+const currentSpeedPct = (now = Date.now()) => speedPctFrom(speedSamples, now, speedOpts(SPEED_BASE_BPM));
 
 function canBuy(player, itemId) {
   const item = typeof itemId === "string" ? CATALOG_BY_ID.get(itemId) : undefined;
@@ -725,7 +774,9 @@ function save() {
 }
 
 // Height advanced: credit everyone. First reading only sets the baseline.
+// The speed ring follows the server's own state only (tests pass their own st: no bonus, no samples).
 function advanceTo(h, now = Date.now(), st = state) {
+  const own = st === state;
   if (st.startHeight == null) {
     st.startHeight = h;
     st.height = h;
@@ -733,12 +784,14 @@ function advanceTo(h, now = Date.now(), st = state) {
     st.born = new Date(now).toISOString();
     st.lastAdvanceAt = now; // first sighting: we can't know how long it's been quiet
     for (const p of Object.values(st.players)) if (p.joinHeight == null) p.joinHeight = h;
+    if (own) recordSpeedSample(h, now);
     return;
   }
   if (h <= st.height) return;
   st.height = h;
   st.lastAdvanceAt = now;
-  accrueAll(st, h, now);
+  if (own) recordSpeedSample(h, now);
+  accrueAll(st, h, now, own ? currentSpeedPct(now) : 100);
 }
 // When the chain was last read successfully (live mode only; demo and replay drive the height themselves).
 function chainReadAt() {
@@ -985,8 +1038,11 @@ function leaveReplay(st, h, now = Date.now()) {
   if (st.startHeight == null || st.startHeight > h) st.startHeight = h;
   for (const p of Object.values(st.players)) if (p && Number.isFinite(p.joinHeight) && p.joinHeight > h) p.joinHeight = h;
   delete st.replay;
+  if (st === state) resetSpeedSamples(); // the jump is not a cadence
 }
 const REPLAY_SCHEDULE = replaySchedule(REPLAY_SPEED, REPLAY_EPOCH_MS);
+// Speed-bonus baseline (blocks/min that pays 100%): replay's own mean run cadence, else BASE_BPM.
+const SPEED_BASE_BPM = REPLAY ? replayRunMeanBpm(REPLAY_SCHEDULE) : BALANCE.SPEED.BASE_BPM;
 
 async function poll() {
   // 1. Settled height from the contract (authoritative for the economy).
@@ -1007,10 +1063,14 @@ async function poll() {
       state.lastError = null;
     } catch (e) {
       state.lastError = `rpc: ${String(e.message || e)}`;
+      // live: cadence unknown while blind, so the catch-up after the outage earns no speed bonus
+      if (!DEMO) resetSpeedSamples();
     }
   }
-  // 2. Bed income: while he sleeps (by the chain), every room earns for the time since the last tick.
   const now = Date.now();
+  // Speed ring: one sample per tick even when nothing advanced, so the window ages while he sleeps.
+  if (state.height != null && (REPLAY || DEMO || !state.lastError)) recordSpeedSample(state.height, now);
+  // 2. Bed income: while he sleeps (by the chain), every room earns for the time since the last tick.
   accrueBed(state, chainIdle(state.lastAdvanceAt, now, chainReadAt()), now);
   // 3. Live hamster reading. Demo mode fakes it (and lets a fake run go back to sleep); replay
   //    already synthesized it in replayTick().
@@ -1180,6 +1240,7 @@ function snapshot(token) {
     chain: state.chain || null,
     hamster: state.hamster,
     idle: chainIdle(state.lastAdvanceAt, now, readAt), // asleep by the chain: bed income is flowing
+    speedPct: currentSpeedPct(now), // speed bonus on wheel income (100 = none), from the chain's cadence
     raid: viewer ? raidStatus(state, viewer, now, readAt) : null, // this viewer's raid window + cooldown
     raidFeed: (Array.isArray(state.raidFeed) ? state.raidFeed : []).slice(-BALANCE.RAID.FEED_SNAPSHOT), // oldest first
     burned: state.burned || 0,
@@ -1408,7 +1469,8 @@ Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, apply
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS,
   WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername,
   REPLAY_NIGHT, REPLAY_API_SINK, REPLAY_MIN_SLEEP_MS, replaySchedule, replayLocate, replayCumulativeBlocks, cumulativeBlocks: replayCumulativeBlocks,
-  replayReading, replayTick, leaveReplay, advanceTo });
+  replayReading, replayTick, leaveReplay, advanceTo,
+  wattsFor, speedPctFrom, speedOpts, replayRunMeanBpm, recordSpeedSample });
 
 if (require.main === module) {
   if (DEMO && REPLAY_REQUESTED) {
