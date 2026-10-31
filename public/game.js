@@ -703,9 +703,16 @@ function spotFor(mode) {
   if (mode === "sleep") { const b = bedGeom(); return { x: b.sleepX, y: b.sleepY }; }
   return SPOT.sit;
 }
+// Not running means asleep in his bed: he goes the moment the live reading stops (no standing around
+// until the chain calls it, which is only what starts bed income) and wakes when he runs again. A short
+// pause mid-run (PAUSE_MS) keeps him standing in the wheel so a stutter doesn't send him to bed and back.
+const PAUSE_MS = 20_000;
+let lastRunAt = -Infinity;
 function wantMode(st) {
-  if (st.active) return "run";
-  return S.idle || st.key !== "idle" ? "sleep" : "rest"; // stale / offline / no reading: he's asleep as far as we know
+  const now = performance.now();
+  if (st.active) { lastRunAt = now; return "run"; }
+  if (ham.mode === "run" && st.key === "idle" && !S.idle && now - lastRunAt < PAUSE_MS) return "run";
+  return "sleep";
 }
 const near = (a, b) => Math.hypot(a.x - b.x, a.y - b.y) < 1;
 function moveTo(name) {
@@ -748,7 +755,7 @@ function stepHamster(dt, st) {
     else moveTo("sit");
   } else if (ham.mode === "run") {
     ham.x = SPOT.wheel.x; ham.y = ham.gy = SPOT.wheel.y; ham.face = fixture("wheel").flip ? -1 : 1; // the wheel may have moved
-    ham.runPhase += (dt / 1000) * (4 + 10 * clamp(st.speed / 1600, 0, 1)); // run-cycle steps per second scale with speed
+    if (st.active) ham.runPhase += (dt / 1000) * (4 + 10 * clamp(st.speed / 1600, 0, 1)); // run-cycle steps per second scale with speed (frozen while he pauses)
   } else if (ham.mode === "sleep") {
     const s = spotFor("sleep"); ham.x = s.x; ham.y = ham.gy = s.y; // a bed upgrade (or a moved bed) moves the pillow
   } else if (ham.mode === "rest" && !near({ x: ham.x, y: ham.gy }, SPOT.sit)) moveTo("sit"); // the wheel moved: walk over
