@@ -510,7 +510,7 @@ function applyState(j) {
   S.speedPct = typeof j.speedPct === "number" ? j.speedPct : 100; // speed bonus on wheel income (100 = none)
   if (typeof j.serverTime === "number") S.skew = j.serverTime - Date.now();
   if (j.me) { applyMe(j.me, first, { at: j.serverTime, soft: S.idle }); if (!first) noteTrickle(); }
-  else if (j.meError) toast(j.meError === "server_full" ? "The server is full." : `Couldn't load your den (${j.meError}).`, "err");
+  else if (j.meError) toast(j.meError === "server_full" ? "The server is full." : j.meError === "too_many_dens" ? "Too many new dens from your network. Try again in an hour." : `Couldn't load your den (${j.meError}).`, "err");
   if (j.raid !== undefined) applyRaidStatus(j.raid);
   if (typeof j.burned === "number") S.burned = j.burned;
   if (Array.isArray(j.raidFeed)) applyFeed(j.raidFeed);

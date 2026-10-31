@@ -24,6 +24,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const zlib = require("node:zlib");
 const ethsig = require("./lib/ethsig.js");
 
 const PORT = Number(process.env.PORT || 8788);
@@ -1302,25 +1303,104 @@ function startNight() {
 
 // ---------- helpers ----------
 const clean = (s, n) => String(s || "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, n);
+// On every response. The CSP allows only this origin, Google Fonts and the live status API; inline
+// style attributes stay allowed (index.html uses a few), inline scripts do not.
+const SECURITY_HEADERS = {
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+  "x-frame-options": "DENY",
+  "content-security-policy": [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src https://fonts.gstatic.com",
+    "img-src 'self' data: blob:",
+    `connect-src 'self' ${new URL(API).origin}`,
+    "object-src 'none'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+  ].join("; "),
+};
+const GZIP_MIN = 1024;
+const acceptsGzip = (req) => !!req && /\bgzip\b/.test(String(req.headers["accept-encoding"] || ""));
 function json(res, code, body) {
-  res.writeHead(code, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-  res.end(JSON.stringify(body));
+  let data = Buffer.from(JSON.stringify(body));
+  const headers = { ...SECURITY_HEADERS, "content-type": "application/json; charset=utf-8", "cache-control": "no-store", vary: "accept-encoding" };
+  if (data.length >= GZIP_MIN && acceptsGzip(res.req)) {
+    data = zlib.gzipSync(data, { level: 6 });
+    headers["content-encoding"] = "gzip";
+  }
+  res.writeHead(code, headers);
+  res.end(data);
 }
+// Static files never change inside a running container (a deploy is a new one), so each is read and
+// gzipped once and served with an ETag: a returning visitor revalidates with a 304 instead of
+// downloading it all again.
+const STATIC_CACHE = new Map(); // full path -> { data, gz, etag, type }
+function staticFile(full) {
+  let f = STATIC_CACHE.get(full);
+  if (!f) {
+    const data = fs.readFileSync(full);
+    f = { data, gz: zlib.gzipSync(data, { level: 9 }), etag: `"${sha256(data).slice(0, 16)}"`, type: MIME[path.extname(full)] || "application/octet-stream" };
+    STATIC_CACHE.set(full, f);
+  }
+  return f;
+}
+function serveStatic(req, res, full) {
+  let f;
+  try {
+    f = staticFile(full);
+  } catch {
+    return json(res, 404, { error: "not_found" });
+  }
+  const headers = { ...SECURITY_HEADERS, "content-type": f.type, "cache-control": "no-cache", etag: f.etag, vary: "accept-encoding" };
+  if (req.headers["if-none-match"] === f.etag) {
+    res.writeHead(304, headers);
+    return res.end();
+  }
+  const gz = acceptsGzip(req) && f.gz.length < f.data.length;
+  if (gz) headers["content-encoding"] = "gzip";
+  res.writeHead(200, headers);
+  res.end(gz ? f.gz : f.data);
+}
+const BODY_MAX = 64_000;
 function readBody(req) {
   return new Promise((resolve, reject) => {
-    let d = "";
+    const chunks = [];
+    let n = 0;
     req.on("data", (c) => {
-      d += c;
-      if (d.length > 64_000) reject(new Error("too big"));
+      n += c.length;
+      if (n > BODY_MAX) {
+        reject(new Error("too big"));
+        req.destroy(); // stop reading: an endless body must not grow in memory
+        return;
+      }
+      chunks.push(c);
     });
+    req.on("error", reject);
     req.on("end", () => {
       try {
+        const d = Buffer.concat(chunks).toString("utf8");
         resolve(d ? JSON.parse(d) : {});
       } catch (e) {
         reject(e);
       }
     });
   });
+}
+// New dens per client address: one script can't fill MAX_PLAYERS (which would lock every new player
+// out) or mint welcome grants by the thousand. Railway's edge sets X-Real-IP; locally it's the socket.
+const NEW_DEN_LIMIT = { MAX: 60, WINDOW_MS: 3_600_000 };
+const newDenHits = new Map(); // ip -> { start, n }
+const clientIp = (req) => String((req && req.headers["x-real-ip"]) || (req && req.socket && req.socket.remoteAddress) || "").trim().slice(0, 64);
+function allowNewDen(ip, now = Date.now()) {
+  if (!ip) return true;
+  if (newDenHits.size > 10_000) for (const [k, e] of newDenHits) if (now - e.start >= NEW_DEN_LIMIT.WINDOW_MS) newDenHits.delete(k);
+  let e = newDenHits.get(ip);
+  if (!e || now - e.start >= NEW_DEN_LIMIT.WINDOW_MS) newDenHits.set(ip, (e = { start: now, n: 0 }));
+  if (e.n >= NEW_DEN_LIMIT.MAX) return false;
+  e.n++;
+  return true;
 }
 function publicPlayer(p, now = Date.now()) {
   const bonusPct = liveBonusPct(p, now);
@@ -1355,7 +1435,7 @@ function publicPlayer(p, now = Date.now()) {
   };
 }
 let playerCount = 0;
-function snapshot(token) {
+function snapshot(token, ip = null) {
   const now = Date.now();
   let me = null;
   let meError = null;
@@ -1363,6 +1443,7 @@ function snapshot(token) {
     let p = getPlayer(state, token);
     if (!p) {
       if (playerCount >= MAX_PLAYERS) meError = "server_full";
+      else if (!allowNewDen(ip, now)) meError = "too_many_dens";
       else {
         p = state.players[token] = newPlayer(state.height, now, token);
         indexPlayer(state, token, p);
@@ -1553,7 +1634,7 @@ async function handle(req, res) {
   const url = new URL(req.url, "http://x");
   try {
     if (url.pathname === "/api/state" && req.method === "GET") {
-      return json(res, 200, snapshot(url.searchParams.get("token")));
+      return json(res, 200, snapshot(url.searchParams.get("token"), clientIp(req)));
     }
     if (url.pathname === "/api/config" && req.method === "GET") return json(res, 200, configPayload());
     if (url.pathname === "/api/leaderboard" && req.method === "GET") {
@@ -1587,14 +1668,11 @@ async function handle(req, res) {
     let file = url.pathname === "/" ? "/index.html" : url.pathname;
     file = path.normalize(file).replace(/^(\.\.[/\\])+/, "");
     const full = path.join(PUBLIC, file);
-    if (!full.startsWith(PUBLIC)) return json(res, 403, { error: "forbidden" });
-    fs.readFile(full, (e, data) => {
-      if (e) return json(res, 404, { error: "not_found" });
-      res.writeHead(200, { "content-type": MIME[path.extname(full)] || "application/octet-stream", "cache-control": "no-cache" });
-      res.end(data);
-    });
+    if (!full.startsWith(PUBLIC + path.sep)) return json(res, 403, { error: "forbidden" });
+    return serveStatic(req, res, full);
   } catch (e) {
-    json(res, 500, { error: String(e.message || e) });
+    console.error("request failed:", req.method, url.pathname, e);
+    json(res, 500, { error: "server_error" });
   }
 }
 
