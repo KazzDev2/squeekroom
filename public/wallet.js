@@ -102,7 +102,7 @@ function start() {
   box.append(" wallet with nothing in it. You'll sign one free message. It costs no gas and moves nothing. ");
   box.appendChild(h("em", null, "This game never asks for a transaction, so don't sign one."));
   body.appendChild(box);
-  body.appendChild(h("p", "wnote", "Linking gets you a unique username with a ✓ on the leaderboard. Your watts and room don't change."));
+  body.appendChild(h("p", "wnote", "Linking gets you a unique username with a ✓ on the leaderboard. Your watts and den don't change."));
   const acts = h("div", "wacts");
   acts.appendChild(pxbtn("Cancel", true, closeModal));
   acts.appendChild(pxbtn("It's a burner, continue", false, showPicker));
@@ -231,19 +231,19 @@ function walletFail(e, stage) {
 function serverWords(j, address) {
   const e = (j && j.error) || "network";
   switch (e) {
-    case "network": return "Can't reach the room server. Check your connection and try again.";
-    case "wallet_taken": return "That wallet is linked to another room. Use a different burner.";
+    case "network": return "Can't reach the server. Check your connection and try again.";
+    case "wallet_taken": return "That wallet is linked to another den. Use a different burner.";
     case "wallet_mismatch": return `The signature came from a different account than the one your wallet connected${address ? ` (${short(address)})` : ""}. Switch to that account and try again.`;
     case "bad_signature": return "Your wallet returned a signature the server couldn't read. Try again, or pick another wallet.";
     case "bad_address": return "Your wallet shared an address the server couldn't read. Try another account or wallet.";
     case "nonce_expired": case "no_nonce": return "The sign-in message expired. Try again: you'll get a fresh one.";
-    case "unknown_player": case "bad_token": return "Your room hasn't loaded yet. Try again in a moment.";
+    case "unknown_player": case "bad_token": return "Your den hasn't loaded yet. Try again in a moment.";
     default: { const b = B(); return b && b.errorWords ? b.errorWords(j) : `Something went wrong (${e})`; }
   }
 }
 function serverFail(r, address) {
   const j = r.j || {};
-  if ((j.error || "network") === "network") B().toast("You're offline: can't reach the room server.", "err");
+  if ((j.error || "network") === "network") B().toast("You're offline: can't reach the server.", "err");
   return backToPicker({ error: serverWords(j, address) });
 }
 async function connect(entry) {
@@ -347,11 +347,11 @@ function nameForm(body, { cur, saveLabel, onSaved, extraBtn }) {
       return;
     }
     const e = (r.j && r.j.error) || "network";
-    if (e === "network") b.toast("You're offline: can't reach the room server.", "err");
+    if (e === "network") b.toast("You're offline: can't reach the server.", "err");
     serverMsg = e === "username_taken" ? `“${want}” is already taken. Try another.`
       : e === "bad_username" ? "Not allowed: 3–16 letters, numbers or _."
-      : e === "wallet_required" ? "Link a wallet first: your room isn't linked any more."
-      : e === "network" ? "Can't reach the room server. Try again in a moment."
+      : e === "wallet_required" ? "Link a wallet first: your den isn't linked any more."
+      : e === "network" ? "Can't reach the server. Try again in a moment."
       : serverWords(r.j);
     if (W.open && gen === W.gen) { validate(); save.disabled = false; inp.focus(); }
   }
@@ -363,7 +363,7 @@ function nameForm(body, { cur, saveLabel, onSaved, extraBtn }) {
 function showNameStep() {
   const m = me();
   const body = show("name", "✓ WALLET LINKED", m && m.wallet ? short(m.wallet) : "");
-  body.appendChild(h("p", "wnote", "Pick a username if you want one. It shows instead of your room name, with a ✓. You can change it later."));
+  body.appendChild(h("p", "wnote", "Pick a username if you want one. It shows instead of your den name, with a ✓. You can change it later."));
   nameForm(body, { cur: null, saveLabel: "Save username", onSaved: () => closeModal(), extraBtn: pxbtn("Skip", true, closeModal) });
 }
 

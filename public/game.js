@@ -11,7 +11,7 @@ const $ = (id) => document.getElementById(id);
 // The live room draws that model through the iso projection below; the certificate portrait
 // (renderPortrait) still paints the flat view, so the FLAT_* geometry stays alongside.
 const FLAT_W = 320, FLAT_H = 192;
-let ROOM = { COLS: 20, ROWS: 12, CELL: 16, FLOOR_ROW: 11, WALL_TOP: 2, WALL_BOTTOM: 7, RESERVED: { burrow: [16, 18] },
+let ROOM = { COLS: 20, ROWS: 12, CELL: 16, FLOOR_ROW: 11, WALL_TOP: 2, WALL_BOTTOM: 7, RESERVED: {},
   ISO_NI: 11, ISO_NJ: 10, FIX_MAX_SUM: 14, FIX_GAP: 2, FIXTURE_DEFAULTS: { wheel: { i: 1, j: 5, flip: false }, bed: { i: 7, j: 2, flip: false } } };
 const CERT_WHEEL_COLS = [3, 6]; // the certificate's flat room keeps the wheel where it always stood
 let CELL = 16, FLOOR_Y = 176; // flat view: furniture bottoms stand on this line; the floor band is below it
@@ -70,14 +70,19 @@ function applyRoom(room) {
   if (room && typeof room === "object") ROOM = { ...ROOM, ...room };
   CELL = ROOM.CELL || 16;
   FLOOR_Y = ROOM.FLOOR_ROW * CELL;
-  const [wa, wb] = CERT_WHEEL_COLS, [ba, bb] = ROOM.RESERVED.burrow;
-  const wcx = ((wa + wb + 1) * CELL) / 2, bcx = ((ba + bb + 1) * CELL) / 2;
+  const [wa, wb] = CERT_WHEEL_COLS, bur = ROOM.RESERVED && ROOM.RESERVED.burrow;
+  const wcx = ((wa + wb + 1) * CELL) / 2;
   FLAT_WHEEL = { cx: wcx, cy: FLOOR_Y - 26, r: 23, x: wcx - 24, y: FLOOR_Y - 50 };
-  FLAT_BURROW = { cx: bcx, x: bcx - 24, y: FLOOR_Y - 32, w: 48, h: 32 };
   FLAT_SPOT = { wheel: { x: wcx, y: FLAT_WHEEL.cy + FLAT_WHEEL.r - 3 } };
-  // iso: the burrow stands on its reserved lane tiles; the wheel and the bed follow the player's fixtures
-  const ibx = colLeft(ba) + ((bb - ba + 1) * 16) / 2, ibf = footY(ba, bb - ba + 1);
-  IBURROW = { cx: ibx, x: ibx - 24, y: ibf - 32, foot: ibf };
+  // the burrow mound only exists while the server still reserves lane tiles for it (it no longer does);
+  // the wheel and the bed follow the player's fixtures
+  FLAT_BURROW = IBURROW = null;
+  if (bur) {
+    const [ba, bb] = bur, bcx = ((ba + bb + 1) * CELL) / 2;
+    FLAT_BURROW = { cx: bcx, x: bcx - 24, y: FLOOR_Y - 32, w: 48, h: 32 };
+    const ibx = colLeft(ba) + ((bb - ba + 1) * 16) / 2, ibf = footY(ba, bb - ba + 1);
+    IBURROW = { cx: ibx, x: ibx - 24, y: ibf - 32, foot: ibf };
+  }
   placeFixtures();
 }
 // ---------- fixtures: the wheel and the bed stand on open floor tiles (i, j) and move like furniture ----------
@@ -512,7 +517,7 @@ function applyState(j) {
   S.speedPct = typeof j.speedPct === "number" ? j.speedPct : 100; // speed bonus on wheel income (100 = none)
   if (typeof j.serverTime === "number") S.skew = j.serverTime - Date.now();
   if (j.me) { applyMe(j.me, first, { at: j.serverTime, soft: S.idle }); if (!first) noteTrickle(); }
-  else if (j.meError) toast(j.meError === "server_full" ? "The server is full." : `Couldn't load your room (${j.meError}).`, "err");
+  else if (j.meError) toast(j.meError === "server_full" ? "The server is full." : `Couldn't load your den (${j.meError}).`, "err");
   if (j.raid !== undefined) applyRaidStatus(j.raid);
   if (typeof j.burned === "number") S.burned = j.burned;
   if (Array.isArray(j.raidFeed)) applyFeed(j.raidFeed);
@@ -588,7 +593,7 @@ function renderHud() {
   const h = st.h;
   $("status").textContent = { active: "ACTIVE", stale: "STALE", offline: "offline", connecting: "connecting…", none: "no reading" }[st.key]
     || (h && h.coreStatus && h.coreStatus !== "IDLE" && h.coreStatus !== "UNKNOWN" ? h.coreStatus.replace(/_/g, " ") : "IDLE");
-  $("source").textContent = st.key === "offline" ? "server unreachable" : !h ? " " : S.demo ? "demo hamster" : h.source === "live" ? "live from api.squeekchain.com" : "via room server";
+  $("source").textContent = st.key === "offline" ? "server unreachable" : !h ? " " : S.demo ? "demo hamster" : h.source === "live" ? "live from api.squeekchain.com" : "via game server";
   $("speed").textContent = st.active && st.speed > 0 ? `${(st.speed / 1000).toFixed(2)} m/s` : "—";
   $("block").textContent = S.height != null ? S.height.toLocaleString("en-US") : "—";
   if (S.chain && typeof S.chain.blockProgress === "number") $("prog").style.width = clamp((S.chain.blockProgress / 1e9) * 100, 0, 100).toFixed(1) + "%";
@@ -1157,8 +1162,10 @@ function drawStanding(me) {
     const a = isoFloor(it, p.x, p.flip);
     list.push({ d: a ? a.d : footY(p.x, it.w), x: colLeft(p.x), draw: () => drawFloorItem(p, it) });
   }
-  const [ba, bb] = ROOM.RESERVED.burrow, ab = isoSpan("burrow", ba, bb - ba + 1, false);
-  list.push({ d: ab ? ab.d : IBURROW.foot, x: IBURROW.x, draw: drawBurrow });
+  if (IBURROW) {
+    const [ba, bb] = ROOM.RESERVED.burrow, ab = isoSpan("burrow", ba, bb - ba + 1, false);
+    list.push({ d: ab ? ab.d : IBURROW.foot, x: IBURROW.x, draw: drawBurrow });
+  }
   const m = ham.mode === "move" ? ham.move : null;
   const hamInWheel = ham.mode === "run" || (m && m.wheel), hamInBed = ham.mode === "sleep" || (m && m.bed);
   const moving = P.mode === "move" ? fixOf(P.pid) : null; // a fixture being moved fades in place
@@ -1428,12 +1435,12 @@ function errorWords(j, ctx = {}) {
     case "wrong_tier": {
       const it = ctx.it, prev = it && it.tier ? `T${it.tier - 1}` : "";
       if (it && it.cat === "bed") return prev ? `Get the ${prev} bed first` : "Beds go in order";
-      if (it && it.cat === "room") return prev ? `Build the ${prev} room first` : "Room materials go in order";
+      if (it && it.cat === "room") return prev ? `Build the ${prev} den first` : "Den materials go in order";
       return prev ? `Install the ${prev} wheel upgrade first` : "Wheel upgrades go in order";
     }
     case "already_owned": {
       const cat = ctx.it && ctx.it.cat;
-      return cat === "wheel" ? "Your wheel already has that" : cat === "bed" ? "Your bed is already that good" : cat === "room" ? "Your room is already built of that (or better)" : "You already own that";
+      return cat === "wheel" ? "Your wheel already has that" : cat === "bed" ? "Your bed is already that good" : cat === "room" ? "Your den is already built of that (or better)" : "You already own that";
     }
     case "reserved": return (ctx.which || whichReserved(ctx.it, ctx.x)) === "burrow" ? "That's the burrow. It stays where it is" : "That spot is the wheel's";
     case "too_close": return ctx.which === "bed" ? "Too close to the wheel" : "Too close to the bed";
@@ -1441,11 +1448,11 @@ function errorWords(j, ctx = {}) {
     case "overlap": return ctx.with ? `The ${ctx.with.name} is already there` : "Something is already there";
     case "out_of_bounds": case "oob": return ctx.it && ctx.it.zone === "wall" ? "Wall decor goes on the wall" : ctx.it && ctx.it.zone === "fixture" ? "Keep it on the open floor" : "Doesn't fit there";
     case "unowned": return "None left. Buy another in the shop";
-    case "bad_coords": return "Pick a spot inside the room";
+    case "bad_coords": return "Pick a spot inside the den";
     case "unknown_pid": return "That was already moved or removed";
     case "unknown_item": case "not_placeable": return "That isn't in the shop";
-    case "bad_token": case "unknown_player": return "Your room is still loading";
-    case "network": return "Can't reach the room server";
+    case "bad_token": case "unknown_player": return "Your den is still loading";
+    case "network": return "Can't reach the server";
     default: return `Something went wrong (${e})`;
   }
 }
@@ -1614,7 +1621,7 @@ function renderPlacing() {
   if (!on) return;
   $("placingName").textContent = `${P.mode === "move" ? "Moving" : "Placing"} ${P.it.name}${P.flip ? " (flipped)" : ""}`;
   const why = $("placingWhy");
-  if (!P.cell) { why.textContent = coarse.matches ? "· tap a spot in the room" : "· click a spot in the room · F flips · Esc cancels"; why.className = ""; }
+  if (!P.cell) { why.textContent = coarse.matches ? "· tap a spot in the den" : "· click a spot in the den · F flips · Esc cancels"; why.className = ""; }
   else if (P.valid && P.valid.ok) { why.textContent = coarse.matches ? "· tap to put it here" : "· click to put it here"; why.className = ""; }
   else { why.textContent = "· " + errorWords(P.valid || {}, { it: P.it, x: P.cell.x, which: P.it.zone === "fixture" ? P.it.fixture : P.valid && P.valid.which, with: P.valid && P.valid.with }); why.className = "bad"; }
 }
@@ -1779,7 +1786,7 @@ function tickThumbs() {
 const TABS = [
   { id: "wheel", label: "Wheel", cats: ["wheel"] },
   { id: "bed", label: "Bed", cats: ["bed"] },
-  { id: "room", label: "Room", cats: ["room"] },
+  { id: "room", label: "Den", cats: ["room"] },
   { id: "decor", label: "Decor", cats: ["furniture", "wall"] },
   { id: "rugs", label: "Rugs", cats: ["rug"] },
   { id: "styles", label: "Walls & Floors", cats: ["wallpaper", "floor"] },
@@ -1843,7 +1850,7 @@ function tierCardState(it, me, poor, need) {
     const mult = (S.balance && S.balance[t.mults]) || DEFAULT_MULT;
     cur = `${(mult[tier] / 100).toFixed(2)}×`; to = `${(it.multPct / 100).toFixed(2)}×`; doneNote = `${to} ${t.unit}`;
   } else {
-    cur = roomMaterial(tier); to = it.material || it.name; doneNote = tier === it.tier ? `your room is ${to}` : `${to} · built`;
+    cur = roomMaterial(tier); to = it.material || it.name; doneNote = tier === it.tier ? `your den is ${to}` : `${to} · built`;
   }
   if (it.tier <= tier) return { kind: "owned", label: t.done, disabled: true, note: doneNote };
   if (it.tier === tier + 1) return { kind: "upgrade", label: "Upgrade", poor, need, note: `${cur} → ${to}`, up: true };
@@ -1859,7 +1866,7 @@ function cardState(it, me) {
     return { kind: "buy", label: "Buy", poor, need };
   }
   const placed = me ? me.placed.filter((p) => p.item === it.id).length : 0;
-  return { kind: "buy", label: owned ? "Buy another" : "Buy", poor, need, own: owned ? `own ${owned}` : "", ownTitle: owned ? `${placed} in the room, ${owned - placed} in your things` : "" };
+  return { kind: "buy", label: owned ? "Buy another" : "Buy", poor, need, own: owned ? `own ${owned}` : "", ownTitle: owned ? `${placed} in the den, ${owned - placed} in your things` : "" };
 }
 function updateCards() {
   if (builtTab !== shopTab || builtSize !== S.catalog.size) return buildCards();
@@ -1906,7 +1913,7 @@ async function cardAction(c) {
     spendFeedback(c, it.price);
     if (it.cat === "wheel") toast(`${it.name}: ${(it.multPct / 100).toFixed(2)}× watts per block`, "ok");
     else if (it.cat === "bed") toast(`${it.name}: ${(it.multPct / 100).toFixed(2)}× bed watts`, "ok");
-    else if (it.cat === "room") toast(`Your room is now ${it.material || it.name}`, "ok");
+    else if (it.cat === "room") toast(`Your den is now ${it.material || it.name}`, "ok");
     else if (!it.zone) await equip(it); // a new wallpaper / floor / skin goes straight on
     else enterPlace(it.id); // a new placeable goes straight into your hand
   } finally {
@@ -1952,7 +1959,7 @@ function renderInventory() {
   if (!rows.length) {
     const s = document.createElement("span");
     s.className = "empty";
-    s.textContent = !me ? "" : me.placed.length ? "Everything is in the room. Tap something to move it." : "Nothing yet. Things you buy show up here.";
+    s.textContent = !me || me.placed.length ? "" : "Nothing yet. Things you buy show up here.";
     box.appendChild(s);
     return;
   }
@@ -1983,7 +1990,7 @@ function syncNick() { if (S.me && document.activeElement !== nickEl && !nickEl.d
 async function saveNick() {
   const r = await post("/api/nick", { nick: nickEl.value });
   delete nickEl.dataset.dirty;
-  if (r.ok && r.j.me) { applyMe(r.j.me); toast(r.j.me.nick === "anon" ? "Room name cleared" : `Room name saved: ${r.j.me.nick}`, "ok"); }
+  if (r.ok && r.j.me) { applyMe(r.j.me); toast(r.j.me.nick === "anon" ? "Den name cleared" : `Den name saved: ${r.j.me.nick}`, "ok"); }
   else toast(errorWords(r.j), "err");
 }
 nickEl.addEventListener("input", () => (nickEl.dataset.dirty = "1"));
@@ -2077,7 +2084,7 @@ function renderPortrait(cert, pose) {
     c.fillStyle = "rgba(0,0,0,.2)"; c.fillRect(x + 1, FLOOR_Y, pw - 2, 2);
     drawItem(p, it, x, FLOOR_Y - ph, pw, ph, c, fx, fr);
   }
-  if (!sprite(c, "burrow", fr, FLAT_BURROW.x, FLAT_BURROW.y, {})) c.drawImage(burrowCanvas(), FLAT_BURROW.x, FLAT_BURROW.y);
+  if (FLAT_BURROW && !sprite(c, "burrow", fr, FLAT_BURROW.x, FLAT_BURROW.y, {})) c.drawImage(burrowCanvas(), FLAT_BURROW.x, FLAT_BURROW.y);
   const tier = clamp(cert.wheelTier | 0, 0, 5), angle = pose.angle;
   c.fillStyle = "rgba(0,0,0,.2)"; c.fillRect(FLAT_WHEEL.cx - 19, FLOOR_Y, 38, 2);
   if (sprite(c, "wheel", Math.floor(angle * 24) % 4, FLAT_WHEEL.x, FLAT_WHEEL.y, { angle, tier })) {
@@ -2290,7 +2297,7 @@ function openCert(cert) {
   const view2 = $("certCanvas"), c = view2.getContext("2d");
   c.clearRect(0, 0, CERT_W, CERT_H);
   c.drawImage(certUi.src, 0, 0);
-  view2.setAttribute("aria-label", `Certificate Nº ${cert.serial} for ${cert.nick}: ${fmt(cert.lifetimeWatts)} lifetime watts over ${cert.activeDays} active days, blocks ${cert.joinHeight} to ${cert.claimHeight}, with a portrait of the room.`);
+  view2.setAttribute("aria-label", `Certificate Nº ${cert.serial} for ${cert.nick}: ${fmt(cert.lifetimeWatts)} lifetime watts over ${cert.activeDays} active days, blocks ${cert.joinHeight} to ${cert.claimHeight}, with a portrait of the den.`);
   $("certTitle").textContent = `Certificate Nº ${cert.serial}`;
   $("certSub").textContent = `${cert.nick} · claimed ${String(cert.claimedAt || "").slice(0, 10)}`;
   $("certShare").hidden = typeof navigator.share !== "function";
@@ -2432,7 +2439,7 @@ const defensePct = (t) => RB().DEFENSE_PCT[t | 0] ?? 0;
 // display name: the server's `name` (wallet username, else the room nick); nick for older payloads
 const rowName = (r) => (r && (r.name || r.nick)) || "anon";
 function verifiedBadge() { const b = elx("span", "vbadge", "✓"); b.title = "Wallet-verified username"; b.setAttribute("aria-label", "wallet verified"); return b; }
-const rowMatLine = (r) => `${roomMaterial(r.roomTier | 0)} room${defensePct(r.roomTier) ? ` · −${defensePct(r.roomTier)}% odds` : ""}${sharePct(r.roomTier) ? ` · keeps ${sharePct(r.roomTier)}% of failed raids` : ""}`;
+const rowMatLine = (r) => `${roomMaterial(r.roomTier | 0)} den${defensePct(r.roomTier) ? ` · −${defensePct(r.roomTier)}% odds` : ""}${sharePct(r.roomTier) ? ` · keeps ${sharePct(r.roomTier)}% of failed raids` : ""}`;
 // recomputed against my live watts (the server's flag uses the same rule; it re-checks on raid)
 function rowRaidable(r) {
   const me = S.me;
@@ -2497,14 +2504,14 @@ function renderLb() {
   const targets = d ? d.rows.filter(rowRaidable).length : 0;
   st.innerHTML = words + (me && d && cls ? ` · ${targets} target${targets === 1 ? "" : "s"}` : "");
   const age = LB.at ? Math.round((Date.now() - LB.at) / 1000) : null;
-  $("lbMeta").textContent = !d ? (LB.err ? "can't reach the room server" : "loading…") : `${fmt(d.total)} room${d.total === 1 ? "" : "s"} · ${LB.err ? `couldn't refresh, showing ${age}s old` : age < 3 ? "just updated" : `updated ${age}s ago`}`;
+  $("lbMeta").textContent = !d ? (LB.err ? "can't reach the server" : "loading…") : `${fmt(d.total)} den${d.total === 1 ? "" : "s"} · ${LB.err ? `couldn't refresh, showing ${age}s old` : age < 3 ? "just updated" : `updated ${age}s ago`}`;
   const sig = d ? `${LB.at}|${me ? me.watts : ""}|${raidPhase()}` : "none";
   if (sig === LB.sig) return;
   LB.sig = sig;
   const box = $("lbRows"), focusPid = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.pid : null;
   box.innerHTML = "";
   if (!d) return;
-  if (!d.rows.length) { box.appendChild(elx("li", "lbnote", "No rooms yet.")); return; }
+  if (!d.rows.length) { box.appendChild(elx("li", "lbnote", "No dens yet.")); return; }
   for (const r of d.rows) {
     const raidable = rowRaidable(r), you = r.you || r.publicId === myPid();
     const li = elx("li");
@@ -2523,8 +2530,8 @@ function renderLb() {
     if (raidable && me) {
       wt.appendChild(elx("span", "go", "RAID"));
     } else if (!you) wt.appendChild(elx("small", null, "too small"));
-    row.title = raidable ? `Raid ${rowName(r)}${r.revenge ? " (revenge)" : ""}` : you ? "Your room" : `Under 70% of your watts (${fmt(minTarget())} W). You can only raid up.`;
-    row.setAttribute("aria-label", `Rank ${r.rank}, ${rowName(r)}${r.verified ? " (wallet verified)" : ""}${you ? " (you)" : ""}, ${roomMaterial(r.roomTier | 0)} room, ${fmt(r.watts)} watts${raidable ? ", raidable" : ""}${r.revenge ? ", revenge" : ""}`);
+    row.title = raidable ? `Raid ${rowName(r)}${r.revenge ? " (revenge)" : ""}` : you ? "Your den" : `Under 70% of your watts (${fmt(minTarget())} W). You can only raid up.`;
+    row.setAttribute("aria-label", `Rank ${r.rank}, ${rowName(r)}${r.verified ? " (wallet verified)" : ""}${you ? " (you)" : ""}, ${roomMaterial(r.roomTier | 0)} den, ${fmt(r.watts)} watts${raidable ? ", raidable" : ""}${r.revenge ? ", revenge" : ""}`);
     row.appendChild(wt);
     li.appendChild(row);
     box.appendChild(li);
@@ -2603,8 +2610,8 @@ function raidBlock(t, sb) {
 function stakeLockWords(sb) {
   if (sb.limit === "balance") return `You need at least ${fmt(sb.min)} W to raid.`;
   return RB().MULT_PCT.some((m) => { const b = stakeNow(m); return b.max >= b.min; })
-    ? `Their room is too small for a ${multLabel(RU.mult)} raid at your size. Pick a lower multiplier.`
-    : `Their room is too small to raid with your minimum stake of ${fmt(sb.min)} W.`;
+    ? `Their den is too small for a ${multLabel(RU.mult)} raid at your size. Pick a lower multiplier.`
+    : `Their den is too small to raid with your minimum stake of ${fmt(sb.min)} W.`;
 }
 function renderRaid(force = false) {
   if (!RU.open || !S.me) return;
@@ -2632,7 +2639,7 @@ function renderRaid(force = false) {
     b.tabIndex = m === RU.mult ? 0 : -1;
     b.classList.toggle("off", off);
     b.querySelector(".pc").textContent = pctText(p);
-    b.setAttribute("aria-label", `${multLabel(m)}, ${pctText(p)} chance to win${off ? ", not available against this room" : ""}`);
+    b.setAttribute("aria-label", `${multLabel(m)}, ${pctText(p)} chance to win${off ? ", not available against this den" : ""}`);
   }
   // stake controls (left alone while being typed in)
   const num = $("stakeNum"), rng2 = $("stakeRange"), maxShown = Math.max(sb.min, sb.max);
@@ -2687,11 +2694,11 @@ function raidErrorWords(j) {
     case "chain_unknown": return "No blocks seen yet.";
     case "chain_stale": return "Waiting for a fresh block.";
     case "no_raids_left": return `No raids left today. More in ${durText(j.resetMs || 0)}.`;
-    case "bad_target": return "That room is gone.";
+    case "bad_target": return "That den is gone.";
     case "not_eligible": return `${t ? rowName(t) : "They"} dropped under 70% of your watts.`;
-    case "self_target": return "That's your own room.";
+    case "self_target": return "That's your own den.";
     case "bad_mult": return "Pick a multiplier.";
-    case "bad_stake": case "stake_out_of_range": return j.max < j.min ? stakeLockWords(j) : `Stake ${fmt(j.min)} to ${fmt(j.max)} W${j.limit === "target" ? ` against this room at ${multLabel(RU.mult)}` : ""}.`;
+    case "bad_stake": case "stake_out_of_range": return j.max < j.min ? stakeLockWords(j) : `Stake ${fmt(j.min)} to ${fmt(j.max)} W${j.limit === "target" ? ` against this den at ${multLabel(RU.mult)}` : ""}.`;
     default: return errorWords(j);
   }
 }
@@ -2845,7 +2852,7 @@ function applyFeed(list) {
 // someone raided me between two polls: make sure I notice
 function raidedMe(e) {
   const w = !!e.win;
-  toast(w ? `${e.atk} raided you: −${fmt(e.amount)} W` : `${e.atk} tried to raid you and lost ${fmt(e.amount)} W${e.share > 0 ? `. Your room kept ${fmt(e.share)} W of it` : ""}`, w ? "err" : e.share > 0 ? "ok" : undefined);
+  toast(w ? `${e.atk} raided you: −${fmt(e.amount)} W` : `${e.atk} tried to raid you and lost ${fmt(e.amount)} W${e.share > 0 ? `. Your den kept ${fmt(e.share)} W of it` : ""}`, w ? "err" : e.share > 0 ? "ok" : undefined);
   for (const id of ["feed", "stage"]) { const n = $(id); n.classList.remove("hit"); void n.offsetWidth; n.classList.add("hit"); setTimeout(() => n.classList.remove("hit"), 1600); }
   if (w) { const m = $("meter"); m.classList.remove("poor"); void m.offsetWidth; m.classList.add("poor"); setTimeout(() => m.classList.remove("poor"), 900); }
   raidFx("hit");
@@ -2906,6 +2913,215 @@ function renderFeed() {
   for (let i = list.length - 1; i >= 0; i--) ol.appendChild(feedLine(list[i], mine));
   setTimeout(() => { FEED.fresh = new Set(); }, 1300);
 }
+
+// ---------- how to play: five short steps, each a tiny live scene drawn from the game's own sprites ----------
+// The stage is 192 x 108 (scaled up, pixelated): the packed-dirt wall and straw floor of a den, floor line y = 80.
+const TUT_W = 192, TUT_H = 108, TUT_FLOOR = 80;
+const tutCv = $("tutCv"), tutCtx = tutCv.getContext("2d");
+tutCtx.imageSmoothingEnabled = false;
+const tutSkin = () => (S.me && S.me.skin) || "skin_classic";
+function tutBg(c, night) {
+  const wp = wallpaperCanvas("wp_dirt"), fl = floorCanvas("fl_straw");
+  c.drawImage(wp, 0, wp.height - TUT_FLOOR, TUT_W, TUT_FLOOR, 0, 0, TUT_W, TUT_FLOOR);
+  c.drawImage(fl, 0, 0, TUT_W, fl.height, 0, TUT_FLOOR, TUT_W, fl.height);
+  for (let y = TUT_FLOOR + fl.height; y < TUT_H; y += fl.height - 1) c.drawImage(fl, 0, 1, TUT_W, fl.height - 1, 0, y, TUT_W, fl.height - 1); // the flat floor is shorter than the stage: tile it (minus its seam row)
+  if (night) { c.fillStyle = "rgba(14,20,58,.5)"; c.fillRect(0, 0, TUT_W, TUT_H); }
+}
+function tutHam(c, kind, frame, x, y, flip = false) { // x, y: his bottom-centre
+  const id = kind === "run" ? "hamster_run" : kind === "sleep" ? "hamster_sleep" : "hamster_sit", skin = tutSkin();
+  const dx = Math.round(x - 12), dy = Math.round(y - 24);
+  if (sprite(c, id, frame, dx, dy, { flip, skin, remap: (window.SKIN_REMAPS || {})[skin] })) return;
+  const img = hamsterFrame(kind, frame, skin);
+  if (flip) { c.save(); c.translate(dx + 24, dy); c.scale(-1, 1); c.drawImage(img, 0, 0); c.restore(); }
+  else c.drawImage(img, dx, dy);
+}
+function tutWheel(c, x, y, angle, tier) { // 48 x 50 box, foot on y + 50
+  c.fillStyle = "rgba(0,0,0,.2)"; c.fillRect(x + 5, y + 50, 38, 2);
+  if (sprite(c, "wheel", Math.floor(angle * 24) % 4, x, y, { angle, tier })) { if (tier > 0) sprite(c, `wheel_t${tier}`, frame10, x, y, { angle, tier }); }
+  else drawWheelPlaceholder(c, angle, tier, { cx: x + 24, cy: y + 24, r: 23, x, y });
+}
+function tutBed(c, tier, cx) { // standing on the floor line; returns where a sleeper's bottom-centre goes
+  const id = `bed_t${tier}`, s = (window.SPRITES || {})[id];
+  const w = (s && s.w) || 28, h = (s && s.h) || 10, sl = (s && s.sleep) || [w >> 1, h - 3];
+  const x = Math.round(cx - w / 2), y = TUT_FLOOR - h;
+  c.fillStyle = "rgba(0,0,0,.2)"; c.fillRect(x + 2, TUT_FLOOR, w - 4, 2);
+  if (!sprite(c, id, frame10, x, y, {})) c.drawImage(placeholderItem({ id, name: "bed" }, w, h), x, y);
+  return { id, x, y, sx: x + sl[0], sy: y + sl[1] };
+}
+function tutText(c, str, x, y, col, center = true) {
+  const px = Math.round(center ? x - (str.length * 4 - 1) / 2 : x);
+  drawText(c, str, px + 1, y + 1, OUTLINE);
+  drawText(c, str, px, y, col);
+}
+// rising "+N W" pops: n of them, one every `every` s, from (x, y) up `rise` px
+function tutPops(c, t, str, x, y, n, every, rise, col = "#ffd166") {
+  for (let k = 0; k < n; k++) {
+    const ph = ((t / every + k / n) % 1 + 1) % 1;
+    c.globalAlpha = Math.min(1, (1 - ph) * 2);
+    tutText(c, str, x + ((k * 13) % 25) - 12, Math.round(y - ph * rise), col);
+  }
+  c.globalAlpha = 1;
+}
+function tutCoin(c, x, y) { fillEllipse(c, x, y, 4, 2.5, OUTLINE); fillEllipse(c, x, y - 0.5, 3, 1.6, "#ffd166"); c.fillStyle = "#c2410c"; c.fillRect(Math.round(x) - 3, Math.round(y) + 1, 6, 1); }
+function tutStack(c, x, n) { for (let k = 0; k < n; k++) tutCoin(c, x, TUT_FLOOR - 3 - k * 3); }
+function tutArrowUp(c, x, y, col) {
+  c.fillStyle = OUTLINE; c.fillRect(x - 1, y + 2, 3, 6); for (let r = 0; r < 4; r++) c.fillRect(x - r - 1, y + r, 2 * r + 3, 1);
+  c.fillStyle = col; c.fillRect(x, y + 3, 1, 5); for (let r = 1; r < 3; r++) c.fillRect(x - r, y + r, 2 * r + 1, 1);
+}
+const TUT_MULT = ["1X", "1.25X", "1.6X", "2X", "2.6X", "3.5X"];
+
+const TUT = [
+  { title: "He runs, you earn", text: "Squeektoshi is a real hamster. Every Squeek block he runs pays your Den Watts, even while you're away.",
+    draw(c, t) {
+      tutBg(c, false);
+      const f = Math.floor(t * 12) % 4;
+      tutWheel(c, 72, 30, t * 1.4, 0);
+      tutHam(c, "run", f, 96, 74 - (f % 2));
+      tutPops(c, t, "+10W", 96, 24, 3, 1.4, 18);
+      tutText(c, `BLOCK ${5204 + Math.floor(t * 1.5)}`, 6, 6, "#eef0f5", false);
+    } },
+  { title: "Sleep pays too", text: "When he naps, your bed earns about half as fast. Keep this tab open for +20%.",
+    draw(c, t) {
+      tutBg(c, true);
+      fillEllipse(c, 168, 18, 8, 8, "#f2e6b8");
+      for (const [x, y, k] of [[20, 12, 0], [60, 22, 1], [104, 10, 2], [140, 30, 3]]) if ((Math.floor(t * 2) + k) % 4) { c.fillStyle = "#fff"; c.fillRect(x, y, 1, 1); }
+      c.globalAlpha = 0.5; tutWheel(c, 16, 30, 0, 0); c.globalAlpha = 1;
+      const b = tutBed(c, 1, 124);
+      tutHam(c, "sleep", Math.floor(t * 1.2) % 2, b.sx, b.sy);
+      sprite(c, `${b.id}_front`, frame10, b.x, b.y, {});
+      for (let k = 0; k < 3; k++) { const ph = (t * 0.45 + k / 3) % 1; c.globalAlpha = 1 - ph; tutText(c, "Z", b.sx + 8 + ph * 10, Math.round(b.sy - 20 - ph * 16), "#eef0f5"); }
+      c.globalAlpha = 1;
+      tutPops(c, t, "+5W", b.sx - 22, b.sy - 22, 2, 2.6, 14);
+    } },
+  { title: "Upgrade", text: "A better wheel and a better bed make more Watts. Spend the rest on decorating your Den.",
+    draw(c, t) {
+      tutBg(c, false);
+      const step = t / 1.1, tier = Math.floor(step) % 6, ph = step % 1, f = Math.floor(t * 14) % 4;
+      tutWheel(c, 24, 30, t * (1.2 + tier * 0.35), tier);
+      tutHam(c, "run", f, 48, 74 - (f % 2));
+      tutBed(c, tier, 142);
+      for (const x of [48, 142]) {
+        tutText(c, TUT_MULT[tier], x, 14, tier ? "#ffd166" : "#eef0f5");
+        if (tier && ph < 0.6) { c.globalAlpha = 1 - ph / 0.6; tutArrowUp(c, x, Math.round(24 - ph * 10), "#22c55e"); c.globalAlpha = 1; }
+        for (let k = 0; k < 5; k++) { c.fillStyle = OUTLINE; c.fillRect(x - 12 + k * 5, 6, 4, 4); c.fillStyle = k < tier ? "#22c55e" : "#4b5563"; c.fillRect(x - 11 + k * 5, 7, 2, 2); }
+      }
+    } },
+  { title: "Raid richer Dens", text: "While he runs, wager Watts to rob a Den worth at least 0.7x yours. The richer the target, the better your odds.",
+    draw(c, t) {
+      tutBg(c, false);
+      const P = 2.6, moved = Math.floor(t / P) % 4, p = (t % P) / P, f = Math.floor(t * 14) % 4;
+      tutStack(c, 30, 2 + moved);
+      tutStack(c, 162, 11 - moved);
+      tutText(c, "YOU", 30, 40, "#eef0f5");
+      tutText(c, "RICH", 162, 30, "#ffd166");
+      const go = p < 0.5, k = go ? p / 0.5 : (p - 0.5) / 0.5, x = go ? lerp(46, 146, k) : lerp(146, 46, k);
+      tutHam(c, "run", f, x, TUT_FLOOR - (f % 2), !go);
+      if (!go) tutCoin(c, x, TUT_FLOOR - 24 - (f % 2));
+      if (Math.floor(t * 2) % 2) tutText(c, "RAIDS OPEN", 96, 8, "#22c55e");
+    } },
+  { title: "Guard your spot", text: "Getting raided always costs you, and the top of the leaderboard is the juiciest target. Upgrade your Den so raids on you fail more often.",
+    draw(c, t) {
+      tutBg(c, false);
+      for (const [x, h, n, col] of [[44, 26, "#2", "#9ca3af"], [96, 40, "#1", "#ffd166"], [148, 16, "#3", "#c2410c"]]) {
+        c.fillStyle = OUTLINE; c.fillRect(x - 19, TUT_FLOOR - h - 1, 38, h + 1);
+        c.fillStyle = col; c.fillRect(x - 18, TUT_FLOOR - h, 36, h);
+        c.fillStyle = "rgba(255,255,255,.35)"; c.fillRect(x - 18, TUT_FLOOR - h, 36, 2);
+        drawText(c, n, x - 3, TUT_FLOOR - h + 6, "#1d1a14");
+      }
+      const top = TUT_FLOOR - 40;
+      tutHam(c, "sit", 0, 96, top);
+      if (Math.floor(t * 3) % 2) { // the crosshair on the leader
+        c.fillStyle = "#ef4444";
+        for (const [dx, dy] of [[-15, -28], [11, -28], [-15, -2], [11, -2]]) {
+          c.fillRect(96 + dx, top + dy, 4, 1);
+          c.fillRect(96 + dx + (dx < 0 ? 0 : 3), top + dy + (dy < -10 ? 0 : -3), 1, 4);
+        }
+      }
+      // his Den's walls, cycling through the materials, turn the raids away
+      const tier = Math.floor(t / 1.2) % 6, [hi, mid, lo] = matEdge(tier), sx = 118, sy = top - 26;
+      for (let y = 0; y < 21; y++) {
+        const half = y < 13 ? 6 : 6 - (y - 12);
+        if (half < 0) break;
+        c.fillStyle = OUTLINE; c.fillRect(sx - half - 1, sy + y, half * 2 + 3, 1);
+        c.fillStyle = y < 2 ? hi : mid; c.fillRect(sx - half, sy + y, half * 2 + 1, 1);
+      }
+      c.fillStyle = lo; c.fillRect(sx, sy + 2, 1, 14);
+      for (let k = 0; k < 2; k++) {
+        const ph = (t * 0.8 + k / 2) % 1, ay = sy + 6 + k * 8;
+        if (ph < 0.7) { const ax = Math.round(lerp(190, sx + 8, ph / 0.7)); c.fillStyle = "#ef4444"; c.fillRect(ax, ay, 8, 1); c.fillRect(ax + 1, ay - 1, 1, 3); }
+        else {
+          const q = (ph - 0.7) / 0.3;
+          c.globalAlpha = 1 - q; c.fillStyle = "#ffd166";
+          for (const [dx, dy] of [[2, -2], [3, 0], [2, 2], [5, -3], [5, 3]]) c.fillRect(Math.round(sx + 7 + dx * (1 + q * 3)), Math.round(ay + dy * (1 + q * 2)), 1, 1);
+          c.globalAlpha = 1;
+        }
+      }
+    } },
+];
+const TUT_SEEN = "sd_tutorial_done";
+const tut = { i: 0, raf: 0, t0: 0, back: null, still: matchMedia("(prefers-reduced-motion: reduce)").matches };
+const tutDots = TUT.map((s, i) => {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.setAttribute("aria-label", `Step ${i + 1}: ${s.title}`);
+  b.addEventListener("click", () => tutGo(i));
+  $("tutDots").appendChild(b);
+  return b;
+});
+function tutFrame(now) {
+  const t = tut.still ? 1.2 : (now - tut.t0) / 1000;
+  tutCtx.clearRect(0, 0, TUT_W, TUT_H);
+  TUT[tut.i].draw(tutCtx, t);
+  if (!tut.still && !$("tut").hidden) tut.raf = requestAnimationFrame(tutFrame);
+}
+function tutGo(i) {
+  tut.i = clamp(i, 0, TUT.length - 1);
+  const s = TUT[tut.i], last = tut.i === TUT.length - 1;
+  $("tutStep").textContent = `${tut.i + 1} / ${TUT.length}`;
+  $("tutTitle").textContent = s.title;
+  $("tutText").textContent = s.text;
+  $("tutBack").disabled = tut.i === 0;
+  $("tutNext").textContent = last ? "Let's go" : "Next";
+  tutDots.forEach((b, k) => (k === tut.i ? b.setAttribute("aria-current", "step") : b.removeAttribute("aria-current")));
+  cancelAnimationFrame(tut.raf);
+  tut.t0 = performance.now();
+  tut.raf = requestAnimationFrame(tutFrame);
+}
+function openTut(i = 0) {
+  tut.back = document.activeElement;
+  $("tut").hidden = false;
+  tutGo(i);
+  $("tutNext").focus();
+}
+function closeTut() {
+  $("tut").hidden = true;
+  cancelAnimationFrame(tut.raf);
+  ls.set(TUT_SEEN, "1");
+  if (tut.back && tut.back.focus) tut.back.focus();
+}
+$("helpBtn").addEventListener("click", () => openTut(0));
+$("tutX").addEventListener("click", closeTut);
+$("tutBack").addEventListener("click", () => tutGo(tut.i - 1));
+$("tutNext").addEventListener("click", () => (tut.i === TUT.length - 1 ? closeTut() : tutGo(tut.i + 1)));
+$("tut").addEventListener("click", (e) => { if (e.target === $("tut")) closeTut(); });
+addEventListener("keydown", (e) => { // capture phase: while it's open, the room's own keys (Esc, F) stay out of it
+  if ($("tut").hidden) return;
+  if (e.key === "Escape") closeTut();
+  else if (e.key === "ArrowRight") tutGo(tut.i + 1);
+  else if (e.key === "ArrowLeft") tutGo(tut.i - 1);
+  else return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+}, true);
+let tutSwipe = null;
+tutCv.addEventListener("pointerdown", (e) => { tutSwipe = e.clientX; });
+tutCv.addEventListener("pointerup", (e) => { // swipe either way; a plain tap moves on
+  if (tutSwipe == null) return;
+  const dx = e.clientX - tutSwipe;
+  tutSwipe = null;
+  tutGo(tut.i + (Math.abs(dx) > 30 && dx > 0 ? -1 : 1));
+});
+if (!ls.get(TUT_SEEN)) setTimeout(() => openTut(0), 300); // first visit
 
 // debug handle for the browser console / verification
 window.__squeekroom = { S, ham, wheel, sparks, meter, pops, spawnPop, liveStatus, tintAt, P, checkSpot, enterPlace, select,

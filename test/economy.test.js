@@ -199,9 +199,9 @@ test("placement: non-integer coords rejected", () => {
   }
 });
 
-test("placement: reserved burrow (16-18) columns; the wheel's old columns are free", () => {
+test("placement: no reserved columns (the burrow is gone); the wheel's old columns are free", () => {
   const p = own(fresh(), "fur_bookshelf", 1); // 2 wide
-  for (const x of [15, 16, 17, 18]) assert.equal(validatePlacement(p, "fur_bookshelf", x, 11).error, "reserved", `x=${x}`);
+  for (const x of [15, 16, 17, 18]) assert.ok(validatePlacement(p, "fur_bookshelf", x, 11).ok, `x=${x}`);
   for (const x of [2, 3, 4, 5, 6]) assert.ok(validatePlacement(p, "fur_bookshelf", x, 11).ok, `x=${x}`);
   assert.ok(validatePlacement(p, "fur_bookshelf", 0, 11).ok);
   assert.ok(validatePlacement(p, "fur_bookshelf", 7, 11).ok);
@@ -235,7 +235,7 @@ test("placement: wall zone is 2-D on rows 2-7 and ignores the floor", () => {
   assert.ok(validatePlacement(p, "fur_seed_bowl", 9, 11).ok);
 });
 
-test("placement: rugs collide only with rugs, never on reserved columns", () => {
+test("placement: rugs collide only with rugs", () => {
   const p = own(own(own(fresh(), "rug_persian"), "rug_rag"), "fur_sofa");
   p.placed.push({ pid: "f1", item: "fur_sofa", x: 8, y: 11, flip: false });
   assert.ok(validatePlacement(p, "rug_persian", 8, 11).ok); // under furniture is fine
@@ -243,7 +243,7 @@ test("placement: rugs collide only with rugs, never on reserved columns", () => 
   assert.equal(validatePlacement(p, "rug_rag", 11, 11).error, "overlap");
   assert.ok(validatePlacement(p, "rug_rag", 12, 11).ok);
   assert.ok(validatePlacement(p, "rug_rag", 5, 11).ok);
-  assert.equal(validatePlacement(p, "rug_rag", 15, 11).error, "reserved");
+  assert.ok(validatePlacement(p, "rug_rag", 15, 11).ok); // the old burrow columns are open floor
 });
 
 test("placement: unowned, unknown and non-placeable items", () => {
@@ -324,12 +324,12 @@ test("claim: rejects ineligible, issues serial + seed, idempotent", () => {
 // ---------- sleep (by the chain) ----------
 test("chainIdle: asleep after IDLE_AFTER_MS without a settled block; stale reads are not asleep", () => {
   const { chainIdle } = S;
-  assert.equal(BALANCE.IDLE_AFTER_MS, 600_000);
+  assert.equal(BALANCE.IDLE_AFTER_MS, 90_000);
   for (const k of Object.keys(BALANCE)) assert.ok(!k.startsWith("MANUAL_"), `wheel duty key ${k} is gone`);
   assert.equal(chainIdle(T0 - 60_000, T0), false); // a block 1 min ago
   assert.equal(chainIdle(null, T0), false); // height never observed
   assert.equal(chainIdle(T0 - BALANCE.IDLE_AFTER_MS + 1, T0), false);
-  assert.equal(chainIdle(T0 - BALANCE.IDLE_AFTER_MS, T0), true); // exactly 10 min quiet
+  assert.equal(chainIdle(T0 - BALANCE.IDLE_AFTER_MS, T0), true); // exactly 90 s quiet
   const asleep = T0 - BALANCE.IDLE_AFTER_MS - 60_000;
   assert.equal(chainIdle(asleep, T0, T0 - 10_000), true); // live mode, fresh chain read
   assert.equal(chainIdle(asleep, T0, T0 - 600_000), false); // live mode, stale read
@@ -1368,10 +1368,11 @@ test("replay schedule: 3x = an 8 h night of 1,078 blocks; runs 10-30 min, rests 
       assert.equal(s.blocks, 0);
     }
   });
-  // the real night's shape: the 22:00-02:00 runs carry most of the work, the stirs almost none
+  // the real night's shape: the 22:00-02:00 runs carry most of the work, the stirs a little (~4%:
+  // just dense enough that no gap inside a run reaches IDLE_AFTER_MS)
   const runs = SCHED.segments.filter((s) => s.kind === "run").sort((a, b) => b.blocks - a.blocks);
   assert.deepEqual(runs.slice(0, 2).map((s) => s.label).sort(), ["after midnight", "peak"]);
-  assert.ok(runs.slice(0, 3).reduce((a, s) => a + s.blocks, 0) / 1078 > 0.75);
+  assert.ok(runs.slice(0, 3).reduce((a, s) => a + s.blocks, 0) / 1078 > 0.7);
   // at 1x the same night spans a real day, starting at her real 21:00 UTC
   const one = S.replaySchedule(1);
   assert.equal(one.cycleMs, DAY);

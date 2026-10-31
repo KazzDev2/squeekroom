@@ -56,7 +56,7 @@ const BALANCE = {
   CERT_LIFETIME_WATTS: 500_000, // bed and wheel both count: ~7 days at tier 0 in replay, like CERT_ACTIVE_DAYS
   CERT_ACTIVE_DAYS: 7,
   // He's asleep by the chain when no settled block arrived for this long.
-  IDLE_AFTER_MS: 600_000,
+  IDLE_AFTER_MS: 90_000, // > the longest block gap inside a replay run (~50 s) + a 10 s poll, with room to spare
   // Bed income: while he sleeps, every room earns BED_AWAKE_PCT of the base awake rate
   // (BASE_WATTS_PER_BLOCK x the speed baseline's blocks/min, so live and replay both scale) x bed tier
   // multiplier x watching bonus, online or not. Credited from the poller by elapsed time (exact
@@ -116,7 +116,7 @@ const ROOM = {
   FLOOR_ROW: 11,
   WALL_TOP: 2,
   WALL_BOTTOM: 7,
-  RESERVED: { burrow: [16, 18] }, // inclusive floor-column ranges
+  RESERVED: {}, // inclusive floor-column ranges by name; the burrow mound (16..18) was removed 1 Nov 2026
   // The wheel and the bed stand on open floor tiles (i, j) of the iso room, away from the wall lanes
   // (i = 0 / j = 0). Tiles with i + j > FIX_MAX_SUM fall off the bottom of the view. The two fixtures
   // keep FIX_GAP tiles apart (Chebyshev) so neither hides the other or the hamster.
@@ -963,16 +963,16 @@ const REPLAY_NIGHT = [
   ["sleep", 45, 0, "nap"],
   ["run", 15, 4487, "dawn"], // 05:00-07:30
   ["sleep", 60, 0, "day sleep"],
-  ["run", 10, 600, "stir"], // synthetic (~1% each)
+  ["run", 10, 2800, "stir"], // synthetic (~4% each): dense enough that he stays awake through it
   ["sleep", 60, 0, "day sleep"],
-  ["run", 10, 600, "stir"], // synthetic
+  ["run", 10, 2800, "stir"], // synthetic
   ["sleep", 60, 0, "day sleep"],
 ];
-const REPLAY_VERSION = 1; // bump when REPLAY_NIGHT changes (re-anchors the offset once, continuously)
+const REPLAY_VERSION = 2; // bump when REPLAY_NIGHT changes (re-anchors the offset once, continuously)
 const REPLAY_BASE_SPEED = 3; // REPLAY_NIGHT minutes are written for this speed (480 min = 24 h / 3)
 const REPLAY_BLOCKS_PER_DAY = 1078; // the real rate; replay settles this x SPEED
 const REPLAY_MIN_RUN_MS = 5 * 60_000; // floors when a high SPEED shrinks the segments
-const REPLAY_MIN_SLEEP_MS = BALANCE.IDLE_AFTER_MS + 10 * 60_000; // always >= 10 min of real sleep
+const REPLAY_MIN_SLEEP_MS = Math.max(BALANCE.IDLE_AFTER_MS + 10 * 60_000, 20 * 60_000); // always >= 10 min of real sleep; fast replays keep 20-min rests
 const REPLAY_RAMP = 0.5; // blocks settle at 0.5x the run's mean rate at its edges, 1.5x mid-run
 const REPLAY_MM_PER_BLOCK = 9873; // real: 51,378,804 mm over 5,204 blocks
 const REPLAY_WHEEL_MM = 200; // wheel diameter used for rpm (same as the demo and the client)

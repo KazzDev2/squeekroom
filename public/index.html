@@ -180,6 +180,22 @@ body.modal-open{overflow:hidden}
 .pxbtn.alt{background:var(--dk-card);color:var(--dk-ink);border-color:#000;box-shadow:inset -2px -2px 0 #000,inset 2px 2px 0 var(--dk-hi)}
 .certx{background:var(--dk-card);color:var(--dk-ink);border:0;border-radius:6px;padding:4px 9px;cursor:pointer;font-size:13px}
 .certx:hover{background:var(--dk-hover)}
+.helpbtn{font-family:var(--display);font-size:10px;letter-spacing:.2px;line-height:1.2;border:2px solid #1d1a14;border-radius:0;padding:5px 8px;cursor:pointer;white-space:nowrap;background:var(--squeek);color:#1d1a14;box-shadow:inset -2px -2px 0 #c2410c,inset 2px 2px 0 #ffe8a8}
+.helpbtn:focus-visible{outline:2px solid var(--chain);outline-offset:2px}
+.tutmodal{position:fixed;inset:0;z-index:50;background:rgba(8,10,14,.82);display:flex;align-items:center;justify-content:center;padding:12px}
+.tutmodal[hidden]{display:none}
+.tutbox{position:relative;width:min(480px,100%);max-height:100%;overflow:auto;background:var(--dk-bg);color:var(--dk-ink);border:2px solid #000;box-shadow:0 0 0 2px #7c3f1d,0 0 0 4px #000,0 24px 60px rgba(0,0,0,.6);padding:12px;display:flex;flex-direction:column;gap:10px}
+.tutcv{display:block;width:100%;height:auto;aspect-ratio:16/9;image-rendering:pixelated;background:var(--dk-in);touch-action:pan-y;cursor:grab}
+.tutx{position:absolute;top:18px;right:18px}
+.tutstep{font-family:var(--display);font-size:10px;letter-spacing:.3px;color:var(--dk-mute)}
+.tutbox h2{font-family:var(--display);font-size:15px;margin:0;color:#ffd166;letter-spacing:.3px}
+.tutbox p{margin:0;font-size:13px;line-height:1.5;color:var(--dk-ink);min-height:3em}
+.tutnav{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.tutdots{display:flex;gap:6px}
+.tutdots button{all:unset;box-sizing:border-box;width:10px;height:10px;border:2px solid #000;background:var(--dk-card);cursor:pointer}
+.tutdots button[aria-current="step"]{background:#ffd166}
+.tutdots button:focus-visible{outline:2px solid var(--chain);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){.tutcv{cursor:default}}
 @media (min-width:760px) and (min-aspect-ratio:1/1){
   .certbox{grid-template-columns:auto 230px;align-items:start}
   .certcv{width:min(640px,calc(100vw - 340px),calc((100vh - 64px) * 2 / 3));width:min(640px,calc(100vw - 340px),calc((100dvh - 64px) * 2 / 3))}
@@ -419,6 +435,7 @@ body.modal-open{overflow:hidden}
   <div class="stat"><span class="lbl">Wheel</span><span class="val" id="tier">—</span><span class="sub" id="watchLine">&nbsp;</span>
     <span class="sub" id="bedLine" title="Your bed earns while he sleeps, online or not">&nbsp;</span>
   </div>
+  <button type="button" class="helpbtn" id="helpBtn" aria-haspopup="dialog" aria-controls="tut">How to play</button>
   <button type="button" class="raidchip locked" id="raidChip" hidden aria-haspopup="dialog" aria-controls="lb">raids…</button>
   <button type="button" class="walletbtn" id="walletBtn" hidden aria-haspopup="dialog" aria-controls="walletModal">Connect Wallet</button>
 </header>
@@ -429,14 +446,14 @@ body.modal-open{overflow:hidden}
   <button data-adv="1078">+1 day (1078)</button>
   <button id="grant">grant 50k W</button>
   <button id="night">run a night</button>
-  <button id="sleep" title="Winds the chain's sleep clock past 10 minutes so he counts as asleep (bed income)">nap now</button>
+  <button id="sleep" title="Winds the chain's sleep clock past 90 seconds so he counts as asleep (bed income)">nap now</button>
   <span class="hint" id="nightInfo"></span>
 </div>
 
 <main class="main">
   <div class="roomcol">
     <section class="stage" id="stage">
-      <canvas id="room" width="352" height="240" aria-label="Isometric pixel room with a hamster wheel, a burrow and a bed"></canvas>
+      <canvas id="room" width="352" height="240" aria-label="Isometric pixel den with a hamster wheel and a bed"></canvas>
       <div class="firsthint" id="firstHint" hidden>The wheel earns your watts. Spend them in the shop.</div>
       <div class="itemtool" id="itemTool" hidden role="toolbar" aria-label="Selected item">
         <span class="tname" id="toolName"></span>
@@ -452,7 +469,7 @@ body.modal-open{overflow:hidden}
       <ol class="feedlist" id="feedList" aria-live="polite"></ol>
     </section>
     <div class="invbar" id="invbar">
-      <div class="invhead" id="invHead"><b>YOUR THINGS</b><span id="invHint">tap one to place it</span></div>
+      <div class="invhead" id="invHead"><b>YOUR THINGS</b></div>
       <div class="placing" id="placing" hidden>
         <span class="ptext"><b id="placingName"></b> <span id="placingWhy"></span></span>
         <button id="pFlip" title="Face left/right (F)">↔ Face</button>
@@ -467,23 +484,38 @@ body.modal-open{overflow:hidden}
     <div class="tabs" id="tabs" role="tablist" aria-label="Shop categories"></div>
     <div class="cards" id="cards"></div>
     <div class="nickrow">
-      <label for="nick">Room name</label>
+      <label for="nick">Den name</label>
       <input id="nick" maxlength="20" placeholder="anon" autocomplete="off" spellcheck="false">
       <button id="nickSave">Save</button>
     </div>
     <details><summary>How watts work</summary>
-      <p style="margin-top:6px">Each Squeek block pays every room 10 W times its wheel multiplier, even when you're away. Squeektoshi mostly runs late at night (UTC). Keep this tab open for +20%. Only wheel and bed upgrades change what you earn.</p>
-      <p style="margin-top:6px">After 10 minutes with no block he's asleep, and your bed pays 1.5 W a minute times its multiplier. Slow, but it adds up.</p>
+      <p style="margin-top:6px">Each Squeek block pays every room Watts. When Squeektoshi is asleep, you earn at roughly half the rate. Keep this tab open for +20%.</p>
+      <p style="margin-top:6px">Upgrade your wheel &amp; bed to increase Watts production.</p>
+      <p style="margin-top:6px">Wager your Watts to raid and rob from Dens that are at least 0.7x your balance. You can only raid others when Squeektoshi is running.</p>
+      <p style="margin-top:6px">Raiding becomes more +EV as you raid a much richer player.</p>
+      <p style="margin-top:6px">Being raided is always -EV, being high up on the leaderboard makes you a juicy target.</p>
+      <p style="margin-top:6px">Upgrade your Den to reduce the chances of being raided successfully.</p>
     </details>
   </aside>
 </main>
 
-<footer class="foot">
-  <span>Squeek Den</span>
-  <span>Watts come from Squeek blocks on Sepolia.</span>
-  <span>Squeektoshi runs when he wants to. Nothing here makes him.</span>
-</footer>
 <div class="toasts" id="toasts"></div>
+
+<!-- How to play: five short animated steps, drawn live from the game's own sprites. -->
+<div class="tutmodal" id="tut" hidden>
+  <div class="tutbox" role="dialog" aria-modal="true" aria-labelledby="tutTitle" aria-describedby="tutText">
+    <canvas class="tutcv" id="tutCv" width="192" height="108" aria-hidden="true"></canvas>
+    <button type="button" class="certx tutx" id="tutX" aria-label="Close how to play">✕</button>
+    <div class="tutstep" id="tutStep" aria-live="polite"></div>
+    <h2 id="tutTitle"></h2>
+    <p id="tutText"></p>
+    <div class="tutnav">
+      <button type="button" class="pxbtn alt" id="tutBack">Back</button>
+      <div class="tutdots" id="tutDots"></div>
+      <button type="button" class="pxbtn" id="tutNext">Next</button>
+    </div>
+  </div>
+</div>
 
 <!-- Commemorative certificate: everything inside the canvas is drawn from the cert JSON. -->
 <div class="certmodal" id="certModal" hidden>
@@ -512,7 +544,7 @@ body.modal-open{overflow:hidden}
   </div>
   <div class="lbstate" id="lbState"></div>
   <ol class="lbrows" id="lbRows"></ol>
-  <p class="lbnote">You can raid rooms with at least 70% of your watts, or anyone who raided you in the last 24 hours. 10 raids a day, only while Squeektoshi runs.</p>
+  <p class="lbnote">You can raid dens with at least 70% of your watts, or anyone who raided you in the last 24 hours. 10 raids a day, only while Squeektoshi runs.</p>
 </aside>
 
 <!-- Raid: pick a multiplier and a stake, then roll once on the server. -->
