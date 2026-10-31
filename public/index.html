@@ -77,19 +77,6 @@ h1{font-family:var(--display);font-weight:700;font-size:18px;letter-spacing:.5px
 .stage canvas.placing{cursor:crosshair}
 .firsthint{position:absolute;left:50%;top:14px;transform:translateX(-50%);max-width:calc(100% - 32px);background:color-mix(in srgb,var(--panel) 92%,transparent);color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:12px;text-align:center;pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.25)}
 .firsthint[hidden]{display:none}
-/* wheel duty: a grab zone over the wheel while he sleeps (touch-action:none only here, so the rest of the room still scrolls on phones) */
-.wheelgrab{position:absolute;z-index:3;cursor:grab;touch-action:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;border-radius:50% 50% 10% 10%}
-.wheelgrab[hidden]{display:none}
-.wheelgrab:hover{box-shadow:inset 0 0 0 1px rgba(255,209,102,.28)}
-.wheelgrab.on{cursor:grabbing;box-shadow:none}
-.wheelgrab:focus-visible{outline:2px dashed var(--squeek);outline-offset:2px}
-.dutyhint{position:absolute;z-index:4;transform:translate(-50%,-100%);white-space:nowrap;background:color-mix(in srgb,var(--panel) 92%,transparent);color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:5px 12px;font-size:12px;pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.25)}
-.dutyhint[hidden]{display:none}
-.duty{display:flex;flex-direction:column;margin-top:2px}
-.duty[hidden],.duty .chip[hidden]{display:none}
-.bar.thin.dutybar{min-width:120px}
-.bar.thin.dutybar i{background:var(--chain)}
-.duty.on .bar i{box-shadow:0 0 6px var(--chain)}
 .itemtool{position:absolute;z-index:5;display:flex;align-items:center;gap:4px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);transform:translate(-50%,-100%);white-space:nowrap}
 .itemtool[hidden]{display:none}
 .itemtool .tname{font-size:11px;color:var(--muted);padding:0 4px;max-width:120px;overflow:hidden;text-overflow:ellipsis}
@@ -219,10 +206,7 @@ body.modal-open{overflow:hidden}
     <button type="button" class="certbtn" id="certBtn" hidden>Claim your certificate</button>
   </div>
   <div class="stat"><span class="lbl">Wheel</span><span class="val" id="tier">—</span><span class="sub" id="watchLine">&nbsp;</span>
-    <span class="duty" id="duty" title="Wheel duty: minutes you can spin the wheel yourself today while he sleeps (UTC day)" hidden>
-      <span class="sub"><span id="dutyLine"></span><span class="chip on" id="dutyRate" hidden></span></span>
-      <span class="bar thin dutybar"><i id="dutyProg"></i></span>
-    </span>
+    <span class="sub" id="bedLine" title="Bed income: while he sleeps (no block for 10 minutes) every room earns from its bed, online or not">&nbsp;</span>
   </div>
 </header>
 <div class="demobar" id="demo" hidden>
@@ -232,7 +216,7 @@ body.modal-open{overflow:hidden}
   <button data-adv="1078">+1 day (1078)</button>
   <button id="grant">grant 50k W</button>
   <button id="night">run a night</button>
-  <button id="sleep" title="Winds the chain's sleep clock past 10 minutes so wheel duty opens">nap now</button>
+  <button id="sleep" title="Winds the chain's sleep clock past 10 minutes so he counts as asleep (bed income)">nap now</button>
   <span class="hint" id="nightInfo"></span>
 </div>
 
@@ -241,8 +225,6 @@ body.modal-open{overflow:hidden}
     <section class="stage" id="stage">
       <canvas id="room" width="320" height="192" aria-label="Pixel room with a hamster wheel and a burrow"></canvas>
       <div class="firsthint" id="firstHint" hidden>The wheel pays for everything. Buy your first thing from the shop.</div>
-      <div class="wheelgrab" id="wheelGrab" role="button" tabindex="0" aria-label="Wheel duty: press and hold to spin the wheel while he sleeps (or hold Space)" title="Hold to spin (or hold Space)" hidden></div>
-      <div class="dutyhint" id="dutyHint" role="status" hidden>He's asleep. Grab the wheel — quietly.</div>
       <div class="itemtool" id="itemTool" hidden role="toolbar" aria-label="Selected item">
         <span class="tname" id="toolName"></span>
         <button data-act="move" title="Move (or drag it)">Move</button>
@@ -273,8 +255,8 @@ body.modal-open{overflow:hidden}
       <button id="nickSave">Save</button>
     </div>
     <details><summary>How watts work</summary>
-      <p style="margin-top:6px">Every settled Squeek block pays every room 10 W times your wheel multiplier, whether you are here or not. Squeektoshi runs when he feels like it, mostly late at night (UTC), and naps the rest of the day. Keeping this page open adds a small watching bonus. Wheel upgrades are the only things that change how much you earn; everything else is for the room.</p>
-      <p style="margin-top:6px">Wheel duty: once no block has settled for 10 minutes, you can spin the wheel yourself (press and hold it, or hold Space) at a fifth of his rate, up to 2 hours per UTC day. He sleeps through it.</p>
+      <p style="margin-top:6px">Every settled Squeek block pays every room 10 W times your wheel multiplier, whether you are here or not. Squeektoshi runs when he feels like it, mostly late at night (UTC), and naps the rest of the day. Keeping this page open adds a small watching bonus. Wheel and bed upgrades are the only things that change how much you earn; everything else is for the room.</p>
+      <p style="margin-top:6px">Bed income: once no block has settled for 10 minutes he counts as asleep, and every room earns 1.5 W a minute times its bed multiplier (plus the watching bonus), online or not. It is much slower than the wheel, but it never stops while he naps.</p>
     </details>
   </aside>
 </main>

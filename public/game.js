@@ -343,7 +343,8 @@ const S = {
   loaded: false, demo: false, offline: false, skew: 0,
   height: null, chain: null, hamster: null, live: null, api: "https://api.squeekchain.com/v1",
   night: null, balance: null, catalog: new Map(), me: null, watching: false,
-  spin: null, // server's wheel-duty view: { idle } = no settled block for MANUAL_IDLE_AFTER_MS
+  configured: false, // GET /api/config (balance, room, catalog) has landed
+  idle: false, // server's view: asleep by the chain (no settled block for IDLE_AFTER_MS): bed income flows
   meAt: 0, // serverTime of the newest `me` applied (drops an older snapshot that lands late)
 };
 const params = new URLSearchParams(location.search);
@@ -366,7 +367,32 @@ function liveStatus() {
 }
 
 // ---------- network ----------
+// Static rules (balance, room geometry, catalog) come once from /api/config; the 5 s poll of
+// /api/state carries only what changes. Retries with backoff until the server answers.
+async function loadConfig() {
+  for (let wait = 1000; ; wait = Math.min(wait * 2, 15_000)) {
+    try {
+      const r = await fetch("/api/config", { cache: "no-store" });
+      if (!r.ok) throw new Error(String(r.status));
+      applyConfig(await r.json());
+      return;
+    } catch {
+      S.offline = true;
+      renderHud();
+      await new Promise((res) => setTimeout(res, wait));
+    }
+  }
+}
+function applyConfig(j) {
+  S.demo = !!j.demo;
+  if (j.api) S.api = j.api;
+  if (j.balance) S.balance = j.balance;
+  if (j.room) applyRoom(j.room);
+  if (Array.isArray(j.catalog)) S.catalog = new Map(j.catalog.map((i) => [i.id, i]));
+  S.configured = true;
+}
 async function refresh() {
+  if (!S.configured) return;
   try {
     const r = await fetch(`/api/state?token=${encodeURIComponent(token)}`, { cache: "no-store" });
     if (!r.ok) throw new Error(String(r.status));
@@ -380,24 +406,19 @@ async function refresh() {
 function applyState(j) {
   const first = !S.loaded;
   S.loaded = true;
-  S.demo = !!j.demo;
   S.height = j.height;
   S.chain = j.chain;
   S.hamster = j.hamster;
   S.night = j.night;
-  S.spin = j.spin || null;
-  S.balance = j.balance || S.balance;
-  if (j.api) S.api = j.api;
+  S.idle = j.idle === true;
   if (typeof j.serverTime === "number") S.skew = j.serverTime - Date.now();
-  if (j.room) applyRoom(j.room);
-  if (Array.isArray(j.catalog) && (first || j.catalog.length !== S.catalog.size)) S.catalog = new Map(j.catalog.map((i) => [i.id, i]));
-  if (j.me) applyMe(j.me, first, { at: j.serverTime });
+  if (j.me) applyMe(j.me, first, { at: j.serverTime, soft: S.idle });
   else if (j.meError) toast(j.meError === "server_full" ? "The server is full right now." : `Could not load your room (${j.meError}).`, "err");
   if (first) { ham.init = false; liveFetch(); }
 }
 // Every server response that carries `me` lands here: the UI always re-renders from the server's
 // copy (no optimistic updates).
-// opts.at: the response's serverTime (snapshots and wheel-duty ticks), opts.soft: a wheel-duty credit.
+// opts.at: the response's serverTime (snapshots), opts.soft: credit came while he sleeps (bed income).
 function applyMe(me, first = false, opts = {}) {
   if (!me) return;
   if (typeof opts.at === "number") { if (opts.at < S.meAt) return; S.meAt = opts.at; }
@@ -441,7 +462,7 @@ async function beat() {
 const meter = { shown: 0, target: 0, lastText: "", glowUntil: 0 };
 const fmt = (n) => Math.round(n).toLocaleString("en-US");
 let cuckooAt = 0; // the cuckoo clock pops its bird for ~2 s after each accrual
-// soft: a wheel-duty tick (a watt or two every few seconds): shorter glow, one spark, no cuckoo.
+// soft: bed income (a watt or two now and then while he sleeps): shorter glow, one spark, no cuckoo.
 function onAccrual(delta, soft = false) {
   if (!soft) cuckooAt = performance.now();
   meter.glowUntil = performance.now() + (soft ? 900 : 1600);
@@ -474,7 +495,7 @@ function renderHud() {
     const watching = S.watching || me.watching;
     const bonus = Math.max(me.bonusPct || 0, (S.balance && S.balance.LIVE_BONUS_PCT) || 120) - 100; // me.bonusPct lags the first heartbeat
     $("watchLine").innerHTML = watching ? `watching<span class="chip on">+${bonus}%</span>` : "&nbsp;";
-    renderDutyHud(me);
+    renderBedLine(me, watching ? 100 + bonus : 100);
   }
   stepMeter(0); // paints the meter text even when rAF is throttled
   $("demo").hidden = !S.demo;
@@ -484,6 +505,15 @@ function renderHud() {
     $("nightInfo").textContent = `night running · ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} left`;
     nb.disabled = true;
   } else { $("nightInfo").textContent = ""; nb.disabled = false; }
+}
+// bed T{n} · mult; while he sleeps (by the chain) also the live rate it is paying right now
+function renderBedLine(me, bonusPct) {
+  const el = $("bedLine");
+  const mult = (me.bedMultPct || 100) / 100;
+  let html = `bed T${me.bedTier | 0} · ${mult.toFixed(2)}×`;
+  if (S.idle) html += `<span class="chip on">${+((me.bedWattsPerMin || 0) * bonusPct / 100).toFixed(2)} W/min</span>`;
+  el.innerHTML = html;
+  el.title = S.idle ? "He's asleep: your bed is earning (every room earns, online or not)" : "Bed income: while he sleeps (no block for 10 minutes) every room earns from its bed, online or not";
 }
 function stepMeter(dt) {
   const d = meter.target - meter.shown;
@@ -519,7 +549,7 @@ $("night").onclick = async () => {
 };
 $("sleep").onclick = async () => {
   const r = await post("/api/dev/sleep", {});
-  if (r.ok) toast("The chain has been quiet for 11 minutes. Wheel duty is open.");
+  if (r.ok) toast("The chain has been quiet for 11 minutes. He's asleep: beds are earning.");
   else toast(r.j.error === "night_running" ? "A night is running. Wait for it to end." : `nap failed: ${r.j.error || r.status}`);
   refresh();
 };
@@ -572,133 +602,12 @@ function stepHamster(dt, st) {
 const wheel = { rpm: 0, angle: 0 };
 const MAX_VIS_RPM = 160; // keeps 6 spokes under ~16 degrees per frame so the spin never reads backwards
 function stepWheel(dt, st) {
-  if (ham.mode === "sleep" && (duty.vel > 0 || duty.hold || duty.key)) {
-    wheel.rpm = duty.vel * DUTY_MAX_RPM; // he's in the burrow: the player's hand drives the wheel
-  } else {
-    const target = ham.mode === "run" ? clamp(st.rpm || 30, 20, MAX_VIS_RPM) : 0;
-    const tau = target > wheel.rpm ? 450 : 900; // spin up quickly, coast down
-    wheel.rpm += (target - wheel.rpm) * (1 - Math.exp(-dt / tau));
-    if (wheel.rpm < 0.5 && target === 0) wheel.rpm = 0;
-  }
+  const target = ham.mode === "run" ? clamp(st.rpm || 30, 20, MAX_VIS_RPM) : 0;
+  const tau = target > wheel.rpm ? 450 : 900; // spin up quickly, coast down
+  wheel.rpm += (target - wheel.rpm) * (1 - Math.exp(-dt / tau));
+  if (wheel.rpm < 0.5 && target === 0) wheel.rpm = 0;
   wheel.angle = (wheel.angle + (wheel.rpm / 60000) * dt) % 1; // revolutions
 }
-
-// ---------- wheel duty: the player spins the wheel while he sleeps ----------
-// Open only while the room shows him asleep in the burrow AND the server says the chain has been
-// quiet for MANUAL_IDLE_AFTER_MS (the server judges that; this page only mirrors it). He sleeps
-// through it: nothing here touches the hamster. While the wheel turns above DUTY_MIN_VEL the page
-// sends a tick every DUTY_TICK_MS; the server credits the real time between ticks.
-const DUTY_MAX_RPM = 60, DUTY_MIN_VEL = 0.3, DUTY_TICK_MS = 5000;
-const DUTY_RAMP_TAU = 500, DUTY_COAST_TAU = 550; // ~1.5 s to full speed, ~2 s to coast down
-const duty = { hold: false, key: false, vel: 0, spinning: false, tickAt: 0, busy: false, avail: false, hintT: 0 };
-const grabEl = $("wheelGrab"), dutyHintEl = $("dutyHint");
-const ss = { get(k) { try { return sessionStorage.getItem(k); } catch { return null; } }, set(k, v) { try { sessionStorage.setItem(k, v); } catch {} } };
-const dutyCapLeft = () => (S.me && S.me.manual ? S.me.manual.msCapLeft : 0);
-function dutyAvailable(st) {
-  return S.loaded && !S.offline && !!S.me && !!S.spin && S.spin.idle === true && !st.active && ham.mode === "sleep"
-    && !P.mode && !certOpen() && dutyCapLeft() > 0 && document.visibilityState === "visible";
-}
-function grabDuty(how) {
-  duty[how] = true;
-  duty.vel = Math.max(duty.vel, clamp(wheel.rpm / DUTY_MAX_RPM, 0, 1)); // catch a wheel that is still turning
-  grabEl.classList.add("on");
-  hideDutyHint();
-}
-function releaseDuty(how) {
-  if (how) duty[how] = false; else duty.hold = duty.key = false;
-  if (!duty.hold && !duty.key) grabEl.classList.remove("on");
-}
-function stepDuty(dt, st) {
-  const avail = dutyAvailable(st);
-  if (avail !== duty.avail) {
-    const engaged = duty.hold || duty.key || duty.spinning;
-    duty.avail = avail;
-    if (!avail) {
-      releaseDuty();
-      hideDutyHint();
-      if (engaged) {
-        if (st.active || !(S.spin && S.spin.idle)) toast("Squeektoshi's got it from here.");
-        else if (S.me && dutyCapLeft() <= 0) toast("That's all the wheel duty for today. It resets at 00:00 UTC.");
-      }
-    } else showDutyHint();
-    positionWheelGrab();
-    renderHud();
-  }
-  if (avail && (duty.hold || duty.key)) duty.vel += (1 - duty.vel) * (1 - Math.exp(-dt / DUTY_RAMP_TAU));
-  else duty.vel *= Math.exp(-dt / DUTY_COAST_TAU);
-  if (duty.vel < 0.005) duty.vel = 0;
-  const spinning = avail && duty.vel > DUTY_MIN_VEL;
-  if (spinning !== duty.spinning) {
-    duty.spinning = spinning;
-    if (avail) sendSpin(spinning); // a new spin restarts the server's clock; a stop credits the tail
-    renderHud();
-  } else if (spinning && performance.now() - duty.tickAt >= DUTY_TICK_MS) sendSpin(false);
-}
-async function sendSpin(restart) {
-  if (duty.busy) return;
-  duty.busy = true;
-  duty.tickAt = performance.now();
-  const r = await post("/api/spin", restart ? { restart: true } : {});
-  duty.busy = false;
-  if (r.ok && r.j.me) applyMe(r.j.me, false, { at: r.j.serverTime, soft: true });
-  else if (r.j && r.j.error === "hamster_awake") S.spin = { ...(S.spin || {}), idle: false }; // a block landed: stepDuty closes it
-}
-// the grab zone sits over the wheel (and its stand) only while wheel duty is open
-function positionWheelGrab() {
-  grabEl.hidden = !duty.avail;
-  const cr = view.getBoundingClientRect(), sr = stage.getBoundingClientRect(), k = cr.width / LW;
-  if (!cr.width) return;
-  const x0 = WHEEL.cx - WHEEL.r - 2, x1 = WHEEL.cx + WHEEL.r + 2;
-  const y0 = Math.max(WHEEL.cy - WHEEL.r - 1, (ROOM.WALL_BOTTOM + 1) * CELL), y1 = FLOOR_Y + 2; // stays clear of wall decor
-  const ox = cr.left - sr.left, oy = cr.top - sr.top;
-  if (duty.avail) Object.assign(grabEl.style, { left: `${Math.round(ox + x0 * k)}px`, top: `${Math.round(oy + y0 * k)}px`, width: `${Math.round((x1 - x0) * k)}px`, height: `${Math.round((y1 - y0) * k)}px` });
-  if (!dutyHintEl.hidden) {
-    const tw = dutyHintEl.offsetWidth;
-    const left = clamp(ox + WHEEL.cx * k, tw / 2 + 4, Math.max(tw / 2 + 4, sr.width - tw / 2 - 4));
-    dutyHintEl.style.left = `${Math.round(left)}px`;
-    dutyHintEl.style.top = `${Math.round(oy + y0 * k - 6)}px`;
-  }
-}
-function showDutyHint() { // once per browser session
-  if (ss.get("sr_duty_hint")) return;
-  ss.set("sr_duty_hint", "1");
-  dutyHintEl.hidden = false;
-  positionWheelGrab();
-  clearTimeout(duty.hintT);
-  duty.hintT = setTimeout(hideDutyHint, 9000);
-}
-function hideDutyHint() { clearTimeout(duty.hintT); dutyHintEl.hidden = true; }
-function renderDutyHud(me) {
-  const m = me.manual, el = $("duty");
-  const show = !!m && (duty.avail || m.msUsedToday > 0);
-  el.hidden = !show;
-  if (!show) return;
-  const used = m.msUsedToday / 60000, cap = m.capMs / 60000;
-  $("dutyLine").textContent = `wheel duty ${used < 10 ? used.toFixed(1) : Math.floor(used)}/${cap} min`;
-  const rate = $("dutyRate");
-  rate.hidden = !duty.spinning;
-  rate.textContent = `${+m.wattsPerMin.toFixed(2)} W/min`;
-  $("dutyProg").style.width = clamp((m.msUsedToday / m.capMs) * 100, 0, 100).toFixed(2) + "%";
-  el.classList.toggle("on", duty.spinning);
-}
-grabEl.addEventListener("pointerdown", (e) => {
-  if ((e.pointerType === "mouse" && e.button !== 0) || !duty.avail) return;
-  e.preventDefault();
-  try { grabEl.setPointerCapture(e.pointerId); } catch {}
-  grabDuty("hold");
-});
-for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) grabEl.addEventListener(ev, () => releaseDuty("hold"));
-grabEl.addEventListener("contextmenu", (e) => e.preventDefault()); // long-press on phones
-const isSpace = (e) => e.code === "Space" || e.key === " ";
-addEventListener("keydown", (e) => {
-  if (!isSpace(e) || !duty.avail || certOpen()) return;
-  const t = e.target;
-  if (t !== grabEl && t && t.closest && t.closest("input,textarea,select,button,a,summary,[contenteditable]")) return;
-  e.preventDefault(); // no page scroll while you hold it
-  if (!duty.key) grabDuty("key");
-});
-addEventListener("keyup", (e) => { if (isSpace(e) && duty.key) { e.preventDefault(); releaseDuty("key"); } });
-addEventListener("blur", () => releaseDuty());
 
 // ---------- effects: watt sparks + sleep Zs ----------
 const sparks = [], zs = [];
@@ -719,9 +628,6 @@ function stepFx(dt, st) {
   if (st.active && ham.mode === "run") {
     sparkClock -= dt;
     if (sparkClock <= 0) { spawnSpark(); sparkClock = 650 - 300 * clamp(st.speed / 1600, 0, 1) + Math.random() * 250; }
-  } else if (duty.spinning) { // wheel duty: a slow drip of sparks
-    sparkClock -= dt;
-    if (sparkClock <= 0) { spawnSpark(); sparkClock = 1600 + Math.random() * 900; }
   }
   for (let i = sparks.length - 1; i >= 0; i--) {
     const s = sparks[i];
@@ -789,8 +695,8 @@ function fit() {
   view.style.width = (LW * s) / dpr + "px";
   view.style.height = (LH * s) / dpr + "px";
 }
-new ResizeObserver(() => { fit(); positionTool(); positionWheelGrab(); }).observe(stage);
-addEventListener("resize", () => { fit(); positionTool(); positionWheelGrab(); });
+new ResizeObserver(() => { fit(); positionTool(); }).observe(stage);
+addEventListener("resize", () => { fit(); positionTool(); });
 (function watchDpr() { const mq = matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`); mq.addEventListener("change", () => { fit(); watchDpr(); }, { once: true }); })();
 
 function itemsIn(zone) {
@@ -918,7 +824,6 @@ let last = performance.now(), acc = 0, acc10 = 0, hudClock = 0;
 function step(dt) {
   const st = liveStatus();
   stepHamster(dt, st);
-  stepDuty(dt, st);
   stepWheel(dt, st);
   stepFx(dt, st);
   stepMeter(dt);
@@ -994,8 +899,16 @@ function errorWords(j, ctx = {}) {
   const e = (j && j.error) || "network";
   switch (e) {
     case "poor": return `Need ${fmt(j.need || 0)} more watts`;
-    case "wrong_tier": return ctx.it && ctx.it.tier ? `Install the T${ctx.it.tier - 1} wheel upgrade first` : "Wheel upgrades go in order";
-    case "already_owned": return ctx.it && ctx.it.cat === "wheel" ? "Your wheel already has that" : "You already own that";
+    case "wrong_tier": {
+      const it = ctx.it, prev = it && it.tier ? `T${it.tier - 1}` : "";
+      if (it && it.cat === "bed") return prev ? `Get the ${prev} bed first` : "Beds go in order";
+      if (it && it.cat === "room") return prev ? `Build the ${prev} room first` : "Room materials go in order";
+      return prev ? `Install the ${prev} wheel upgrade first` : "Wheel upgrades go in order";
+    }
+    case "already_owned": {
+      const cat = ctx.it && ctx.it.cat;
+      return cat === "wheel" ? "Your wheel already has that" : cat === "bed" ? "Your bed is already that good" : cat === "room" ? "Your room is already built of that (or better)" : "You already own that";
+    }
     case "reserved": return (ctx.which || whichReserved(ctx.it, ctx.x)) === "burrow" ? "That's the burrow. Squeektoshi sleeps there" : "That spot is the wheel's";
     case "overlap": return ctx.with ? `The ${ctx.with.name} is already there` : "Something is already there";
     case "out_of_bounds": case "oob": return ctx.it && ctx.it.zone === "wall" ? "Wall decor has to hang on the wall" : "That doesn't fit there";
@@ -1238,6 +1151,9 @@ function thumbPaint(it) {
     if (sprite(tg, "wheel", 0, 0, 0, { angle: 0, tier: it.tier })) sprite(tg, it.sprite, 0, 0, 0, { angle: 0, tier: it.tier });
     else tg.drawImage(placeholderItem(it, 48, 48), 0, 1);
   }];
+  if (it.cat === "bed" || it.cat === "room") return [48, 48, () => { // tier ladders: own art lands with the iso room
+    if (!sprite(tg, it.sprite, 0, 0, 0, { tier: it.tier })) tg.drawImage(placeholderItem(it, 48, 48), 0, 0);
+  }];
   if (it.cat === "wallpaper" || it.cat === "floor") return [32, 32, () => {
     if (hasSprite(it.sprite)) { for (let y = 0; y < 32; y += 16) for (let x = 0; x < 32; x += 16) sprite(tg, it.sprite, 0, x, y, {}); }
     else tg.drawImage(it.cat === "floor" ? floorCanvas(it.id) : wallpaperCanvas(it.id), 0, 0, 32, 32, 0, 0, 32, 32);
@@ -1270,6 +1186,8 @@ function tickThumbs() {
 // ---------- shop ----------
 const TABS = [
   { id: "wheel", label: "Wheel", cats: ["wheel"] },
+  { id: "bed", label: "Bed", cats: ["bed"] },
+  { id: "room", label: "Room", cats: ["room"] },
   { id: "decor", label: "Decor", cats: ["furniture", "wall"] },
   { id: "rugs", label: "Rugs", cats: ["rug"] },
   { id: "styles", label: "Walls & Floors", cats: ["wallpaper", "floor"] },
@@ -1318,16 +1236,31 @@ function buildCards() {
   }
   updateCards();
 }
+// Tier ladders (bought strictly in order; buying sets me[field]). Same order rules as the server.
+const DEFAULT_MULT = [100, 125, 160, 200, 260, 350];
+const TIERED = {
+  wheel: { field: "wheelTier", mults: "WHEEL_MULT_PCT", unit: "watts per block", done: "Installed" },
+  bed: { field: "bedTier", mults: "BED_MULT_PCT", unit: "bed watts while he sleeps", done: "Installed" },
+  room: { field: "roomTier", done: "Built" }, // no multiplier: the material is the point
+};
+const roomMaterial = (tier) => (tier > 0 && (S.catalog.get(`room_t${tier}`) || {}).material) || "Wood";
+function tierCardState(it, me, poor, need) {
+  const t = TIERED[it.cat], tier = me ? me[t.field] | 0 : 0;
+  let cur, to, doneNote;
+  if (t.mults) {
+    const mult = (S.balance && S.balance[t.mults]) || DEFAULT_MULT;
+    cur = `${(mult[tier] / 100).toFixed(2)}×`; to = `${(it.multPct / 100).toFixed(2)}×`; doneNote = `${to} ${t.unit}`;
+  } else {
+    cur = roomMaterial(tier); to = it.material || it.name; doneNote = tier === it.tier ? `your room is ${to}` : `${to} · built`;
+  }
+  if (it.tier <= tier) return { kind: "owned", label: t.done, disabled: true, note: doneNote };
+  if (it.tier === tier + 1) return { kind: "upgrade", label: "Upgrade", poor, need, note: `${cur} → ${to}`, up: true };
+  return { kind: "locked", label: `After T${it.tier - 1}`, disabled: true, note: `→ ${to}` };
+}
 function cardState(it, me) {
   const watts = me ? me.watts : 0, owned = me ? me.owned[it.id] || 0 : 0;
   const poor = watts < it.price, need = it.price - watts;
-  if (it.cat === "wheel") {
-    const tier = me ? me.wheelTier : 0, mult = (S.balance && S.balance.WHEEL_MULT_PCT) || [100, 125, 160, 200, 260, 350];
-    const to = `${(it.multPct / 100).toFixed(2)}×`;
-    if (it.tier <= tier) return { kind: "owned", label: "Installed", disabled: true, note: `${to} watts per block` };
-    if (it.tier === tier + 1) return { kind: "upgrade", label: "Upgrade", poor, need, note: `${(mult[tier] / 100).toFixed(2)}× → ${to}`, up: true };
-    return { kind: "locked", label: `After T${it.tier - 1}`, disabled: true, note: `→ ${to}` };
-  }
+  if (Object.hasOwn(TIERED, it.cat)) return tierCardState(it, me, poor, need);
   if (!it.zone) { // wallpaper, flooring, skins: buy once, then equip
     const equipped = me && (it.cat === "skin" ? me.skin : it.cat === "wallpaper" ? me.wallpaper : me.floor) === it.id;
     if (owned) return equipped ? { kind: "equipped", label: "In use", disabled: true, note: "equipped", cur: true } : { kind: "equip", label: "Equip", alt: true, note: "owned" };
@@ -1380,6 +1313,8 @@ async function cardAction(c) {
     applyMe(r.j.me);
     spendFeedback(c, it.price);
     if (it.cat === "wheel") toast(`${it.name} installed: ${(it.multPct / 100).toFixed(2)}× watts per block`, "ok");
+    else if (it.cat === "bed") toast(`${it.name} installed: ${(it.multPct / 100).toFixed(2)}× bed watts while he sleeps`, "ok");
+    else if (it.cat === "room") toast(`Your room is now ${it.material || it.name}`, "ok");
     else if (!it.zone) await equip(it); // a new wallpaper / floor / skin goes straight on
     else enterPlace(it.id); // a new placeable goes straight into your hand
   } finally {
@@ -1815,16 +1750,18 @@ $("certShare").onclick = async () => {
 };
 
 // debug handle for the browser console / verification
-window.__squeekroom = { S, ham, wheel, duty, sparks, meter, liveStatus, tintAt, P, checkSpot, enterPlace, select, get selPid() { return selPid; }, get FX() { return FX; },
+window.__squeekroom = { S, ham, wheel, sparks, meter, liveStatus, tintAt, P, checkSpot, enterPlace, select, get selPid() { return selPid; }, get FX() { return FX; },
   renderNow() { const st = liveStatus(); tick10(); render(st); }, // paints one frame even when rAF is paused (hidden tab)
   renderCert, openCert, closeCert, certLeftWords, get cert() { return certUi.cert; } };
 
 fit();
 renderHud();
-refresh().then(beat);
-setInterval(refresh, 5000);
-setInterval(liveFetch, 10000);
-setInterval(beat, 30000);
+loadConfig().then(() => {
+  refresh().then(beat);
+  setInterval(refresh, 5000);
+  setInterval(liveFetch, 10000);
+  setInterval(beat, 30000);
+});
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { beat(); refresh(); } });
 requestAnimationFrame((t) => { last = t; requestAnimationFrame(loop); });
 })();

@@ -1,6 +1,7 @@
 // Squeekroom: a cozy pixel room with a hamster on a wheel. The wheel is the real Squeektoshi:
-// every settled Squeek block generates watts for EVERY player, online or not (true idle).
-// Watts buy cosmetics; wheel upgrades are the only items that raise generation.
+// every settled Squeek block generates watts for EVERY player, online or not (true idle), and while
+// he sleeps (no settled block for a while) every room earns a slower trickle from its bed.
+// Watts buy cosmetics; wheel and bed upgrades are the only items that raise generation.
 // Zero dependencies. Node 18+ (uses global fetch).
 //
 //   node server.js            live mode: settled height from SqueekCore.state() on Sepolia
@@ -42,12 +43,13 @@ const BALANCE = {
   WELCOME_WATTS: 400,
   CERT_LIFETIME_WATTS: 250_000,
   CERT_ACTIVE_DAYS: 7,
-  // Wheel duty: while Squeektoshi sleeps the player may spin the wheel by hand.
-  MANUAL_WATTS_PER_MIN: 15, // tier 0; WHEEL_MULT_PCT applies. 0.2x his ~75 W/min (1.25 W/s) while settling
-  MANUAL_DAILY_CAP_MIN: 120, // credited minutes per UTC day
-  MANUAL_IDLE_AFTER_MS: 600_000, // allowed only when no settled block arrived for 10 min (judged by the chain)
-  MANUAL_TICK_MAX_MS: 10_000, // one tick credits at most this much time
-  MANUAL_TICK_MIN_MS: 2_000, // ticks closer than this are no-ops
+  // He's asleep by the chain when no settled block arrived for this long.
+  IDLE_AFTER_MS: 600_000,
+  // Bed income: while he sleeps, every room earns BED_RATE_PER_MIN x bed tier multiplier x watching
+  // bonus, online or not. Credited from the poller by elapsed time (exact integers via a carry).
+  BED_RATE_PER_MIN: 1.5, // tier 0 (must be a multiple of 0.1: the math runs in tenths of a watt)
+  BED_MULT_PCT: [100, 125, 160, 200, 260, 350], // bedTier 0..5
+  BED_TICK_MAX_MS: 60_000, // one poller tick credits at most this much time (no catch-up after downtime)
 };
 
 // ---------- room grid ----------
@@ -71,15 +73,29 @@ for (const [a, b] of Object.values(ROOM.RESERVED)) for (let c = a; c <= b; c++) 
 // w/h are in cells; zone is "floor" | "wall" | "rug" for placeables, null otherwise.
 const style = (id, name, cat, price) => ({ id, name, cat, price, w: 0, h: 0, zone: null, sprite: id });
 const wheel = (tier, name, price) => ({ id: `wheel_t${tier}`, name, cat: "wheel", price, w: 0, h: 0, zone: null, sprite: `wheel_t${tier}`, tier, multPct: BALANCE.WHEEL_MULT_PCT[tier] });
+const bed = (tier, name, price) => ({ id: `bed_t${tier}`, name, cat: "bed", price, w: 0, h: 0, zone: null, sprite: `bed_t${tier}`, tier, multPct: BALANCE.BED_MULT_PCT[tier] });
+const roomMat = (tier, material, price) => ({ id: `room_t${tier}`, name: `${material} Room`, cat: "room", price, w: 0, h: 0, zone: null, sprite: `room_t${tier}`, tier, material });
 const place = (id, name, cat, price, w, h, zone, animated) => ({ id, name, cat, price, w, h, zone, sprite: id, ...(animated ? { animated: true } : {}) });
 
 const CATALOG = [
-  // wheel upgrades (strictly in order; the only items that change generation)
+  // wheel upgrades (strictly in order; with beds, the only items that change generation)
   wheel(1, "Oiled Bearings", 5_000),
   wheel(2, "Copper Dynamo", 18_000),
   wheel(3, "Flywheel Hub", 50_000),
   wheel(4, "Superconductor Rim", 140_000),
   wheel(5, "Squeektoshi Prime Wheel", 400_000),
+  // beds (strictly in order; raise the income while he sleeps). Tier 0 is the free straw mat.
+  bed(1, "Teacup Nest", 3_000),
+  bed(2, "Memory Foam Pad", 10_000),
+  bed(3, "Canopy Bed", 30_000),
+  bed(4, "Heated Bunk", 80_000),
+  bed(5, "Zero-G Pod", 200_000),
+  // room material (strictly in order). Tier 0 is wood.
+  roomMat(1, "Stone", 10_000),
+  roomMat(2, "Iron", 30_000),
+  roomMat(3, "Silver", 80_000),
+  roomMat(4, "Gold", 200_000),
+  roomMat(5, "Diamond", 450_000),
   // wallpaper (equip one)
   style("wp_plain", "Plain Cream", "wallpaper", 0),
   style("wp_polka", "Polka Dots", "wallpaper", 1_200),
@@ -126,11 +142,18 @@ const CATALOG = [
 ];
 const CATALOG_BY_ID = new Map(CATALOG.map((i) => [i.id, i]));
 const SINGLE_COPY = new Set(["wallpaper", "floor", "skin"]);
+// Tier ladders: bought strictly in order, one copy each; buying sets the player field to the tier.
+const TIER_FIELD = { wheel: "wheelTier", bed: "bedTier", room: "roomTier" };
+const tierField = (cat) => (Object.hasOwn(TIER_FIELD, cat) ? TIER_FIELD[cat] : null);
 const DEFAULTS = { skin: "skin_classic", wallpaper: "wp_plain", floor: "fl_pine" };
 
 // ---------- players ----------
-function newPlayer(height, now = Date.now()) {
+const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
+// Public, non-secret handle for a player (safe to show others; the token never leaves its owner).
+const publicIdFor = (token) => sha256(token).slice(0, 12);
+function newPlayer(height, now = Date.now(), token = null) {
   return {
+    publicId: typeof token === "string" ? publicIdFor(token) : null,
     nick: "anon",
     createdAt: new Date(now).toISOString(),
     lastSeen: now,
@@ -138,6 +161,9 @@ function newPlayer(height, now = Date.now()) {
     watts: BALANCE.WELCOME_WATTS, // welcome grant (not counted as generated)
     lifetimeWatts: 0, // generated by the wheel only
     wheelTier: 0,
+    bedTier: 0,
+    bedFrac: 0, // carried fraction of a bed watt, in 1/BED_FRAC_DEN units
+    roomTier: 0, // 0 = wood
     skin: DEFAULTS.skin,
     wallpaper: DEFAULTS.wallpaper,
     floor: DEFAULTS.floor,
@@ -147,12 +173,17 @@ function newPlayer(height, now = Date.now()) {
     activeDays: 0,
     lastActiveDay: null,
     commemorative: null,
-    // wheel duty (manual spinning while he sleeps)
-    lastSpinAt: 0,
-    manualDay: null, // UTC day manualMsToday belongs to
-    manualMsToday: 0,
-    manualFrac: 0, // carried fraction of a watt, in 1/MANUAL_FRAC_DEN units
   };
+}
+// Bring an older player record up to the current shape (missing fields get their defaults).
+const LEGACY_FIELDS = ["lastSpinAt", "manualDay", "manualMsToday", "manualFrac"]; // wheel duty, removed
+function patchPlayer(p, token) {
+  if (!p.publicId && typeof token === "string") p.publicId = publicIdFor(token);
+  if (!Number.isInteger(p.bedTier)) p.bedTier = 0;
+  if (!Number.isFinite(p.bedFrac)) p.bedFrac = 0;
+  if (!Number.isInteger(p.roomTier)) p.roomTier = 0;
+  for (const k of LEGACY_FIELDS) delete p[k];
+  return p;
 }
 function getPlayer(st, token) {
   return typeof token === "string" && TOKEN_RE.test(token) && Object.hasOwn(st.players, token) ? st.players[token] : null;
@@ -167,7 +198,7 @@ function wattsFor(delta, tier, bonusPct) {
   return Math.round((delta * BALANCE.BASE_WATTS_PER_BLOCK * mult * bonusPct) / 10_000);
 }
 const utcDay = (now) => new Date(now).toISOString().slice(0, 10);
-// Generated watts (wheel or wheel duty): balance + lifetime, and one active day per UTC day.
+// Generated watts (wheel or bed): balance + lifetime, and one active day per UTC day.
 function creditWatts(player, earned, now) {
   player.watts += earned;
   player.lifetimeWatts += earned;
@@ -186,56 +217,44 @@ function accrue(player, delta, now = Date.now()) {
   return earned;
 }
 
-// ---------- wheel duty ----------
-// While the chain is quiet (no settled block for MANUAL_IDLE_AFTER_MS) the player can hand-spin the
-// wheel. The page sends a tick every few seconds while it spins; the server credits real elapsed time
-// between ticks (never an amount from the client), capped per tick and per UTC day.
-const MANUAL_FRAC_DEN = 60_000 * 100; // watts = ms x MANUAL_WATTS_PER_MIN x multPct / DEN (exact integers)
-const MANUAL_CAP_MS = BALANCE.MANUAL_DAILY_CAP_MIN * 60_000;
-const MANUAL_GAP_RESET_MS = 2 * BALANCE.MANUAL_TICK_MAX_MS; // a longer gap restarts the clock (credits 0)
+// ---------- sleep (judged by the chain) ----------
 const CHAIN_FRESH_MS = 120_000; // live mode: no chain reading this recent -> can't tell he's asleep
-// Asleep by the chain: height was observed and has not advanced for MANUAL_IDLE_AFTER_MS.
+// Asleep by the chain: height was observed and has not advanced for IDLE_AFTER_MS.
 // chainReadAt (live mode): when the chain was last read successfully; a stale read is "not idle".
 function chainIdle(lastAdvanceAt, now = Date.now(), chainReadAt = null) {
   if (!Number.isFinite(lastAdvanceAt) || lastAdvanceAt <= 0) return false; // height never observed
   if (chainReadAt != null && !(now - chainReadAt <= CHAIN_FRESH_MS)) return false;
-  return now - lastAdvanceAt >= BALANCE.MANUAL_IDLE_AFTER_MS;
+  return now - lastAdvanceAt >= BALANCE.IDLE_AFTER_MS;
 }
-const manualMult = (player) => BALANCE.WHEEL_MULT_PCT[player.wheelTier | 0] ?? BALANCE.WHEEL_MULT_PCT[0];
-const manualWattsPerMin = (player) => (BALANCE.MANUAL_WATTS_PER_MIN * manualMult(player)) / 100;
-const manualUsedToday = (player, now = Date.now()) => (player.manualDay === utcDay(now) ? player.manualMsToday | 0 : 0);
-// One wheel-duty tick. opts: { restart (the page says a new spin started: credit nothing, start the
-// clock), chainReadAt }. Returns { ok, credited, wattsPerMin, msUsedToday, msCapLeft, idle, nextMs, ... }.
-function applySpin(player, lastAdvanceAt, now = Date.now(), opts = {}) {
-  if (!chainIdle(lastAdvanceAt, now, opts.chainReadAt == null ? null : opts.chainReadAt)) return { ok: false, error: "hamster_awake", idle: false };
-  const day = utcDay(now);
-  if (player.manualDay !== day) {
-    player.manualDay = day;
-    player.manualMsToday = 0;
-  }
-  const out = (credited, extra) => ({
-    ok: true,
-    credited,
-    wattsPerMin: manualWattsPerMin(player),
-    msUsedToday: player.manualMsToday,
-    msCapLeft: Math.max(0, MANUAL_CAP_MS - player.manualMsToday),
-    idle: true,
-    ...extra,
-  });
-  const last = player.lastSpinAt || 0;
-  const since = now - last;
-  if (last > 0 && since >= 0 && since < BALANCE.MANUAL_TICK_MIN_MS) return out(0, { noop: true, nextMs: BALANCE.MANUAL_TICK_MIN_MS - since });
-  player.lastSpinAt = now;
-  player.lastSeen = now;
-  // first tick, a long gap, a clock jump, or a fresh spin: just (re)start the clock
-  if (last <= 0 || since < 0 || since > MANUAL_GAP_RESET_MS || opts.restart === true) return out(0, { started: true, creditedMs: 0, nextMs: BALANCE.MANUAL_TICK_MIN_MS });
-  const ms = Math.min(Math.min(since, BALANCE.MANUAL_TICK_MAX_MS), Math.max(0, MANUAL_CAP_MS - player.manualMsToday));
-  player.manualMsToday += ms;
-  const total = (player.manualFrac || 0) + ms * BALANCE.MANUAL_WATTS_PER_MIN * manualMult(player);
-  const watts = Math.floor(total / MANUAL_FRAC_DEN);
-  player.manualFrac = total - watts * MANUAL_FRAC_DEN;
+
+// ---------- bed income ----------
+// While he sleeps the poller credits every room for real elapsed time (never an amount from a
+// client): ms x rate x bed mult x watching bonus. The rate runs in tenths of a watt per minute so
+// the whole product is an exact integer; the remainder carries in player.bedFrac.
+const BED_RATE_TENTHS = Math.round(BALANCE.BED_RATE_PER_MIN * 10); // 1.5 W/min -> 15
+const BED_FRAC_DEN = 60_000 * 10 * 100 * 100; // ms/min x tenths x multPct x bonusPct
+const bedMultPct = (player) => BALANCE.BED_MULT_PCT[player.bedTier | 0] ?? BALANCE.BED_MULT_PCT[0];
+const bedWattsPerMin = (player) => (BED_RATE_TENTHS * bedMultPct(player)) / 1000; // before the watching bonus
+// Credit one player `ms` of bed time. Returns whole watts credited.
+function bedCredit(player, ms, now = Date.now()) {
+  if (!Number.isFinite(ms) || ms <= 0) return 0;
+  const total = (Number.isFinite(player.bedFrac) ? player.bedFrac : 0) + ms * BED_RATE_TENTHS * bedMultPct(player) * liveBonusPct(player, now);
+  const watts = Math.floor(total / BED_FRAC_DEN);
+  player.bedFrac = total - watts * BED_FRAC_DEN;
   if (watts > 0) creditWatts(player, watts, now);
-  return out(watts, { creditedMs: ms, nextMs: BALANCE.MANUAL_TICK_MIN_MS });
+  return watts;
+}
+// One poller tick. Elapsed time since the previous tick (capped at BED_TICK_MAX_MS) is credited to
+// every player when he is asleep; awake ticks only move the clock. st.lastBedTickAt is not persisted,
+// so a restart never pays for downtime (whether he slept through it is unknown).
+function accrueBed(st, idle, now = Date.now()) {
+  const last = st.lastBedTickAt;
+  st.lastBedTickAt = now;
+  if (!idle || !Number.isFinite(last) || last <= 0 || now <= last) return 0;
+  const ms = Math.min(now - last, BALANCE.BED_TICK_MAX_MS);
+  let total = 0;
+  for (const p of Object.values(st.players)) total += bedCredit(p, ms, now);
+  return total;
 }
 // Credit every player for blocks lastAccruedHeight..newHeight. Also catches up server downtime.
 // A player never earns for blocks settled before they joined.
@@ -257,9 +276,11 @@ function accrueAll(st, newHeight, now = Date.now()) {
 function canBuy(player, itemId) {
   const item = typeof itemId === "string" ? CATALOG_BY_ID.get(itemId) : undefined;
   if (!item) return { ok: false, error: "unknown_item" };
-  if (item.cat === "wheel") {
-    if (item.tier <= player.wheelTier) return { ok: false, error: "already_owned" };
-    if (item.tier !== player.wheelTier + 1) return { ok: false, error: "wrong_tier" };
+  const field = tierField(item.cat);
+  if (field) {
+    const cur = player[field] | 0;
+    if (item.tier <= cur) return { ok: false, error: "already_owned" };
+    if (item.tier !== cur + 1) return { ok: false, error: "wrong_tier" };
   } else if (SINGLE_COPY.has(item.cat) && (player.owned[item.id] || 0) > 0) {
     return { ok: false, error: "already_owned" };
   }
@@ -272,7 +293,8 @@ function applyBuy(player, itemId) {
   const item = c.item;
   player.watts -= item.price;
   player.owned[item.id] = (player.owned[item.id] || 0) + 1;
-  if (item.cat === "wheel") player.wheelTier = item.tier;
+  const field = tierField(item.cat);
+  if (field) player[field] = item.tier;
   return { ok: true, item };
 }
 
@@ -324,7 +346,6 @@ function heartbeat(player, now = Date.now()) {
 function certEligible(player) {
   return player.lifetimeWatts >= BALANCE.CERT_LIFETIME_WATTS && player.activeDays >= BALANCE.CERT_ACTIVE_DAYS;
 }
-const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
 // Idempotent: a re-claim returns the stored certificate unchanged.
 function claimCommemorative(st, token, now = Date.now()) {
   const p = getPlayer(st, token);
@@ -361,7 +382,8 @@ let state = {
   startHeight: null, // chain block height when the room server was born
   height: null, // settled Squeek block height (12 confirmations)
   lastAccruedHeight: null, // every player has been credited through this height
-  lastAdvanceAt: null, // server ms when the settled height last advanced (wheel duty's sleep clock)
+  lastAdvanceAt: null, // server ms when the settled height last advanced (the sleep clock)
+  lastBedTickAt: null, // server ms of the last bed-income tick (reset on every boot: no catch-up)
   chain: null, // last SqueekCore.state() read
   hamster: null, // live reading (from the API, when reachable; faked in demo)
   lastError: null,
@@ -371,15 +393,22 @@ let state = {
   players: {},
 };
 
+// Bring a freshly read state (any older version) up to the current shape.
+function patchState(st, now = Date.now()) {
+  if (!st.players || typeof st.players !== "object") st.players = {};
+  if (st.lastAccruedHeight == null && st.height != null) st.lastAccruedHeight = st.height;
+  // a state file without a sleep clock: assume the chain just moved (he counts as asleep 10 min later)
+  if (!Number.isFinite(st.lastAdvanceAt) && st.height != null) st.lastAdvanceAt = now;
+  st.lastBedTickAt = null; // bed income never pays for the time the server was down
+  for (const [token, p] of Object.entries(st.players)) if (p && typeof p === "object") patchPlayer(p, token);
+  return st;
+}
 function load() {
   try {
     const raw = fs.readFileSync(DATA_FILE, "utf8");
     state = { ...state, ...JSON.parse(raw) };
   } catch {}
-  if (!state.players || typeof state.players !== "object") state.players = {};
-  if (state.lastAccruedHeight == null && state.height != null) state.lastAccruedHeight = state.height;
-  // a state file from before wheel duty: assume the chain just moved (wheel duty opens 10 min later)
-  if (!Number.isFinite(state.lastAdvanceAt) && state.height != null) state.lastAdvanceAt = Date.now();
+  patchState(state);
 }
 // Coalesced, atomic save: at most one write per SAVE_DEBOUNCE_MS (a steady stream of changes
 // cannot starve it), written to a tmp file then renamed over state.json.
@@ -478,7 +507,10 @@ async function poll() {
   } catch (e) {
     state.lastError = `rpc: ${String(e.message || e)}`;
   }
-  // 2. Live hamster reading. Demo mode fakes it (and lets a fake run go back to sleep).
+  // 2. Bed income: while he sleeps (by the chain), every room earns for the time since the last tick.
+  const now = Date.now();
+  accrueBed(state, chainIdle(state.lastAdvanceAt, now, chainReadAt()), now);
+  // 3. Live hamster reading. Demo mode fakes it (and lets a fake run go back to sleep).
   if (DEMO) {
     const h = state.hamster;
     if (!night && (!h || (h.coreStatus === "ACTIVE" && Date.now() - Date.parse(h.updatedAt) > 30_000))) setDemoHamster("IDLE");
@@ -584,6 +616,7 @@ function readBody(req) {
 function publicPlayer(p, now = Date.now()) {
   const bonusPct = liveBonusPct(p, now);
   return {
+    publicId: p.publicId,
     nick: p.nick,
     createdAt: p.createdAt,
     joinHeight: p.joinHeight,
@@ -591,6 +624,10 @@ function publicPlayer(p, now = Date.now()) {
     lifetimeWatts: p.lifetimeWatts,
     wheelTier: p.wheelTier,
     multPct: BALANCE.WHEEL_MULT_PCT[p.wheelTier],
+    bedTier: p.bedTier | 0,
+    bedMultPct: bedMultPct(p),
+    bedWattsPerMin: bedWattsPerMin(p), // before the watching bonus
+    roomTier: p.roomTier | 0,
     skin: p.skin,
     wallpaper: p.wallpaper,
     floor: p.floor,
@@ -600,7 +637,6 @@ function publicPlayer(p, now = Date.now()) {
     watching: bonusPct > 100,
     bonusPct,
     nextHeartbeatMs: p.lastHeartbeat > 0 ? Math.max(0, BALANCE.HEARTBEAT_MIN_INTERVAL_MS - (now - p.lastHeartbeat)) : 0,
-    manual: { msUsedToday: manualUsedToday(p, now), msCapLeft: Math.max(0, MANUAL_CAP_MS - manualUsedToday(p, now)), capMs: MANUAL_CAP_MS, wattsPerMin: manualWattsPerMin(p) },
     certEligible: certEligible(p),
     commemorative: p.commemorative,
   };
@@ -615,7 +651,7 @@ function snapshot(token) {
     if (!p) {
       if (playerCount >= MAX_PLAYERS) meError = "server_full";
       else {
-        p = state.players[token] = newPlayer(state.height, now);
+        p = state.players[token] = newPlayer(state.height, now, token);
         playerCount++;
       }
     }
@@ -625,30 +661,29 @@ function snapshot(token) {
       save();
     }
   } else if (token) meError = "bad_token";
+  // Dynamic data only (polled every few seconds); the static rules live in configPayload().
   return {
     startHeight: state.startHeight,
     height: state.height,
     lastAccruedHeight: state.lastAccruedHeight,
     born: state.born,
-    demo: DEMO,
     night: night ? { startedAt: night.startedAt, endsAt: night.endsAt } : null,
     chain: state.chain || null,
-    core: CORE,
-    api: API,
     hamster: state.hamster,
-    // wheel duty: is he asleep by the chain (no settled block for MANUAL_IDLE_AFTER_MS)?
-    spin: { idle: chainIdle(state.lastAdvanceAt, now, chainReadAt()), idleAfterMs: BALANCE.MANUAL_IDLE_AFTER_MS, sinceAdvanceMs: Number.isFinite(state.lastAdvanceAt) ? now - state.lastAdvanceAt : null },
+    idle: chainIdle(state.lastAdvanceAt, now, chainReadAt()), // asleep by the chain: bed income is flowing
     lastError: state.lastError,
     apiError: state.apiError || null,
     players: playerCount,
     certsIssued: state.certSerial,
     serverTime: now,
-    balance: BALANCE,
-    room: ROOM,
-    catalog: CATALOG,
     me,
     meError,
   };
+}
+// Static rules and catalog: fetched once per page load (GET /api/config), never polled.
+// Every BALANCE key is public tuning (nothing secret lives there), so it ships whole.
+function configPayload() {
+  return { demo: DEMO, core: CORE, api: API, balance: BALANCE, room: ROOM, catalog: CATALOG };
 }
 
 // ---------- routes ----------
@@ -712,12 +747,6 @@ const POST_ROUTES = {
     const r = heartbeat(p);
     return [200, r];
   },
-  "/api/spin": (b, p) => {
-    const now = Date.now();
-    const r = applySpin(p, state.lastAdvanceAt, now, { restart: b.restart === true, chainReadAt: chainReadAt() });
-    if (!r.ok) return err(409, r.error, { idle: false, serverTime: now });
-    return [200, { ...r, serverTime: now, me: publicPlayer(p, now) }];
-  },
   "/api/claim-commemorative": (b, p, token) => {
     const r = claimCommemorative(state, token);
     if (!r.ok) return err(400, r.error, r);
@@ -747,11 +776,11 @@ const DEV_ROUTES = {
     if (night) return err(409, "night_running", { endsAt: night.endsAt });
     return [200, { ok: true, ...startNight() }];
   },
-  // Wind the chain's sleep clock past MANUAL_IDLE_AFTER_MS so wheel duty opens right away.
+  // Wind the chain's sleep clock past IDLE_AFTER_MS so he counts as asleep (bed income) right away.
   "/api/dev/sleep": () => {
     if (night) return err(409, "night_running", { endsAt: night.endsAt });
     if (state.height == null) demoBlocks(0);
-    state.lastAdvanceAt = Date.now() - BALANCE.MANUAL_IDLE_AFTER_MS - 60_000;
+    state.lastAdvanceAt = Date.now() - BALANCE.IDLE_AFTER_MS - 60_000;
     setDemoHamster("IDLE");
     return [200, { ok: true, height: state.height, lastAdvanceAt: state.lastAdvanceAt, idle: true }];
   },
@@ -765,6 +794,7 @@ async function handle(req, res) {
     if (url.pathname === "/api/state" && req.method === "GET") {
       return json(res, 200, snapshot(url.searchParams.get("token")));
     }
+    if (url.pathname === "/api/config" && req.method === "GET") return json(res, 200, configPayload());
     const devRoute = DEMO ? DEV_ROUTES[url.pathname] : undefined;
     const route = Object.hasOwn(POST_ROUTES, url.pathname) ? POST_ROUTES[url.pathname] : devRoute;
     if (route && req.method === "POST") {
@@ -821,7 +851,8 @@ function listen() {
 
 module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible };
 // Extra helpers for tests (the plan's six names above stay the primary surface).
-Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, applySpin, chainIdle, manualUsedToday, MANUAL_CAP_MS, MANUAL_FRAC_DEN });
+Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
+  accrueBed, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload });
 
 if (require.main === module) {
   load();

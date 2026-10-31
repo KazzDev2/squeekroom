@@ -20,7 +20,7 @@ test("catalog: unique ids, schema, defaults free, wheel tiers 1..5", () => {
   for (const i of CATALOG) {
     for (const k of ["id", "name", "cat", "price", "w", "h", "zone", "sprite"]) assert.ok(k in i, `${i.id}.${k}`);
     assert.ok(Number.isInteger(i.price) && i.price >= 0);
-    assert.ok(["wheel", "wallpaper", "floor", "rug", "furniture", "wall", "skin"].includes(i.cat));
+    assert.ok(["wheel", "bed", "room", "wallpaper", "floor", "rug", "furniture", "wall", "skin"].includes(i.cat));
   }
   const free = CATALOG.filter((i) => i.price === 0).map((i) => i.id).sort();
   assert.deepEqual(free, ["fl_pine", "skin_classic", "wp_plain"]);
@@ -314,175 +314,206 @@ test("claim: rejects ineligible, issues serial + seed, idempotent", () => {
   assert.equal(st.certSerial, 1);
 });
 
-// ---------- wheel duty (manual spinning while he sleeps) ----------
-const TS = Date.UTC(2026, 9, 30, 12, 0, 0);
-const ASLEEP = TS - BALANCE.MANUAL_IDLE_AFTER_MS - 60_000; // last block 11 min before TS
-const freshS = (over = {}) => Object.assign(S.newPlayer(1000, TS), over);
-const { applySpin, chainIdle } = S;
-// Tick every `every` ms for `ms` in total, after a first (clock-starting) tick at `start`.
-function spinFor(p, ms, every = 5000, start = TS, lastAdvanceAt = ASLEEP) {
-  let t = start, credited = 0;
-  assert.equal(applySpin(p, lastAdvanceAt, t).credited, 0); // starts the clock
-  for (let left = ms; left > 0; left -= every) {
-    t += Math.min(every, left);
-    credited += applySpin(p, lastAdvanceAt, t).credited;
+// ---------- sleep (by the chain) ----------
+test("chainIdle: asleep after IDLE_AFTER_MS without a settled block; stale reads are not asleep", () => {
+  const { chainIdle } = S;
+  assert.equal(BALANCE.IDLE_AFTER_MS, 600_000);
+  for (const k of Object.keys(BALANCE)) assert.ok(!k.startsWith("MANUAL_"), `wheel duty key ${k} is gone`);
+  assert.equal(chainIdle(T0 - 60_000, T0), false); // a block 1 min ago
+  assert.equal(chainIdle(null, T0), false); // height never observed
+  assert.equal(chainIdle(T0 - BALANCE.IDLE_AFTER_MS + 1, T0), false);
+  assert.equal(chainIdle(T0 - BALANCE.IDLE_AFTER_MS, T0), true); // exactly 10 min quiet
+  const asleep = T0 - BALANCE.IDLE_AFTER_MS - 60_000;
+  assert.equal(chainIdle(asleep, T0, T0 - 10_000), true); // live mode, fresh chain read
+  assert.equal(chainIdle(asleep, T0, T0 - 600_000), false); // live mode, stale read
+  assert.equal(chainIdle(asleep, T0, 0), false);
+  assert.equal(chainIdle(asleep, T0, null), true); // demo mode: no freshness check
+});
+
+// ---------- bed income ----------
+test("bed: balance constants", () => {
+  assert.equal(BALANCE.BED_RATE_PER_MIN, 1.5);
+  assert.deepEqual(BALANCE.BED_MULT_PCT, [100, 125, 160, 200, 260, 350]);
+  assert.equal(BALANCE.BED_TICK_MAX_MS, 60_000);
+  assert.equal(S.bedWattsPerMin(fresh()), 1.5);
+  assert.equal(S.bedWattsPerMin(fresh({ bedTier: 5 })), 5.25);
+  assert.equal(S.bedMultPct(fresh({ bedTier: 3 })), 200);
+});
+
+test("bed: 1.5 W/min x bed multiplier x watching bonus", () => {
+  const ten = 10 * 60_000;
+  assert.equal(S.bedCredit(fresh(), ten, T0), 15);
+  for (const [tier, per10] of [[1, 18], [2, 24], [3, 30], [4, 39], [5, 52]]) {
+    const p = fresh({ bedTier: tier });
+    assert.equal(S.bedCredit(p, ten, T0), per10, `tier ${tier}`); // 18.75 and 52.5 floor, the rest carries
+    assert.equal(p.lifetimeWatts, per10);
   }
-  return { credited, t };
-}
-
-test("wheel duty: balance constants", () => {
-  assert.equal(BALANCE.MANUAL_WATTS_PER_MIN, 15);
-  assert.equal(BALANCE.MANUAL_DAILY_CAP_MIN, 120);
-  assert.equal(BALANCE.MANUAL_IDLE_AFTER_MS, 600_000);
-  assert.equal(BALANCE.MANUAL_TICK_MAX_MS, 10_000);
-  assert.equal(BALANCE.MANUAL_TICK_MIN_MS, 2_000);
+  const w = fresh({ lastHeartbeat: T0 - 30_000 }); // watching: 1.2x
+  assert.equal(S.bedCredit(w, ten, T0), 18);
+  const w5 = fresh({ bedTier: 5, lastHeartbeat: T0 });
+  assert.equal(S.bedCredit(w5, ten, T0), 63); // 1.5 x 3.5 x 1.2 x 10
+  assert.equal(S.bedCredit(fresh(), 0, T0), 0);
+  assert.equal(S.bedCredit(fresh(), -5, T0), 0);
 });
 
-test("wheel duty: 15 W/min at tier 0, 24 W/min at T2 (wheel multiplier applies)", () => {
-  const p = freshS();
-  const r = spinFor(p, 60_000);
-  assert.equal(r.credited, 15);
-  assert.equal(p.watts, 400 + 15);
-  assert.equal(p.lifetimeWatts, 15);
-  assert.equal(applySpin(p, ASLEEP, r.t + 5000).wattsPerMin, 15);
-
-  const q = freshS({ wheelTier: 2 });
-  assert.equal(spinFor(q, 60_000).credited, 24);
-  assert.equal(q.lifetimeWatts, 24);
-  const t1 = freshS({ wheelTier: 1 }); // 18.75 W/min: fractions carry over exactly
-  assert.equal(spinFor(t1, 4 * 60_000).credited, 75);
-});
-
-test("wheel duty: 0.2x a running hamster at the same tier", () => {
-  // Settling, the hamster earns ~1.25 W/s at tier 0 (7.5 blocks a minute x BASE_WATTS_PER_BLOCK).
-  const hamsterWPerMin = 1.25 * 60;
-  assert.equal(7.5 * BALANCE.BASE_WATTS_PER_BLOCK, hamsterWPerMin);
-  assert.equal(BALANCE.MANUAL_WATTS_PER_MIN / hamsterWPerMin, 0.2);
-  // the multiplier scales both the same way, so the ratio holds at every tier
+test("bed: fractional carry is exact (integers only, nothing lost)", () => {
+  const p = fresh();
+  assert.equal(S.bedCredit(p, 60_000, T0), 1); // 1.5 W -> 1 now, 0.5 carried
+  assert.equal(p.bedFrac, S.BED_FRAC_DEN / 2);
+  assert.equal(S.bedCredit(p, 60_000, T0), 2); // 0.5 + 1.5
+  assert.equal(p.bedFrac, 0);
+  assert.equal(p.watts, 400 + 3);
+  assert.equal(p.activeDays, 1);
   for (let tier = 0; tier <= 5; tier++) {
-    const p = freshS({ wheelTier: tier });
-    const wpm = applySpin(p, ASLEEP, TS).wattsPerMin;
-    assert.equal(wpm / ((hamsterWPerMin * BALANCE.WHEEL_MULT_PCT[tier]) / 100), 0.2, `tier ${tier}`);
-  }
-});
-
-test("wheel duty: first tick and long gaps restart the clock; a normal 5 s tick credits 5 s", () => {
-  const p = freshS();
-  const first = applySpin(p, ASLEEP, TS);
-  assert.equal(first.ok, true);
-  assert.equal(first.credited, 0);
-  assert.equal(first.started, true);
-  assert.equal(p.lastSpinAt, TS);
-  assert.equal(p.manualMsToday, 0);
-
-  // 5 s later: 5 s x 15 W/min = 1.25 W -> 1 W now, 0.25 W carried
-  const a = applySpin(p, ASLEEP, TS + 5000);
-  assert.equal(a.credited, 1);
-  assert.equal(a.creditedMs, 5000);
-  assert.equal(a.msUsedToday, 5000);
-  assert.equal(p.manualFrac, 0.25 * S.MANUAL_FRAC_DEN);
-
-  // a 60 s gap: credits nothing (not even the 10 s clamp), just restarts the clock
-  const gap = applySpin(p, ASLEEP, TS + 65_000);
-  assert.equal(gap.credited, 0);
-  assert.equal(gap.started, true);
-  assert.equal(p.manualMsToday, 5000);
-  assert.equal(p.lastSpinAt, TS + 65_000);
-
-  // a late-but-recent tick (15 s) is clamped to MANUAL_TICK_MAX_MS
-  const late = applySpin(p, ASLEEP, TS + 80_000);
-  assert.equal(late.creditedMs, BALANCE.MANUAL_TICK_MAX_MS);
-  assert.equal(p.manualMsToday, 15_000);
-
-  // the page can restart the clock itself when a new spin begins
-  const re = applySpin(p, ASLEEP, TS + 85_000, { restart: true });
-  assert.equal(re.credited, 0);
-  assert.equal(re.started, true);
-  assert.equal(p.manualMsToday, 15_000);
-});
-
-test("wheel duty: ticks closer than 2 s are no-ops", () => {
-  const p = freshS();
-  applySpin(p, ASLEEP, TS);
-  const early = applySpin(p, ASLEEP, TS + 1500);
-  assert.equal(early.ok, true);
-  assert.equal(early.noop, true);
-  assert.equal(early.credited, 0);
-  assert.equal(early.nextMs, 500);
-  assert.equal(p.lastSpinAt, TS); // the clock is not moved by a no-op
-  // spam cannot add time: the next real tick credits only real elapsed time
-  for (let t = 100; t < 2000; t += 100) assert.equal(applySpin(p, ASLEEP, TS + t).noop, true);
-  const ok = applySpin(p, ASLEEP, TS + 4000);
-  assert.equal(ok.creditedMs, 4000);
-  assert.equal(p.manualMsToday, 4000);
-});
-
-test("wheel duty: daily cap reached mid-tick credits only the remainder", () => {
-  const cap = BALANCE.MANUAL_DAILY_CAP_MIN * 60_000;
-  assert.equal(S.MANUAL_CAP_MS, cap);
-  const day = new Date(TS).toISOString().slice(0, 10);
-  const p = freshS({ manualDay: day, manualMsToday: cap - 3000, lastSpinAt: TS });
-  const r = applySpin(p, ASLEEP, TS + 5000);
-  assert.equal(r.creditedMs, 3000);
-  assert.equal(r.msUsedToday, cap);
-  assert.equal(r.msCapLeft, 0);
-  assert.equal(p.watts, 400); // 3 s = 0.75 W: carried, not yet a whole watt
-  const after = applySpin(p, ASLEEP, TS + 10_000);
-  assert.equal(after.ok, true);
-  assert.equal(after.creditedMs, 0);
-  assert.equal(after.credited, 0);
-  assert.equal(after.msCapLeft, 0);
-  assert.equal(p.manualMsToday, cap);
-  // a full day of honest spinning tops out at the cap: 120 min x 15 W/min
-  const q = freshS();
-  assert.equal(spinFor(q, cap + 30 * 60_000).credited, 1800);
-  assert.equal(q.manualMsToday, cap);
-});
-
-test("wheel duty: UTC day rollover resets the cap", () => {
-  const midnight = Date.UTC(2026, 9, 31, 0, 0, 0);
-  const cap = S.MANUAL_CAP_MS;
-  const p = freshS({ manualDay: "2026-10-30", manualMsToday: cap, lastSpinAt: midnight - 2000 });
-  assert.equal(S.manualUsedToday(p, midnight - 1), cap);
-  assert.equal(S.manualUsedToday(p, midnight), 0); // the page sees a fresh day before any tick
-  const r = applySpin(p, midnight - 600_000 * 2, midnight + 3000);
-  assert.equal(r.creditedMs, 5000); // the tick that crosses midnight counts toward the new day
-  assert.equal(p.manualDay, "2026-10-31");
-  assert.equal(r.msUsedToday, 5000);
-  assert.equal(r.msCapLeft, cap - 5000);
-});
-
-test("wheel duty: hamster_awake while blocks are still settling", () => {
-  const p = freshS();
-  const recent = applySpin(p, TS - 60_000, TS); // a block 1 min ago
-  assert.deepEqual(recent, { ok: false, error: "hamster_awake", idle: false });
-  assert.equal(p.lastSpinAt, 0);
-  assert.equal(applySpin(p, null, TS).error, "hamster_awake"); // height never observed
-  assert.equal(applySpin(p, TS - BALANCE.MANUAL_IDLE_AFTER_MS + 1, TS).error, "hamster_awake");
-  assert.equal(applySpin(p, TS - BALANCE.MANUAL_IDLE_AFTER_MS, TS).ok, true); // exactly 10 min quiet
-  // live mode: a stale chain reading means we can't tell he's asleep
-  assert.equal(chainIdle(ASLEEP, TS, TS - 10_000), true);
-  assert.equal(chainIdle(ASLEEP, TS, TS - 600_000), false);
-  assert.equal(chainIdle(ASLEEP, TS, 0), false);
-  assert.equal(chainIdle(ASLEEP, TS, null), true); // demo mode: no freshness check
-});
-
-test("wheel duty: watts stay integers, fractions are never lost, activeDays counts", () => {
-  for (let tier = 0; tier <= 5; tier++) {
-    const p = freshS({ wheelTier: tier });
-    let t = TS;
-    applySpin(p, ASLEEP, t);
+    const q = fresh({ bedTier: tier, lastHeartbeat: tier % 2 ? T0 : 0 });
     let ms = 0;
-    for (let i = 0; i < 400; i++) {
-      const step = 2000 + ((i * 7919) % 8001); // 2..10 s, irregular
-      t += step;
+    for (let i = 0; i < 500; i++) {
+      const step = 1000 + ((i * 7919) % 59_001); // 1..60 s, irregular
       ms += step;
-      applySpin(p, ASLEEP, t);
-      assert.ok(Number.isInteger(p.watts) && Number.isInteger(p.lifetimeWatts), `tier ${tier}`);
+      S.bedCredit(q, step, T0);
+      assert.ok(Number.isInteger(q.watts) && Number.isInteger(q.lifetimeWatts), `tier ${tier}`);
     }
-    const exact = (ms * BALANCE.MANUAL_WATTS_PER_MIN * BALANCE.WHEEL_MULT_PCT[tier]) / S.MANUAL_FRAC_DEN;
-    assert.equal(p.lifetimeWatts, Math.floor(exact), `tier ${tier}`);
-    assert.equal(p.watts, 400 + p.lifetimeWatts);
-    assert.equal(p.activeDays, 1);
+    const bonus = tier % 2 ? 120 : 100;
+    const exact = (ms * 15 * BALANCE.BED_MULT_PCT[tier] * bonus) / S.BED_FRAC_DEN;
+    assert.equal(q.lifetimeWatts, Math.floor(exact), `tier ${tier}`);
+    assert.equal(q.watts, 400 + q.lifetimeWatts);
   }
+});
+
+test("accrueBed: every player while asleep, 60 s cap per tick, nothing while awake", () => {
+  const st = { lastBedTickAt: null, players: { a: fresh(), b: fresh({ bedTier: 3 }), live: fresh({ lastHeartbeat: T0 }) } };
+  assert.equal(S.accrueBed(st, true, T0), 0); // first tick only starts the clock
+  assert.equal(st.lastBedTickAt, T0);
+  S.accrueBed(st, true, T0 + 60_000);
+  assert.equal(st.players.a.lifetimeWatts, 1); // 1.5
+  assert.equal(st.players.b.lifetimeWatts, 3); // 1.5 x 2
+  assert.equal(st.players.live.lifetimeWatts, 1); // 1.8
+  // a 10-minute gap credits only 60 s
+  S.accrueBed(st, true, T0 + 11 * 60_000);
+  assert.equal(st.players.b.lifetimeWatts, 6);
+  assert.equal(st.lastBedTickAt, T0 + 11 * 60_000);
+  // awake: no watts, but the clock moves (the awake stretch is never paid later)
+  assert.equal(S.accrueBed(st, false, T0 + 20 * 60_000), 0);
+  assert.equal(st.players.b.lifetimeWatts, 6);
+  S.accrueBed(st, true, T0 + 20 * 60_000 + 30_000); // asleep again: only the last 30 s count
+  assert.equal(st.players.b.lifetimeWatts, 7); // + 1.5
+  // a clock that steps backwards credits nothing
+  const before = st.players.b.lifetimeWatts;
+  assert.equal(S.accrueBed(st, true, T0), 0);
+  assert.equal(st.players.b.lifetimeWatts, before);
+});
+
+// ---------- bed + room ladders ----------
+test("catalog: bed and room ladders (tiers 1..5, not placeable); teacup bed stays a cosmetic", () => {
+  const beds = CATALOG.filter((i) => i.cat === "bed");
+  assert.deepEqual(beds.map((b) => b.id), ["bed_t1", "bed_t2", "bed_t3", "bed_t4", "bed_t5"]);
+  assert.deepEqual(beds.map((b) => b.price), [3000, 10000, 30000, 80000, 200000]);
+  assert.deepEqual(beds.map((b) => b.multPct), [125, 160, 200, 260, 350]);
+  const rooms = CATALOG.filter((i) => i.cat === "room");
+  assert.deepEqual(rooms.map((r) => r.tier), [1, 2, 3, 4, 5]);
+  assert.deepEqual(rooms.map((r) => r.price), [10000, 30000, 80000, 200000, 450000]);
+  assert.deepEqual(rooms.map((r) => r.material), ["Stone", "Iron", "Silver", "Gold", "Diamond"]);
+  for (const i of [...beds, ...rooms]) assert.equal(i.zone, null);
+  const teacup = S.CATALOG_BY_ID.get("fur_teacup_bed");
+  assert.equal(teacup.cat, "furniture");
+  assert.equal(teacup.price, 3500);
+});
+
+test("buy: bed tiers strictly in order, set bedTier, single copy", () => {
+  const p = fresh({ watts: 1_000_000 });
+  assert.equal(p.bedTier, 0);
+  assert.equal(canBuy(p, "bed_t2").error, "wrong_tier");
+  assert.equal(canBuy(p, "bed_t5").error, "wrong_tier");
+  assert.ok(S.applyBuy(p, "bed_t1").ok);
+  assert.equal(p.bedTier, 1);
+  assert.equal(p.owned.bed_t1, 1);
+  assert.equal(canBuy(p, "bed_t1").error, "already_owned");
+  assert.ok(S.applyBuy(p, "bed_t2").ok);
+  assert.equal(p.bedTier, 2);
+  assert.equal(canBuy(p, "bed_t1").error, "already_owned");
+  assert.equal(canBuy(p, "bed_t4").error, "wrong_tier");
+  assert.equal(p.watts, 1_000_000 - 3000 - 10000);
+  assert.equal(p.wheelTier, 0); // ladders are independent
+  assert.equal(p.roomTier, 0);
+  assert.equal(validatePlacement(p, "bed_t1", 0, 11).error, "not_placeable");
+  const r = canBuy(fresh(), "bed_t1");
+  assert.equal(r.error, "poor");
+  assert.equal(r.need, 2600);
+  // the new bed raises bed income right away
+  assert.equal(S.bedCredit(p, 10 * 60_000, T0), 24);
+});
+
+test("buy: room material tiers strictly in order, set roomTier, single copy", () => {
+  const p = fresh({ watts: 1_000_000 });
+  assert.equal(p.roomTier, 0);
+  assert.equal(canBuy(p, "room_t3").error, "wrong_tier");
+  assert.ok(S.applyBuy(p, "room_t1").ok);
+  assert.equal(p.roomTier, 1);
+  assert.equal(canBuy(p, "room_t1").error, "already_owned");
+  assert.equal(canBuy(p, "room_t3").error, "wrong_tier");
+  assert.ok(S.applyBuy(p, "room_t2").ok);
+  assert.equal(p.roomTier, 2);
+  assert.equal(p.watts, 1_000_000 - 10000 - 30000);
+  assert.equal(p.bedTier, 0);
+  assert.equal(p.wheelTier, 0);
+  assert.equal(validatePlacement(p, "room_t1", 0, 11).error, "not_placeable");
+});
+
+// ---------- player records ----------
+test("new player: publicId from the token, bed + room tiers at 0, no wheel-duty fields", () => {
+  const crypto = require("node:crypto");
+  const p = S.newPlayer(1000, T0, TOKEN);
+  assert.equal(p.publicId, crypto.createHash("sha256").update(TOKEN).digest("hex").slice(0, 12));
+  assert.equal(S.publicIdFor(TOKEN), p.publicId);
+  assert.equal(p.bedTier, 0);
+  assert.equal(p.roomTier, 0);
+  assert.equal(p.bedFrac, 0);
+  for (const k of ["lastSpinAt", "manualDay", "manualMsToday", "manualFrac"]) assert.ok(!(k in p), k);
+  const pub = S.publicPlayer(Object.assign(p, { bedTier: 2, roomTier: 4 }), T0);
+  assert.equal(pub.publicId, p.publicId);
+  assert.equal(pub.bedTier, 2);
+  assert.equal(pub.bedMultPct, 160);
+  assert.equal(pub.bedWattsPerMin, 2.4);
+  assert.equal(pub.roomTier, 4);
+  assert.ok(!("manual" in pub));
+  assert.ok(!JSON.stringify(pub).includes(TOKEN), "public view must not leak the token");
+});
+
+test("load patch: old records get publicId + bed/room defaults, wheel-duty fields dropped", () => {
+  const crypto = require("node:crypto");
+  const old = fresh({ wheelTier: 2, watts: 9000, lastSpinAt: T0, manualDay: "2026-10-30", manualMsToday: 5000, manualFrac: 12 });
+  for (const k of ["publicId", "bedTier", "roomTier", "bedFrac"]) delete old[k];
+  const keep = fresh({ publicId: "already12chr", bedTier: 3, roomTier: 1, bedFrac: 77 });
+  const st = { height: 5000, lastAdvanceAt: T0 - 1000, lastBedTickAt: T0 - 5000, players: { [TOKEN]: old, ["b".repeat(32)]: keep } };
+  S.patchState(st, T0);
+  assert.equal(old.publicId, crypto.createHash("sha256").update(TOKEN).digest("hex").slice(0, 12));
+  assert.equal(old.bedTier, 0);
+  assert.equal(old.roomTier, 0);
+  assert.equal(old.bedFrac, 0);
+  assert.equal(old.wheelTier, 2);
+  assert.equal(old.watts, 9000);
+  for (const k of ["lastSpinAt", "manualDay", "manualMsToday", "manualFrac"]) assert.ok(!(k in old), k);
+  assert.deepEqual([keep.publicId, keep.bedTier, keep.roomTier, keep.bedFrac], ["already12chr", 3, 1, 77]); // never overwritten
+  assert.equal(st.lastBedTickAt, null); // no bed catch-up for downtime
+  assert.equal(st.lastAccruedHeight, 5000);
+  // an empty / ancient state file still comes out usable
+  const bare = S.patchState({ height: 10 }, T0);
+  assert.deepEqual(bare.players, {});
+  assert.equal(bare.lastAdvanceAt, T0);
+});
+
+// ---------- config vs. polled state ----------
+test("config carries the static rules; the polled snapshot carries only dynamic data", () => {
+  const cfg = S.configPayload();
+  assert.deepEqual(cfg.catalog, CATALOG);
+  assert.deepEqual(cfg.balance, BALANCE);
+  assert.deepEqual(cfg.room, S.ROOM);
+  for (const k of ["demo", "core", "api"]) assert.ok(k in cfg, k);
+  assert.ok(cfg.catalog.some((i) => i.id === "bed_t1") && cfg.catalog.some((i) => i.id === "room_t1"));
+  const snap = S.snapshot();
+  for (const k of ["catalog", "balance", "room", "spin", "core", "api"]) assert.ok(!(k in snap), `snapshot has ${k}`);
+  assert.equal(typeof snap.idle, "boolean");
+  for (const k of ["height", "chain", "hamster", "serverTime", "players", "me"]) assert.ok(k in snap, k);
+  assert.equal(snap.me, null); // no token: no player created
+  assert.ok(JSON.stringify(snap).length < JSON.stringify(cfg).length / 4, "the poll stays small");
 });
