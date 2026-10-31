@@ -45,7 +45,7 @@ let FLAT_SPOT = { wheel: { x: 80, y: 170 } };
 // wallpaper covers the upper walls and the equipped flooring covers the open floor.
 const ISO = { CORNER: 9, NI: 11, NJ: 10, X0: 168, Y0: 102, WALL_H: 100, PAD: 8, SLAB: 5, FOOT: 3 };
 const LW = ISO.PAD * 2 + (ISO.NI + ISO.NJ) * 16; // 352
-const LH = 240; // the floor's front tip (empty floor) runs off the bottom edge: keeps 3x scale on 1080p
+const LH = 240; // the floor's front tip (empty floor) runs off the bottom edge; fit() caps it at ~70% of the window height
 let IWHEEL = { cx: 96, cy: 124, r: 23, x: 72, y: 100, foot: 150 }, IBURROW = { cx: 296, x: 272, y: 144, foot: 176 };
 let SPOT = { wheel: { x: 96, y: 144 }, sit: { x: 136, y: 160 }, bed: { x: 248, y: 185 } };
 const isoTileCenter = (i, j) => ({ x: ISO.X0 + (i - j) * 16, y: ISO.Y0 + (i + j) * 8 + 8 });
@@ -854,7 +854,8 @@ let dimLevel = 0; // eased 0..1 IDLE dimming
 function fit() {
   const r = stage.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
   const scaleAt = (pad) => Math.floor(Math.min(((r.width - pad * 2) * dpr) / LW, ((r.height - pad * 2) * dpr) / LH));
-  const s = Math.max(1, scaleAt(12), scaleAt(0)); // drop the margin when it alone costs a whole scale step (375-px phones)
+  const capH = Math.floor((innerHeight * 0.7 * dpr) / LH); // the room may take at most ~70% of the window height (2x, not 3x, on 1080p)
+  const s = Math.max(1, Math.min(capH, Math.max(scaleAt(12), scaleAt(0)))); // drop the margin when it alone costs a whole scale step (375-px phones)
   if (view.width !== LW * s) { view.width = LW * s; view.height = LH * s; }
   view.style.width = (LW * s) / dpr + "px";
   view.style.height = (LH * s) / dpr + "px";
