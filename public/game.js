@@ -1256,6 +1256,9 @@ function updateGhost(L) {
   const c = P.drag ? dragCell(L) : cellAt(P.it, L);
   if (P.cell && c.x === P.cell.x && c.y === P.cell.y) return;
   P.cell = c;
+  // Tuber-Simulator-style auto-facing: until the player flips manually, items
+  // along the left wall lane mirror to face into the room, right lane faces left.
+  if (P.mode === "place" && !P.userFlip) P.flip = c.x + P.it.w / 2 < ROOM.COLS / 2;
   P.valid = checkSpot(P.it, c.x, c.y, P.mode === "move" ? P.pid : null);
   renderPlacing();
 }
@@ -1276,7 +1279,7 @@ function enterPlace(itemId) {
   const it = S.catalog.get(itemId);
   if (!it || !it.zone || unplaced(itemId) <= 0) return;
   selPid = null;
-  Object.assign(P, { mode: "place", it, pid: null, flip: false, cell: null, valid: null, drag: null, from: null, down: false });
+  Object.assign(P, { mode: "place", it, pid: null, flip: false, userFlip: false, cell: null, valid: null, drag: null, from: null, down: false });
   afterMode();
   if (matchMedia("(max-width:860px)").matches) stage.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
@@ -1352,7 +1355,7 @@ $("itemTool").addEventListener("click", (e) => {
   else if (b.dataset.act === "flip") flipPlaced(p);
   else if (b.dataset.act === "remove") removePlaced(p);
 });
-$("pFlip").onclick = () => { if (P.mode) { P.flip = !P.flip; renderPlacing(); } };
+$("pFlip").onclick = () => { if (P.mode) { P.flip = !P.flip; P.userFlip = true; renderPlacing(); } };
 $("pCancel").onclick = () => cancelMode();
 function renderPlacing() {
   const on = !!P.mode;
@@ -1403,7 +1406,7 @@ addEventListener("keydown", (e) => {
   if (e.target && e.target.closest && e.target.closest("input,textarea,select")) return;
   if (e.key === "Escape") { if (P.mode) cancelMode(); else select(null); }
   else if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    if (P.mode) { P.flip = !P.flip; renderPlacing(); } else if (selPid) flipPlaced(findPlaced(selPid));
+    if (P.mode) { P.flip = !P.flip; P.userFlip = true; renderPlacing(); } else if (selPid) flipPlaced(findPlaced(selPid));
   } else if ((e.key === "Delete" || e.key === "Backspace") && selPid && !P.mode) { e.preventDefault(); removePlaced(findPlaced(selPid)); }
 });
 
