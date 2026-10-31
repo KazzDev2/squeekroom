@@ -1,6 +1,6 @@
 # Squeekroom
 
-A cozy side-view pixel room with a hamster on a wheel, and the hamster is real: the wheel spins at Squeektoshi's live rpm while he runs and he naps in the burrow when he doesn't. Every settled Squeek block generates watts for every room, whether you are online or not, and watts buy cosmetics: furniture, wall decor, wallpaper, flooring, skins, room materials, and wheel and bed upgrades (the only items that change how much you earn). While he naps, every room earns a slower trickle from its bed. Nothing in the game asks the hamster to do anything; the one interactive bonus is for keeping the page open. It rewards watching, never running. Reach 250,000 lifetime watts over 7 active days and you can claim a free commemorative certificate (a PNG and its JSON, no chain, no wallet). No login, an anonymous token in `localStorage` is your room.
+A cozy 2.5D isometric pixel room with a hamster on a wheel, and the hamster is real: the wheel spins at Squeektoshi's live rpm while he runs and he sleeps in your bed when he doesn't. Every settled Squeek block generates watts for every room, whether you are online or not; while he sleeps, every room earns a slower trickle from its bed. Watts buy furniture, wall decor, wallpaper, flooring, skins, and three upgrade ladders: wheel (running income), bed (sleeping income) and room material (raid defense). While the hamster RUNS, raids are open: wager watts against any richer room on the electricity leaderboard — win and you loot them, lose and your stake burns. Nothing in the game asks the hamster to do anything; it rewards watching, never running. Reach 250,000 lifetime watts over 7 active days and you can claim a free commemorative certificate (a PNG and its JSON). No login needed — an anonymous token in `localStorage` is your room; optionally link a burner wallet (one gasless signature) to claim a username on the leaderboard.
 
 Zero dependencies. Node 18+.
 
@@ -54,6 +54,8 @@ All rooms live in one JSON file, so the host needs a persistent disk mounted at 
   - `POST /api/nick {token, nick}` your room's name (20 chars).
   - `POST /api/heartbeat {token}` the page sends this while it is visible; rate-limited to one stamp per 20 s.
   - `POST /api/claim-commemorative {token}` see below. Errors: `not_eligible` (+ `lifetimeWatts`, `activeDays`, `needLifetimeWatts`, `needActiveDays`).
+  - `POST /api/raid {token, target, stake, mult}` see Raids below. `GET /api/leaderboard?token=…` watts-ranked rooms with per-viewer `raidable`/`revenge` flags (10 s cache).
+  - `POST /api/wallet/nonce {token}` → a single-use 10-minute sign-in message (it tells you to use a burner); `POST /api/wallet/verify {token, address, signature}` verifies the EIP-191 personal_sign server-side (pure-JS keccak + secp256k1 in `lib/ethsig.js`, zero deps) and binds the address (one room per wallet); `POST /api/wallet/username {token, username}` wallet-gated, `[A-Za-z0-9_]{3,16}`, unique. Verified names show on the leaderboard and raid feed with a check.
   - `POST /api/dev/advance {n}`, `/api/dev/grant {token, watts, lifetime?, activeDays?}`, `/api/dev/night {}`, `/api/dev/sleep {}` (winds the chain's sleep clock back 11 minutes so he counts as asleep and beds start earning) demo only.
 - Accrual, run for every room whenever the settled height advances (and on catch-up after downtime):
 
@@ -76,9 +78,19 @@ Claiming is idempotent: the first claim assigns the next global serial and store
 
 Each room is ~1–2 KB, and the whole state is rewritten as one JSON file. That's fine to roughly 10,000 rooms; the server refuses new rooms past `MAX_PLAYERS` (50,000). If it ever gets heavy, prune rooms nobody has opened in months (`lastSeen`) and that hold no certificate, or move `players` to SQLite keyed by token; nothing else in the server cares where a room is stored.
 
-## Ideas for v2
+## Raids ("chaos mode")
 
-- Leaderboard of rooms: most lifetime watts, oldest wheel, a weekly featured room.
+Open only while the hamster is RUNNING (the same chain signal that drives accrual), with one pacing rule: a 30-minute attacker cooldown. No incoming caps, no immunities — the protection is structural.
+
+- Wager: stake `S` (50 → min(20% of your watts, 5,000)) at 1.5×, 2×, 3×, 5× or 10×.
+- Win chance: `clamp((110%/M) × (1 − defense) × tilt, 2%, 90%)` — defense is the target's room material (wood 0% → diamond 25%), tilt is `(theirWatts/yourWatts)^0.25` clamped 0.75–1.5.
+- Win: loot `(M−1)×S` (×0.75–1.25 roll, 5% crit ×1.5), taken from the defender, capped at their balance. Lose: your stake is burned — the defender gets nothing, so being raided is strictly −EV at every tier.
+- You can only raid rooms holding ≥ 70% of your watts (punching down is impossible — this is what protects new rooms), except one revenge raid within 24 h of being hit. Attacker EV is `1.10×(1−d)×tilt − 1`: punching far up is +EV into anything, so the top of the leaderboard is everyone's target.
+- Zero minting: every raid is a pure transfer plus burn. Unspent watts are raid bait — upgrades are the bank.
+
+## Ideas for v3
+
+- WalletConnect QR (mobile wallets) via a Reown projectId.
 - Stream HUD view: a chrome-free page showing one featured room for the livestream.
 - Seasonal items that are only in the shop for a few weeks.
 - Foil items for record nights: anything bought during a speed record or milestone from `/v1/events` gets a shimmer.
