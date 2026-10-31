@@ -473,6 +473,10 @@ function applyState(j) {
   if (typeof j.serverTime === "number") S.skew = j.serverTime - Date.now();
   if (j.me) applyMe(j.me, first, { at: j.serverTime, soft: S.idle });
   else if (j.meError) toast(j.meError === "server_full" ? "The server is full right now." : `Could not load your room (${j.meError}).`, "err");
+  if (j.raid !== undefined) applyRaidStatus(j.raid);
+  if (typeof j.burned === "number") S.burned = j.burned;
+  if (Array.isArray(j.raidFeed)) applyFeed(j.raidFeed);
+  if (RU.open) renderRaid();
   if (first) { ham.init = false; liveFetch(); }
 }
 // Every server response that carries `me` lands here: the UI always re-renders from the server's
@@ -556,6 +560,10 @@ function renderHud() {
     $("watchLine").innerHTML = watching ? `watching<span class="chip on">+${bonus}%</span>` : "&nbsp;";
     renderBedLine(me, watching ? 100 + bonus : 100);
   }
+  renderRaidChip();
+  renderFeed();
+  if (LB.open) renderLb(); // keeps "updated Ns ago" and the cooldown lines ticking
+  if (RU.open && !RU.result && raidPhase() === "cool") renderRaid();
   stepMeter(0); // paints the meter text even when rAF is throttled
   $("demo").hidden = !S.demo;
   const nb = $("night");
@@ -729,6 +737,7 @@ function stepFx(dt, st) {
     if (zClock <= 0) { zs.push({ x: ham.x + 6, y: ham.y - 18, t: 0, life: 2600 }); zClock = 1900; }
   } else zClock = 400;
   for (let i = zs.length - 1; i >= 0; i--) { zs[i].t += dt; if (zs[i].t > zs[i].life) zs.splice(i, 1); }
+  stepRaidFx(dt);
 }
 
 // 10 fps logical sprite frames: blinks, breathing, animated-item markers
@@ -1015,6 +1024,8 @@ function render(st) {
     g.fillStyle = grd; g.fillRect(gx - 50, gy - 50, 100, 100);
     g.globalCompositeOperation = "source-over";
   }
+  // 6b. raid fx (embers, flashes) over the tint so they glow at night
+  drawRaidFx();
   // 7. placement ghost, zone guides, selection outline (after the tint so they read at night)
   drawPlacement();
   // present: integer-scaled, no smoothing
@@ -1387,6 +1398,8 @@ view.addEventListener("pointerleave", (e) => { if (P.mode && e.pointerType === "
 view.addEventListener("contextmenu", (e) => { if (P.mode || selPid) { e.preventDefault(); if (P.mode) cancelMode(); else select(null); } });
 addEventListener("keydown", (e) => {
   if (certOpen()) { certKey(e); return; } // the certificate is modal: room shortcuts stay off
+  if (RU.open) { raidKey(e); return; } // so is the raid
+  if (LB.open && e.key === "Escape") { closeLb(); return; }
   if (e.target && e.target.closest && e.target.closest("input,textarea,select")) return;
   if (e.key === "Escape") { if (P.mode) cancelMode(); else select(null); }
   else if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -1727,6 +1740,7 @@ function afterMe() {
   renderPlacing();
   positionTool();
   renderHud();
+  if (RU.open) renderRaid();
 }
 buildTabs();
 buildCards();
@@ -2065,8 +2079,558 @@ $("certShare").onclick = async () => {
   catch (e) { if (!e || e.name !== "AbortError") toast("Sharing didn't work here. Save the PNG instead.", "err"); }
 };
 
+// ---------- raids: header chip, leaderboard, raid modal, result, feed ----------
+// The server rolls and re-validates every raid (window, cooldown, eligibility, stake); the client
+// only mirrors the maths so each option shows its odds, loot range and EV before you commit.
+const RAID_DEFAULTS = { EDGE_PCT: 110, MULT_PCT: [150, 200, 300, 500, 1000], DEFENSE_PCT: [0, 5, 10, 15, 20, 25], TILT_EXP: 0.25, TILT_MIN_PCT: 75, TILT_MAX_PCT: 150,
+  P_MIN_PCT: 2, P_MAX_PCT: 90, LOOT_U_MIN_PCT: 75, LOOT_U_MAX_PCT: 125, CRIT_CHANCE_PCT: 5, CRIT_MULT_PCT: 150, STAKE_MIN: 50, STAKE_MAX: 5000,
+  STAKE_MAX_BALANCE_PCT: 20, ELIGIBLE_MIN_PCT: 70, REVENGE_WINDOW_MS: 86_400_000, COOLDOWN_MS: 1_800_000 };
+const RB = () => ({ ...RAID_DEFAULTS, ...((S.balance && S.balance.RAID) || {}) });
+// p = clamp((EDGE / M) x (1 - d) x clamp((def / me) ^ 0.25, 0.75, 1.5), 0.02, 0.90), M as a percentage
+function raidP(multPct, defTier, myWatts, defWatts) {
+  const R = RB();
+  const ratio = defWatts / myWatts;
+  const tilt = clamp(Number.isNaN(ratio) ? 1 : Math.pow(ratio, R.TILT_EXP), R.TILT_MIN_PCT / 100, R.TILT_MAX_PCT / 100);
+  const d = R.DEFENSE_PCT[defTier | 0] ?? R.DEFENSE_PCT[0];
+  return clamp((R.EDGE_PCT / multPct) * (1 - d / 100) * tilt, R.P_MIN_PCT / 100, R.P_MAX_PCT / 100);
+}
+function raidStakeBounds(watts) {
+  const R = RB();
+  return { min: R.STAKE_MIN, max: Math.min(Math.floor((Math.max(0, watts) * R.STAKE_MAX_BALANCE_PCT) / 100), R.STAKE_MAX) };
+}
+function lootRange(multPct, stake, defWatts) {
+  const R = RB(), cap = Math.max(0, defWatts), base = (multPct - 100) * stake;
+  return [Math.min(Math.floor((base * R.LOOT_U_MIN_PCT) / 10_000), cap), Math.min(Math.floor((base * R.LOOT_U_MAX_PCT) / 10_000), cap)];
+}
+const multLabel = (m) => `${+(m / 100).toFixed(2)}×`;
+const pctText = (p) => { const v = p * 100; return `${v < 10 ? +v.toFixed(1) : Math.round(v)}%`; };
+const evText = (ev) => { const v = Math.round(ev * 1000) / 10; return `${v > 0 ? "+" : v < 0 ? "−" : "±"}${Math.abs(v)}%`; };
+const durText = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+const agoText = (at) => {
+  const s = Math.max(0, Math.round((Date.now() + S.skew - at) / 1000));
+  return s < 45 ? "now" : s < 3600 ? `${Math.round(s / 60)}m` : s < 86_400 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86_400)}d`;
+};
+function elx(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+const myPid = () => (S.me && S.me.publicId) || null;
+
+// raid window + this player's cooldown (snapshot every 5 s, the leaderboard, raid replies)
+S.raid = null; S.raidFeed = []; S.burned = 0;
+function applyRaidStatus(raid) {
+  if (!raid || typeof raid !== "object") { S.raid = null; return; }
+  S.raid = { open: !!raid.open, cdUntil: Date.now() + Math.max(0, Number(raid.cooldownMsLeft) || 0) };
+}
+const cooldownLeft = () => (S.raid ? Math.max(0, S.raid.cdUntil - Date.now()) : 0);
+function raidPhase() { // none | open | cool | locked
+  if (!S.raid || !S.me) return "none";
+  if (!S.raid.open) return "locked";
+  return cooldownLeft() > 0 ? "cool" : "open";
+}
+const lockedWhy = () => (S.idle ? "Squeektoshi is sleeping" : "no fresh chain reading");
+let chipSig = "";
+function renderRaidChip() {
+  const el = $("raidChip"), ph = raidPhase();
+  el.hidden = ph === "none";
+  if (ph === "none") return;
+  const html = ph === "open" ? "⚔ RAIDS OPEN" : ph === "cool" ? `⚔ RAIDS OPEN <span class="cd">next raid ${durText(cooldownLeft())}</span>` : `😴 raids locked — ${lockedWhy()}`;
+  const sig = ph + html;
+  if (sig === chipSig) return;
+  chipSig = sig;
+  el.className = `raidchip ${ph}`;
+  el.innerHTML = html;
+  el.title = ph === "locked" ? "Raids open only while Squeektoshi runs. Open the leaderboard" : ph === "cool" ? "Your raid is cooling down. Open the leaderboard" : "Raid a richer room. Open the leaderboard";
+  el.setAttribute("aria-expanded", String(LB.open));
+}
+
+// ----- leaderboard drawer -----
+const LB = { open: false, data: null, at: 0, timer: 0, busy: false, err: false, sig: "", back: null };
+const matUrls = new Map();
+function matSwatchUrl(t) {
+  t = clamp(t | 0, 0, 5);
+  if (matUrls.has(t)) return matUrls.get(t);
+  const c = canvas(32, 16), x = c.getContext("2d");
+  if (!sprite(x, `floor_mat_t${t}`, 0, 0, 0, {})) { const [, mid, lo] = matEdge(t); x.drawImage(diamondCanvas(mid, lo), 0, 0); }
+  const u = c.toDataURL();
+  matUrls.set(t, u);
+  return u;
+}
+const defensePct = (t) => RB().DEFENSE_PCT[t | 0] ?? 0;
+const rowMatLine = (r) => `${roomMaterial(r.roomTier | 0)} room${defensePct(r.roomTier) ? ` · −${defensePct(r.roomTier)}% odds` : ""}`;
+// recomputed against my live watts (the server's flag uses the same rule; it re-checks on raid)
+function rowRaidable(r) {
+  const me = S.me;
+  if (!me || r.you || r.publicId === myPid()) return false;
+  return r.watts * 100 >= me.watts * RB().ELIGIBLE_MIN_PCT || !!r.revenge;
+}
+const minTarget = () => (S.me ? Math.ceil((S.me.watts * RB().ELIGIBLE_MIN_PCT) / 100) : 0);
+function loadLb() { // concurrent callers share one request
+  if (!LB.busy) LB.p = fetchLb();
+  return LB.p;
+}
+async function fetchLb() {
+  LB.busy = true;
+  try {
+    const r = await fetch(`/api/leaderboard?token=${encodeURIComponent(token)}`, { cache: "no-store" });
+    if (!r.ok) throw new Error(String(r.status));
+    const j = await r.json();
+    LB.data = j; LB.at = Date.now(); LB.err = false;
+    if (j.raid) applyRaidStatus(j.raid);
+  } catch { LB.err = true; }
+  LB.busy = false;
+  LB.sig = "";
+  if (LB.open) renderLb();
+  if (RU.open) renderRaid();
+  renderRaidChip();
+}
+function openLb() {
+  if (!LB.open) LB.back = document.activeElement;
+  LB.open = true;
+  $("lb").hidden = false;
+  LB.sig = "";
+  renderLb();
+  loadLb();
+  clearInterval(LB.timer);
+  LB.timer = setInterval(() => { if (document.visibilityState === "visible") loadLb(); }, 10_000);
+  chipSig = "";
+  renderRaidChip();
+  $("lbClose").focus({ preventScroll: true });
+}
+function closeLb() {
+  LB.open = false;
+  $("lb").hidden = true;
+  clearInterval(LB.timer);
+  chipSig = "";
+  renderRaidChip();
+  const back = LB.back; LB.back = null;
+  if (back && back.focus && document.contains(back)) back.focus({ preventScroll: true });
+}
+function raidStateWords() {
+  const ph = raidPhase();
+  if (ph === "open") return ["open", "<b>⚔ RAIDS OPEN</b> Squeektoshi is running. Tap a red room to raid it."];
+  if (ph === "cool") return ["open", `<b>⚔ RAIDS OPEN</b> Your next raid in <b>${durText(cooldownLeft())}</b> (one raid per 30 min).`];
+  if (ph === "locked") return ["", `<b>😴 RAIDS LOCKED</b> ${S.idle ? "Squeektoshi is sleeping. Raids open again when he runs." : "No fresh chain reading right now. Raids open while he runs."}`];
+  return ["", "Loading…"];
+}
+function renderLb() {
+  if (!LB.open) return;
+  const d = LB.data, me = S.me;
+  const [cls, words] = raidStateWords();
+  const st = $("lbState");
+  st.className = "lbstate" + (cls ? " " + cls : "");
+  const targets = d ? d.rows.filter(rowRaidable).length : 0;
+  const extra = me ? `<br>You hold <b>${fmt(me.watts)} W</b>: rooms with ≥ ${fmt(minTarget())} W are fair game${d ? ` (${targets} target${targets === 1 ? "" : "s"})` : ""}.` : "";
+  st.innerHTML = words + extra;
+  const age = LB.at ? Math.round((Date.now() - LB.at) / 1000) : null;
+  $("lbMeta").textContent = !d ? (LB.err ? "can't reach the room server" : "loading…") : `${fmt(d.total)} room${d.total === 1 ? "" : "s"} · ${LB.err ? `couldn't refresh, showing ${age}s old` : age < 3 ? "just updated" : `updated ${age}s ago`}`;
+  const sig = d ? `${LB.at}|${me ? me.watts : ""}|${raidPhase()}` : "none";
+  if (sig === LB.sig) return;
+  LB.sig = sig;
+  const box = $("lbRows"), focusPid = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.pid : null;
+  box.innerHTML = "";
+  if (!d) return;
+  if (!d.rows.length) { box.appendChild(elx("li", "lbnote", "No rooms yet.")); return; }
+  for (const r of d.rows) {
+    const raidable = rowRaidable(r), you = r.you || r.publicId === myPid();
+    const li = elx("li");
+    const row = elx(raidable ? "button" : "div", "lbrow" + (raidable ? " raidable" : you ? " you" : " dim") + (r.revenge ? " revenge" : ""));
+    if (raidable) { row.type = "button"; row.dataset.pid = r.publicId; row.onclick = () => openRaid(r); }
+    row.appendChild(elx("span", "rk", `#${r.rank}`));
+    const img = elx("img", "mat"); img.src = matSwatchUrl(r.roomTier); img.alt = ""; row.appendChild(img);
+    const who = elx("span", "who"), nm = elx("span", "nm", r.nick || "anon");
+    if (you) nm.appendChild(elx("span", "tag you", "YOU"));
+    if (r.revenge) nm.appendChild(elx("span", "tag rev", "REVENGE!"));
+    who.appendChild(nm);
+    who.appendChild(elx("span", "mt", rowMatLine(r)));
+    row.appendChild(who);
+    const wt = elx("span", "wt", `${fmt(r.watts)} W`);
+    if (raidable && me) {
+      const ev = raidP(200, r.roomTier, me.watts, r.watts) * 2 - 1;
+      const sm = elx("small"); sm.appendChild(elx("span", ev >= 0 ? "pos" : "neg", `EV ${evText(ev)}`)); wt.appendChild(sm);
+      wt.appendChild(elx("span", "go", "RAID ⚔"));
+    } else wt.appendChild(elx("small", null, you ? (r.rank === 1 ? "the crown: pure prey" : "you") : "< 70% of you"));
+    row.title = raidable ? `Raid ${r.nick}${r.revenge ? " (revenge)" : ""}` : you ? "Your room" : `Below 70% of your watts (< ${fmt(minTarget())} W): punch up only`;
+    row.setAttribute("aria-label", `Rank ${r.rank}, ${r.nick}${you ? " (you)" : ""}, ${roomMaterial(r.roomTier | 0)} room, ${fmt(r.watts)} watts${raidable ? ", raidable" : ""}${r.revenge ? ", revenge" : ""}`);
+    row.appendChild(wt);
+    li.appendChild(row);
+    box.appendChild(li);
+  }
+  if (focusPid) { const f = box.querySelector(`[data-pid="${CSS.escape(focusPid)}"]`); if (f) f.focus({ preventScroll: true }); }
+}
+$("raidChip").onclick = () => (LB.open ? closeLb() : openLb());
+$("lbClose").onclick = closeLb;
+
+// ----- raid modal -----
+const RU = { open: false, row: null, mult: 0, stake: 0, busy: false, result: null, back: null, built: false, countRaf: 0 };
+{ const m = Number(ls.get("sr_mult")); RU.mult = RAID_DEFAULTS.MULT_PCT.includes(m) ? m : 200; RU.stake = Number(ls.get("sr_stake")) || 0; }
+function raidTarget() { // the freshest copy of the target's row
+  const d = LB.data, pid = RU.row && RU.row.publicId;
+  return (d && d.rows.find((x) => x.publicId === pid)) || RU.row;
+}
+function stakeNow() { const b = raidStakeBounds(S.me ? S.me.watts : 0); return { ...b, v: clamp(Math.round(RU.stake) || b.min, b.min, Math.max(b.min, b.max)) }; }
+function openRaid(row) {
+  if (!row || !S.me) return;
+  if (!RU.open) RU.back = document.activeElement;
+  RU.open = true; RU.row = row; RU.result = null; RU.busy = false;
+  if (!RU.stake) { const b = raidStakeBounds(S.me.watts); RU.stake = clamp(Math.floor(b.max / 2), b.min, Math.max(b.min, b.max)); }
+  $("raidErr").textContent = "";
+  $("raidForm").style.display = "flex";
+  $("raidResult").hidden = true;
+  $("raidModal").hidden = false;
+  document.body.classList.add("modal-open");
+  buildMults();
+  renderRaid(true);
+  const sel = $("raidMults").querySelector('[aria-checked="true"]');
+  (sel || $("raidClose")).focus({ preventScroll: true });
+}
+function closeRaid() {
+  if (!RU.open) return;
+  RU.open = false; RU.busy = false;
+  cancelAnimationFrame(RU.countRaf);
+  $("raidModal").hidden = true;
+  if ($("certModal").hidden) document.body.classList.remove("modal-open");
+  const back = RU.back; RU.back = null;
+  if (back && back.focus && document.contains(back)) back.focus({ preventScroll: true });
+}
+function buildMults() {
+  if (RU.built) return;
+  RU.built = true;
+  const box = $("raidMults");
+  box.innerHTML = "";
+  for (const m of RB().MULT_PCT) {
+    const b = elx("button", "mult");
+    b.type = "button"; b.setAttribute("role", "radio"); b.dataset.m = String(m);
+    b.innerHTML = `<span class="mx"></span><span class="pc"></span><span class="lt"></span><span class="ev"></span>`;
+    b.querySelector(".mx").innerHTML = m >= 1000 ? `${multLabel(m)}<small>HEIST</small>` : multLabel(m);
+    b.onclick = () => { RU.mult = m; ls.set("sr_mult", String(m)); renderRaid(); };
+    box.appendChild(b);
+  }
+  box.addEventListener("keydown", (e) => { // arrow keys move the radio choice
+    if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return;
+    e.preventDefault();
+    const L = RB().MULT_PCT, i = L.indexOf(RU.mult), n = clamp(i + (e.key === "ArrowUp" || e.key === "ArrowLeft" ? -1 : 1), 0, L.length - 1);
+    RU.mult = L[n]; ls.set("sr_mult", String(RU.mult)); renderRaid();
+    box.querySelector(`[data-m="${L[n]}"]`).focus();
+  });
+}
+// Why the RAID button can't fire right now (null = it can). The server re-checks all of it anyway.
+function raidBlock(t, sb) {
+  const ph = raidPhase();
+  if (ph === "locked") return { lock: true, msg: `<b>😴 RAIDS LOCKED</b> ${S.idle ? "Squeektoshi is sleeping. Raids open again the moment he runs." : "No fresh chain reading right now. Raids open while he runs."}` };
+  if (ph === "cool") return { lock: true, msg: `<b>⏳ COOLING DOWN</b> Your next raid in ${durText(cooldownLeft())}. One raid per 30 minutes.` };
+  if (sb.max < sb.min) return { lock: true, msg: `<b>TOO POOR TO RAID</b> Stakes start at ${fmt(sb.min)} W and can be at most 20% of your watts: you need ${fmt(Math.ceil((sb.min * 100) / RB().STAKE_MAX_BALANCE_PCT))} W.` };
+  if (!rowRaidable(t)) return { lock: true, msg: `<b>OUT OF REACH</b> ${escapeHtml(t.nick)} holds less than 70% of your watts now (needs ≥ ${fmt(minTarget())} W). Punch up only.` };
+  return null;
+}
+function renderRaid(force = false) {
+  if (!RU.open || !S.me) return;
+  const t = raidTarget(), me = S.me, R = RB();
+  const tb = $("raidTarget");
+  const tsig = `${t.publicId}|${t.nick}|${t.roomTier}|${t.watts}|${t.revenge}`;
+  if (force || tb.dataset.sig !== tsig) {
+    tb.dataset.sig = tsig;
+    tb.innerHTML = "";
+    const img = elx("img"); img.src = matSwatchUrl(t.roomTier); img.alt = ""; tb.appendChild(img);
+    const who = elx("div"); who.appendChild(elx("div", "tn", t.nick || "anon")); who.appendChild(elx("div", "tm", `#${t.rank} · ${rowMatLine(t)}`));
+    tb.appendChild(who);
+    const w = elx("div", "tw", `${fmt(t.watts)} W`); w.appendChild(elx("small", null, "their watts")); tb.appendChild(w);
+  }
+  const rev = !!t.revenge;
+  $("raidBox").classList.toggle("revenge", rev);
+  $("raidRev").hidden = !rev;
+  $("raidTitle").textContent = rev ? "⚔ REVENGE RAID" : "⚔ RAID";
+  $("raidSub").textContent = rev ? `pay ${t.nick} back` : `one roll · win their watts or burn your stake`;
+  if (RU.result) return; // the result view is showing
+  const sb = stakeNow(), S0 = sb.v, myW = me.watts;
+  // multiplier rows
+  let selP = 0;
+  for (const b of $("raidMults").children) {
+    const m = Number(b.dataset.m), p = raidP(m, t.roomTier, myW, t.watts), ev = p * (m / 100) - 1, [lo, hi] = lootRange(m, S0, t.watts);
+    if (m === RU.mult) selP = p;
+    b.setAttribute("aria-checked", String(m === RU.mult));
+    b.tabIndex = m === RU.mult ? 0 : -1;
+    b.querySelector(".pc").innerHTML = `${pctText(p)}<small>WIN</small>`;
+    b.querySelector(".lt").innerHTML = `+${fmt(lo)}–${fmt(hi)} W<small>LOOT IF WON</small>`;
+    const evEl = b.querySelector(".ev");
+    evEl.className = "ev " + (ev >= 0 ? "pos" : "neg");
+    evEl.innerHTML = `${evText(ev)}<small>EV</small>`;
+    b.setAttribute("aria-label", `${multLabel(m)}${m >= 1000 ? " heist" : ""}: ${pctText(p)} win chance, loot ${fmt(lo)} to ${fmt(hi)} watts, expected value ${evText(ev)}`);
+  }
+  // stake controls (left alone while being typed in)
+  const num = $("stakeNum"), rng2 = $("stakeRange"), maxShown = Math.max(sb.min, sb.max);
+  num.min = rng2.min = String(sb.min); num.max = rng2.max = String(maxShown);
+  if (document.activeElement !== num) num.value = String(S0);
+  rng2.value = String(S0);
+  rng2.disabled = num.disabled = sb.max < sb.min;
+  $("stakeBounds").textContent = sb.max < sb.min ? "you can't stake yet" : `${fmt(sb.min)}–${fmt(sb.max)} W${sb.max === R.STAKE_MAX ? " (cap)" : " (20% of yours)"}`;
+  // summary + EV warning
+  const m = RU.mult, ev = selP * (m / 100) - 1, [lo, hi] = lootRange(m, S0, t.watts), critHi = Math.min(Math.floor((hi * R.CRIT_MULT_PCT) / 100), t.watts);
+  const sum = $("raidSum");
+  sum.className = "rsum" + (ev < 0 ? " negev" : "");
+  sum.innerHTML = `<b class="pos">Win ${pctText(selP)}</b>: take <b>${fmt(lo)}–${fmt(hi)} W</b> from ${escapeHtml(t.nick)} (${R.CRIT_CHANCE_PCT}% crit: up to ${fmt(critHi)} W)<br>`
+    + `<b class="neg">Lose ${pctText(1 - selP)}</b>: your <b>${fmt(S0)} W</b> stake is burned. Nobody gets it.<br>`
+    + `EV <b class="${ev >= 0 ? "pos" : "neg"}">${evText(ev)}</b> = ${ev >= 0 ? "+" : "−"}${fmt(Math.abs(ev * S0))} W per raid on average`
+    + (ev < 0 ? `<span class="warn">⚠ Negative EV: their ${roomMaterial(t.roomTier | 0).toLowerCase()} walls${t.watts < myW ? " and smaller purse" : ""} make this a losing bet on average.</span>` : "");
+  // lock banner + button
+  const blk = raidBlock(t, sb), lock = $("raidLock");
+  lock.hidden = !blk;
+  if (blk) lock.innerHTML = blk.msg;
+  const go = $("raidGo");
+  go.disabled = !!blk || RU.busy;
+  go.classList.toggle("busy", RU.busy);
+  go.textContent = RU.busy ? "ROLLING…" : rev ? `⚔ REVENGE! (${fmt(S0)} W)` : `⚔ RAID! (${fmt(S0)} W at ${multLabel(m)})`;
+}
+function escapeHtml(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
+function setStake(v) { RU.stake = Math.round(Number(v)) || 0; RU.stake = stakeNow().v; ls.set("sr_stake", String(RU.stake)); renderRaid(); }
+$("stakeRange").addEventListener("input", (e) => setStake(e.target.value));
+$("stakeNum").addEventListener("input", (e) => {
+  const v = Math.round(Number(e.target.value)), sb = stakeNow();
+  e.target.style.borderColor = Number.isFinite(v) && v >= sb.min && v <= sb.max ? "" : "#dc2626";
+  if (Number.isFinite(v) && v > 0) { RU.stake = v; renderRaid(); }
+});
+$("stakeNum").addEventListener("change", (e) => { e.target.style.borderColor = ""; setStake(e.target.value); e.target.value = String(stakeNow().v); });
+$("stakeNum").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } });
+document.querySelectorAll("#raidForm [data-q]").forEach((b) => (b.onclick = () => { const sb = stakeNow(); setStake(b.dataset.q === "max" ? sb.max : sb.min); }));
+$("raidGo").onclick = doRaid;
+$("raidClose").onclick = closeRaid;
+$("resClose").onclick = closeRaid;
+$("resBack").onclick = () => { closeRaid(); if (!LB.open) openLb(); };
+$("raidModal").addEventListener("click", (e) => { if (e.target === e.currentTarget && !RU.busy) closeRaid(); });
+function raidKey(e) {
+  if (e.key === "Escape") { e.preventDefault(); if (!RU.busy) closeRaid(); return; }
+  if (e.key !== "Tab") return;
+  const f = [...$("raidBox").querySelectorAll("button,input")].filter((x) => !x.disabled && x.offsetParent !== null && x.tabIndex >= 0);
+  if (!f.length) return;
+  const i = f.indexOf(document.activeElement);
+  if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); }
+  else if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); f[0].focus(); }
+}
+function raidErrorWords(j) {
+  const e = (j && j.error) || "network", t = raidTarget();
+  switch (e) {
+    case "hamster_asleep": return "Too late: Squeektoshi just fell asleep. Raids are locked until he runs again.";
+    case "chain_unknown": return "Raids are locked: the room server hasn't seen a block yet.";
+    case "chain_stale": return "Raids are locked: the chain reading went stale. They reopen with a fresh block.";
+    case "cooldown": return `Still cooling down: your next raid in ${durText(j.cooldownMsLeft || 0)}.`;
+    case "bad_target": return "That room doesn't exist any more.";
+    case "not_eligible": return `${t ? t.nick : "They"} dropped below 70% of your watts. Punch up only (or wait for revenge).`;
+    case "self_target": return "You can't raid your own room.";
+    case "bad_mult": return "Pick a multiplier first.";
+    case "bad_stake": case "stake_out_of_range": return j.max < j.min ? `You can't stake yet: stakes start at ${fmt(j.min)} W (max 20% of your watts).` : `Stake must be a whole number from ${fmt(j.min)} to ${fmt(j.max)} W.`;
+    default: return errorWords(j);
+  }
+}
+async function doRaid() {
+  if (RU.busy || !RU.open || !S.me) return;
+  const t = raidTarget(), sb = stakeNow(), mult = RU.mult;
+  if (raidBlock(t, sb)) { renderRaid(); return; }
+  RU.busy = true;
+  $("raidErr").textContent = "";
+  renderRaid();
+  const r = await post("/api/raid", { target: t.publicId, stake: sb.v, mult });
+  RU.busy = false;
+  if (r.ok && r.j && r.j.result) { onRaidResult(r.j, t); return; }
+  const j = r.j || {}, e = j.error;
+  if (e === "cooldown") applyRaidStatus({ open: true, cooldownMsLeft: j.cooldownMsLeft });
+  else if (e === "hamster_asleep" || e === "chain_unknown" || e === "chain_stale") { if (S.raid) S.raid.open = false; else applyRaidStatus({ open: false }); }
+  else if (e === "stake_out_of_range" || e === "bad_stake") { if (Number.isFinite(j.max) && j.max >= j.min) RU.stake = clamp(sb.v, j.min, j.max); refresh(); }
+  if (e === "not_eligible" || e === "bad_target") loadLb();
+  chipSig = "";
+  renderRaidChip();
+  if (RU.open) {
+    $("raidErr").textContent = raidErrorWords(j);
+    const box = $("raidBox"); box.classList.remove("shake"); void box.offsetWidth; box.classList.add("shake");
+    renderRaid();
+  } else toast(raidErrorWords(j), "err");
+}
+// the reply: apply `me` at once, then the drama
+function onRaidResult(j, t) {
+  const res = j.result, before = S.me ? S.me.watts : 0;
+  if (j.me) applyMe(j.me, false, { at: Date.now() + S.skew - 250 });
+  applyRaidStatus({ open: true, cooldownMsLeft: RB().COOLDOWN_MS });
+  if (j.feed) { const k = feedKey(j.feed); if (!S.raidFeed.some((e) => feedKey(e) === k)) S.raidFeed = [...S.raidFeed, j.feed].slice(-20); FEED.seen.add(k); FEED.fresh = new Set([k]); FEED.sig = ""; renderFeed(); }
+  chipSig = "";
+  renderRaidChip();
+  loadLb();
+  RU.result = res;
+  showRaidResult(res, t, before);
+}
+function showRaidResult(res, t, before) {
+  $("raidForm").style.display = "none";
+  $("raidLock").hidden = true;
+  const box = $("raidResult"), win = !!res.win;
+  box.hidden = false;
+  box.className = "rresult " + (win ? "win" : "loss");
+  box.querySelectorAll(".fxp").forEach((n) => n.remove());
+  $("resCrit").hidden = !(win && res.crit);
+  const m = res.multPct || RU.mult;
+  if (win) {
+    $("resBig").textContent = res.revenge ? "REVENGE TAKEN!" : "RAID WON!";
+    $("resDet").textContent = `You took ${fmt(res.loot)} W from ${t.nick} · ${multLabel(m)} at ${pctText(res.p)} odds · next raid in ${durText(RB().COOLDOWN_MS)}`;
+    countUp($("resAmt"), res.loot, res.crit ? 1700 : 1200);
+    for (let i = 0; i < (res.crit ? 36 : 22); i++) {
+      const a = Math.random() * Math.PI * 2, d = 60 + Math.random() * 110, p = elx("i", "fxp coin");
+      p.style.setProperty("--dx", `${Math.round(Math.cos(a) * d)}px`); p.style.setProperty("--dy", `${Math.round(Math.sin(a) * d * 0.7)}px`);
+      p.style.animationDelay = `${Math.round(Math.random() * 250)}ms`;
+      box.appendChild(p);
+    }
+    raidFx(res.crit ? "crit" : "win");
+    gainFlash(res.loot);
+    toast(`${res.crit ? "CRIT! " : ""}You raided ${t.nick}: +${fmt(res.loot)} W`, "ok");
+  } else {
+    $("resBig").textContent = "RAID FAILED";
+    $("resAmt").textContent = `−${fmt(res.stakeLost || res.stake)} W`;
+    $("resDet").textContent = `Stake burned to ash at ${pctText(res.p)} odds. ${t.nick} keeps everything · next raid in ${durText(RB().COOLDOWN_MS)}`;
+    for (let i = 0; i < 28; i++) {
+      const p = elx("i", "fxp ember");
+      p.style.left = `${5 + Math.random() * 90}%`;
+      p.style.setProperty("--dx", `${Math.round((Math.random() - 0.5) * 60)}px`);
+      p.style.setProperty("--t", `${(1.1 + Math.random() * 1.2).toFixed(2)}s`);
+      p.style.setProperty("--d", `${(Math.random() * 0.9).toFixed(2)}s`);
+      box.appendChild(p);
+    }
+    const rb = $("raidBox"); rb.classList.remove("shake"); void rb.offsetWidth; rb.classList.add("shake");
+    raidFx("burn");
+    const s = elx("span", "spend", `−${fmt(res.stakeLost || res.stake)} W burned`);
+    $("meter").appendChild(s); setTimeout(() => s.remove(), 1700);
+  }
+  $("resBack").focus({ preventScroll: true });
+}
+function countUp(el, to, dur) {
+  cancelAnimationFrame(RU.countRaf);
+  const t0 = performance.now();
+  const stepC = (now) => {
+    const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+    el.textContent = `+${fmt(to * e)} W`;
+    if (k < 1) RU.countRaf = requestAnimationFrame(stepC);
+  };
+  el.textContent = "+0 W";
+  RU.countRaf = requestAnimationFrame(stepC);
+}
+function gainFlash(delta) {
+  meter.glowUntil = performance.now() + 1800;
+  $("meter").classList.add("glow");
+  const gEl = $("gain");
+  gEl.textContent = `+${fmt(delta)}`;
+  gEl.classList.remove("show"); void gEl.offsetWidth; gEl.classList.add("show");
+}
+
+// ----- canvas fx: loot sparks, burning embers, flashes -----
+const embers = [];
+let rflash = null; // { rgb, a, t, life }
+function raidFx(kind) {
+  if (kind === "win" || kind === "crit") {
+    const n = kind === "crit" ? 16 : 10;
+    for (let i = 0; i < n; i++) spawnSpark(i * 60);
+    rflash = { rgb: "255,209,102", a: kind === "crit" ? 0.45 : 0.28, t: 0, life: 700 };
+  } else { // burn (my lost stake) / hit (someone raided me)
+    const hit = kind === "hit";
+    for (let i = 0; i < (hit ? 40 : 34); i++) {
+      embers.push({ x: 20 + Math.random() * (LW - 40), y: LH - 10 - Math.random() * 70, vx: (Math.random() - 0.5) * 0.02, vy: -(0.025 + Math.random() * 0.045), t: -Math.random() * 600, life: 1200 + Math.random() * 1400, big: Math.random() < 0.3 });
+    }
+    rflash = { rgb: hit ? "220,38,38" : "249,115,22", a: hit ? 0.5 : 0.32, t: 0, life: hit ? 1100 : 800 };
+  }
+}
+function stepRaidFx(dt) {
+  for (let i = embers.length - 1; i >= 0; i--) {
+    const e = embers[i];
+    e.t += dt;
+    if (e.t < 0) continue;
+    e.x += e.vx * dt + Math.sin((e.t + i * 97) / 140) * 0.15;
+    e.y += e.vy * dt;
+    if (e.t > e.life) embers.splice(i, 1);
+  }
+  if (rflash) { rflash.t += dt; if (rflash.t > rflash.life) rflash = null; }
+}
+function drawRaidFx() {
+  if (rflash) { g.fillStyle = `rgba(${rflash.rgb},${(rflash.a * (1 - rflash.t / rflash.life)).toFixed(3)})`; g.fillRect(0, 0, LW, LH); }
+  for (const e of embers) {
+    if (e.t < 0) continue;
+    const k = e.t / e.life, x = Math.round(e.x), y = Math.round(e.y);
+    g.fillStyle = k < 0.3 ? "#fde047" : k < 0.65 ? "#f97316" : "#b91c1c";
+    g.globalAlpha = clamp(1.2 - k, 0, 1);
+    g.fillRect(x, y, e.big ? 2 : 1, e.big ? 2 : 1);
+    g.globalAlpha = 1;
+  }
+}
+
+// ----- raid feed (snapshot.raidFeed, oldest first; shown newest first) -----
+const FEED = { seen: new Set(), init: false, fresh: new Set(), sig: "", collapsed: null };
+const feedKey = (e) => `${e.at}|${e.atkId}|${e.defId}`;
+FEED.collapsed = ls.get("sr_feed") != null ? ls.get("sr_feed") === "1" : matchMedia("(max-width:860px)").matches;
+function applyFeed(list) {
+  const mine = myPid(), fresh = [];
+  for (const e of list) if (e && !FEED.seen.has(feedKey(e)) && FEED.init) fresh.push(e);
+  if (mine) { FEED.init = true; FEED.seen = new Set(list.map(feedKey)); }
+  S.raidFeed = list;
+  if (fresh.length) { FEED.fresh = new Set(fresh.map(feedKey)); FEED.sig = ""; }
+  for (const e of fresh) if (e.defId === mine && e.atkId !== mine) raidedMe(e);
+  renderFeed();
+}
+// someone raided me between two polls: make sure I notice
+function raidedMe(e) {
+  const w = !!e.win;
+  toast(w ? `⚔ ${e.atk} raided you${e.crit ? " with a CRIT" : ""}! −${fmt(e.amount)} W. Revenge is open for 24 h.` : `🛡 ${e.atk} tried to raid you and burned ${fmt(e.amount)} W. Revenge is open for 24 h.`, w ? "err" : undefined);
+  for (const id of ["feed", "stage"]) { const n = $(id); n.classList.remove("hit"); void n.offsetWidth; n.classList.add("hit"); setTimeout(() => n.classList.remove("hit"), 1600); }
+  if (w) { const m = $("meter"); m.classList.remove("poor"); void m.offsetWidth; m.classList.add("poor"); setTimeout(() => m.classList.remove("poor"), 900); }
+  raidFx("hit");
+  if (FEED.collapsed) { FEED.collapsed = false; FEED.sig = ""; } // open it for this one (not remembered)
+  if (LB.open) loadLb();
+}
+function setFeedCollapsed(v) { FEED.collapsed = v; ls.set("sr_feed", v ? "1" : "0"); FEED.sig = ""; renderFeed(); }
+$("feedHead").onclick = () => setFeedCollapsed(!FEED.collapsed);
+function feedLine(e, mine) {
+  const li = elx("li"), tx = elx("span", "tx"), amt = fmt(e.amount);
+  const atkMe = e.atkId === mine, defMe = e.defId === mine;
+  if (defMe) li.className = "me"; else if (atkMe) li.className = "mine";
+  const name = (s) => elx("b", null, s || "anon");
+  const parts = [];
+  if (e.win) {
+    parts.push("⚔ ", atkMe ? name("YOU") : name(e.atk), " raided ", defMe ? name("YOU") : name(e.def), " ");
+    parts.push(elx("span", "w", `${atkMe ? "+" : "−"}${amt} W`));
+    if (e.crit) parts.push(" ", elx("span", "critf", "CRIT!"));
+  } else {
+    parts.push("💥 ", atkMe ? name("YOU") : name(e.atk), atkMe ? " failed on " : defMe ? " tried to raid " : " failed to raid ", defMe ? name("YOU") : name(e.def), " ");
+    parts.push(elx("span", "b", `${amt} W burned`));
+  }
+  for (const p of parts) tx.append(p);
+  li.appendChild(tx);
+  if (defMe && !atkMe && Date.now() + S.skew - e.at < RB().REVENGE_WINDOW_MS) {
+    const rv = elx("button", "rv", "REVENGE");
+    rv.type = "button"; rv.title = `Raid ${e.atk} back (ignores the 70% rule, once)`;
+    rv.onclick = (ev) => { ev.stopPropagation(); revengeOn(e.atkId); };
+    li.appendChild(rv);
+  }
+  li.appendChild(elx("span", "ag", agoText(e.at)));
+  if (FEED.fresh.has(feedKey(e))) li.classList.add("fresh");
+  return li;
+}
+async function revengeOn(pid) {
+  openLb();
+  await loadLb();
+  const r = LB.data && LB.data.rows.find((x) => x.publicId === pid);
+  if (r) openRaid(r); else toast("They aren't on the leaderboard right now.", "err");
+}
+function renderFeed() {
+  const box = $("feed");
+  if (!S.me) { box.hidden = true; return; }
+  box.hidden = false;
+  const list = S.raidFeed || [], mine = myPid();
+  const sig = list.map(feedKey).join(",") + `|${mine}|${FEED.collapsed}|${Math.floor(Date.now() / 20_000)}`;
+  if (sig === FEED.sig) return;
+  FEED.sig = sig;
+  box.classList.toggle("collapsed", !!FEED.collapsed);
+  $("feedHead").setAttribute("aria-expanded", String(!FEED.collapsed));
+  $("feedCar").textContent = FEED.collapsed ? "▸" : "▾";
+  $("feedCount").textContent = list.length ? `· ${list.length}` : "";
+  const ol = $("feedList");
+  ol.innerHTML = "";
+  if (!list.length) { ol.appendChild(elx("li", "empty", "No raids yet. Raids open while Squeektoshi runs: punch up!")); return; }
+  for (let i = list.length - 1; i >= 0; i--) ol.appendChild(feedLine(list[i], mine));
+  setTimeout(() => { FEED.fresh = new Set(); }, 1300);
+}
+
 // debug handle for the browser console / verification
 window.__squeekroom = { S, ham, wheel, sparks, meter, liveStatus, tintAt, P, checkSpot, enterPlace, select,
+  raid: { LB, RU, FEED, raidP, raidStakeBounds, lootRange, openLb, closeLb, openRaid, closeRaid, loadLb, raidFx, applyFeed },
   get iso() { return { ISO, LW, LH, SPOT, IWHEEL, IBURROW, BED_TILE, colTile, colLeft, footY, tileToCol, screenToTile, wallBase, toFlat, isoRect, bedGeom, laneAt }; },
   get selPid() { return selPid; }, get FX() { return FX; },
   renderNow() { const st = liveStatus(); tick10(); render(st); }, // paints one frame even when rAF is paused (hidden tab)
