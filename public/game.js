@@ -2056,8 +2056,9 @@ function renderToday() {
     c.price.innerHTML = buying || st.kind === "buy" ? `<s>${fmt(c.it.price)}</s> ${fmt(now)} W` : "";
     c.price.classList.toggle("poor", buying && !!st.poor);
     c.own.textContent = st.own || "";
-    c.note.textContent = buying && st.poor ? `need ${fmt(st.need)} more` : st.kind === "equipped" || st.kind === "equip" ? st.note || "" : "";
-    c.note.className = "cnote" + (buying && st.poor ? " poor" : "");
+    c.note.textContent = st.kind === "equipped" || st.kind === "equip" ? st.note || "" : ""; // a red price says "can't afford" here; the shop card below has the exact gap
+    c.note.className = "cnote";
+    c.el.title = buying && st.poor ? `Need ${fmt(st.need)} more watts` : "";
     if (!c.busy && !c.ticking) { c.btn.textContent = st.label; c.btn.disabled = !!st.disabled; c.btn.className = st.alt ? "alt" : ""; }
   }
 }
