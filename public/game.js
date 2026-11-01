@@ -3602,26 +3602,40 @@ addEventListener("keydown", (e) => { // capture phase: it can't be dismissed, an
 // debug handle for the browser console / verification
 if (window.SqueekSound) { window.SqueekSound.music("den"); window.SqueekSound.button($("soundBtn")); }
 
-// the Burrow Drop logo on the left rail: his ball bouncing down a few pebbles into a coin pile, on a loop
+// the Burrow Drop logo under the raids box: his ball bouncing, a coin popping above it (no frame, just him)
 const dropIcon = { c: $("dropIcon").getContext("2d"), last: 0 };
-const DI_PEGS = [[9, 11], [23, 11], [16, 18], [7, 24], [25, 24]];
-const DI_PATH = [[16, 2], [15, 7], [12, 6], [9, 9], [11, 12], [14, 14], [17, 13], [19, 16], [21, 20], [20, 23], [18, 26], [16, 28]]; // keyframes, 2 px apart in time
+function dropBall(c, x, y, r, ang) { // the curled-up hamster, as in Burrow Drop: the body turns, the light stays top-left
+  const R = r + 0.5, co = Math.cos(ang), si = Math.sin(ang);
+  for (let py = -r; py <= r; py++) for (let px = -r; px <= r; px++) {
+    const ux = px + 0.5, uy = py + 0.5, d2 = ux * ux + uy * uy;
+    if (d2 > R * R) continue;
+    const rx = ux * co + uy * si, ry = -ux * si + uy * co;
+    let col;
+    if (d2 > (R - 1.1) * (R - 1.1)) col = OUTLINE;
+    else if ((rx - r * 0.42) ** 2 + (ry + r * 0.22) ** 2 < 1) col = "#000000";
+    else if ((rx - r * 0.8) ** 2 + (ry - r * 0.1) ** 2 < 0.9) col = "#f472b6";
+    else if ((rx + 1) ** 2 + (ry + r * 0.75) ** 2 < 1.6) col = "#f472b6";
+    else if (ry > r * 0.6) col = "#c2410c";
+    else if (ry > r * 0.2) col = "#ffd166";
+    else col = ux + uy < -r ? "#ffc56a" : "#f5a623";
+    c.fillStyle = col; c.fillRect(x + px, y + py, 1, 1);
+  }
+}
 function drawDropIcon(now) {
   requestAnimationFrame(drawDropIcon);
-  if (document.hidden || now - dropIcon.last < 70) return; // ~14 fps is plenty for a 32-px icon
+  if (document.hidden || now - dropIcon.last < 60) return; // ~16 fps is plenty for a 32-px logo
   dropIcon.last = now;
-  const c = dropIcon.c, t = (now / 1000) % 2.4, k = Math.min(DI_PATH.length - 1.001, t * 6);
-  c.fillStyle = "#6e3a1c"; c.fillRect(0, 0, 32, 32);
-  c.fillStyle = "#5a2d14"; for (const [x, y] of [[3, 4], [27, 6], [5, 16], [28, 15], [12, 22], [22, 29]]) c.fillRect(x, y, 2, 1);
-  for (const [x, y] of DI_PEGS) { fillEllipse(c, x + 0.5, y + 0.5, 2, 2, OUTLINE); fillEllipse(c, x + 0.5, y + 0.5, 1.2, 1.2, "#9ca3af"); }
-  for (let i = 0; i < 4; i++) { c.fillStyle = OUTLINE; c.fillRect(10 + i * 3, 29 - (i % 2), 3, 2); c.fillStyle = "#ffd166"; c.fillRect(10 + i * 3, 29 - (i % 2), 2, 1); }
-  const a = Math.floor(k), f = k - a, [x0, y0] = DI_PATH[a], [x1, y1] = DI_PATH[a + 1];
-  const x = x0 + (x1 - x0) * f, y = y0 + (y1 - y0) * f;
-  fillEllipse(c, x + 0.5, y + 0.5, 3.4, 3.4, OUTLINE);
-  fillEllipse(c, x + 0.5, y + 0.5, 2.6, 2.6, "#f5a623");
-  c.fillStyle = "#ffd166"; c.fillRect(Math.round(x) - 1, Math.round(y) + 1, 3, 1);
-  c.fillStyle = "#000000"; c.fillRect(Math.round(x) + (Math.floor(k * 2) % 2 ? 1 : -1), Math.round(y) - 1, 1, 1); // the eye flips as he tumbles
-  if (t > 2.0) { c.fillStyle = "#fff8d0"; c.fillRect(16, 25, 1, 3); c.fillRect(15, 26, 3, 1); } // a glint when he lands
+  const c = dropIcon.c, t = now / 1000, still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const hop = still ? 2 : Math.abs(Math.sin(t * 3)) * 5;
+  c.clearRect(0, 0, 32, 32);
+  fillEllipse(c, 15.5, 29.5, 7 - hop * 0.5, 1.6, "rgba(0,0,0,.35)");
+  dropBall(c, 15, Math.round(21 - hop), 8, still ? 0 : t * 2.2);
+  const cy = Math.round(8 - (still ? 1 : Math.abs(Math.sin(t * 3 + 1)) * 3));
+  fillEllipse(c, 24.5, cy + 0.5, 3.4, 3.4, OUTLINE); fillEllipse(c, 24.5, cy + 0.5, 2.5, 2.5, "#ffd166");
+  c.fillStyle = "#fff8d0"; c.fillRect(23, cy - 1, 1, 1);
+  c.fillStyle = "#c2410c"; c.fillRect(23, cy + 2, 3, 1);
+  if (!still && (t * 2) % 1 < 0.5) { c.fillStyle = "#fff8d0"; c.fillRect(28, cy - 5, 1, 3); c.fillRect(27, cy - 4, 3, 1); }
+  if (!still && (t * 2 + 0.5) % 1 < 0.4) { c.fillStyle = "#fff8d0"; c.fillRect(6, 8, 1, 3); c.fillRect(5, 9, 3, 1); }
 }
 requestAnimationFrame(drawDropIcon);
 window.__squeekroom = { S, tut: { TUT, W: TUT_W, H: TUT_H }, ham, wheel, sparks, meter, pops, spawnPop, liveStatus, tintAt, P, checkSpot, enterPlace, select,
