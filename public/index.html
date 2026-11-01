@@ -240,6 +240,19 @@ body.modal-open{overflow:hidden}
 .lbstate.open{background:color-mix(in srgb,var(--raid) 10%,var(--bg));color:var(--ink)}
 .lbstate b{color:var(--ink)}
 .lbrows{display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none}
+.lbrows li{display:flex;gap:4px;align-items:stretch}
+.lbrows li > .lbrow{flex:1;min-width:0}
+.lbvisit{all:unset;box-sizing:border-box;flex:none;width:32px;display:grid;place-items:center;border:1px solid var(--line);border-radius:8px;background:var(--bg);cursor:pointer;font-size:14px}
+.lbvisit:hover{border-color:var(--ink)}
+.lbvisit:focus-visible{outline:2px solid var(--chain);outline-offset:1px}
+.lbrandom{align-self:flex-start}
+.visitbar{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:6;display:flex;align-items:center;gap:8px;padding:6px 8px 6px 12px;border-radius:10px;background:var(--dk-bg);color:var(--dk-ink);border:1px solid var(--dk-line);box-shadow:0 8px 24px rgba(0,0,0,.35);max-width:calc(100% - 24px)}
+.visitbar[hidden]{display:none}
+.visitbar .vname{font-family:var(--display);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.visitbar .pxbtn{flex:none}
+.feed .fname{all:unset;font-weight:700;cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px}
+.feed .fname:hover{text-decoration-style:solid}
+.feed .fname:focus-visible{outline:2px solid var(--chain);outline-offset:1px}
 .lbrow{all:unset;box-sizing:border-box;display:grid;grid-template-columns:28px 34px minmax(0,1fr) auto;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);font-size:12px;width:100%}
 .lbrow .rk{font-family:var(--display);font-size:11px;color:var(--muted);text-align:right}
 .lbrow .mat{width:32px;height:16px;image-rendering:pixelated;display:block}
@@ -491,6 +504,7 @@ body.modal-open{overflow:hidden}
 <main class="main">
   <div class="roomcol">
     <section class="stage" id="stage">
+      <div class="visitbar" id="visitBar" hidden><span class="vname" id="visitName"></span><button type="button" class="pxbtn" id="visitRaid" hidden>Raid</button><button type="button" class="pxbtn alt" id="visitHome">Back home</button></div>
       <canvas id="room" width="352" height="240" aria-label="Isometric pixel den with a hamster wheel and a bed"></canvas>
       <div class="firsthint" id="firstHint" hidden>The wheel earns your watts. Spend them in the shop.</div>
       <div class="zoomctl" role="group" aria-label="Den size">
@@ -599,6 +613,7 @@ body.modal-open{overflow:hidden}
     <button type="button" class="lbx" id="lbClose" aria-label="Close the leaderboard">✕</button>
   </div>
   <div class="lbstate" id="lbState"></div>
+  <button type="button" class="pxbtn alt lbrandom" id="lbRandom">Random den</button>
   <ol class="lbrows" id="lbRows"></ol>
   <p class="lbnote">You can raid dens with at least 70% of your watts, or anyone who raided you in the last 24 hours. 10 raids a day, only while Squeektoshi runs.</p>
 </aside>

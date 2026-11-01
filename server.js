@@ -4,7 +4,7 @@
 // Watts buy cosmetics; wheel and bed upgrades are the only items that raise generation.
 // While he runs, players may raid richer rooms (POST /api/raid): a won raid moves watts, a lost
 // stake burns entirely. Only dens that have earned RAID.MIN_EARNED watts can raid or be raided.
-// GET /api/leaderboard lists every room by balance.
+// GET /api/leaderboard lists every room by balance; GET /api/den (?id= or /random) shows one den's look.
 // Boosts (POST /api/boost), the Raid Shield (POST /api/shield) and lucky crates (POST /api/crate): single-use
 // consumables bought with watts (burned) or found in crates that drop, on settled blocks, for dens that are
 // watching. About 1 settled block in 150 is golden: it pays 10x wheel watts to every den watching.
@@ -1176,17 +1176,56 @@ function leaderboardRows(st, now) {
   LB_CACHE.set(st, out);
   return out;
 }
+// What `viewer` (null: anonymous) may do to den `row` ({publicId, watts, fresh, shielded}): the same
+// rules applyRaid enforces (it re-checks everything). Shared by the leaderboard and den visits.
+function viewerFlags(viewer, row, now) {
+  const you = !!viewer && row.publicId === viewer.publicId;
+  const revenge = !!viewer && !you && pendingRevenge(viewer, row.publicId, now) != null;
+  const raidable = !!viewer && !you && raidReady(viewer) && !boughtShieldUp(viewer, now) && !row.fresh && !row.shielded && (row.watts * 100 >= viewer.watts * BALANCE.RAID.ELIGIBLE_MIN_PCT || revenge);
+  return { raidable, revenge, you };
+}
 function leaderboard(st, token, now = Date.now(), { chainReadAt = null } = {}) {
   const viewer = getPlayer(st, token);
   const c = leaderboardRows(st, now);
   const rows = c.rows.map(({ shieldUntil, ...r }) => {
-    const you = !!viewer && r.publicId === viewer.publicId;
     const shielded = shieldUntil > now; // cached rows hold the expiry, so a shield ends on time
-    const revenge = !!viewer && !you && pendingRevenge(viewer, r.publicId, now) != null;
-    const raidable = !!viewer && !you && raidReady(viewer) && !boughtShieldUp(viewer, now) && !r.fresh && !shielded && (r.watts * 100 >= viewer.watts * BALANCE.RAID.ELIGIBLE_MIN_PCT || revenge);
-    return { ...r, shielded, raidable, revenge, you };
+    return { ...r, shielded, ...viewerFlags(viewer, { ...r, shielded }, now) };
   });
   return { rows, total: c.total, cachedAt: c.at, raid: viewer ? raidStatus(st, viewer, now, chainReadAt) : null };
+}
+
+// ---------- den visits ----------
+// A den as visitors see it: how it looks (style, furniture, fixtures, tiers, skin, a raised shield)
+// and what the leaderboard already shows (name, watts). Never its crates, held items, boosts,
+// wallet address or token. raid: the viewer's flags against it, as on the leaderboard.
+function denView(st, p, viewer, now = Date.now()) {
+  const sh = shieldUp(p, now) ? { until: p.shield.until, kind: p.shield.kind } : { until: 0, kind: null };
+  const den = {
+    publicId: p.publicId, name: displayName(p), verified: !!p.wallet, watts: p.watts, lifetimeWatts: p.lifetimeWatts,
+    roomTier: p.roomTier | 0, wheelTier: p.wheelTier | 0, bedTier: p.bedTier | 0, skin: p.skin, wallpaper: p.wallpaper, floor: p.floor,
+    placed: (p.placed || []).map(({ pid, item, x, y, flip }) => ({ pid, item, x, y, flip: !!flip })),
+    fixtures: { wheel: { ...p.fixtures.wheel }, bed: { ...p.fixtures.bed } },
+    shield: sh,
+  };
+  const row = { publicId: p.publicId, watts: p.watts, fresh: !raidReady(p), shielded: sh.until > 0 };
+  return { den, raid: { ...viewerFlags(viewer, row, now), fresh: row.fresh, shielded: row.shielded } };
+}
+// GET /api/den?id=<publicId>&token=<viewer, optional>
+function visitDen(st, id, token, now = Date.now()) {
+  const t = tokenForPublicId(st, id);
+  if (!t) return fail("unknown_den");
+  return { ok: true, ...denView(st, st.players[t], getPlayer(st, token), now) };
+}
+// GET /api/den/random?token=: any named den but the viewer's. The token list is cached for 10 s.
+const RANDOM_CACHE = new WeakMap(); // state -> { at, tokens }
+function randomDen(st, token, now = Date.now(), rng = Math.random) {
+  let c = RANDOM_CACHE.get(st);
+  if (!c || now < c.at || now - c.at >= 10_000) RANDOM_CACHE.set(st, (c = { at: now, tokens: Object.keys(st.players).filter((t) => st.players[t] && st.players[t].username) }));
+  const viewer = getPlayer(st, token);
+  const pool = viewer ? c.tokens.filter((t) => t !== token) : c.tokens;
+  const live = pool.filter((t) => Object.hasOwn(st.players, t));
+  if (!live.length) return fail("no_dens");
+  return { ok: true, ...denView(st, st.players[live[Math.floor(rng() * live.length) % live.length]], viewer, now) };
 }
 
 // ---------- state ----------
@@ -1807,6 +1846,18 @@ function readBody(req) {
 }
 // New dens per client address: one script can't fill MAX_PLAYERS (which would lock every new player
 // out) or mint welcome grants by the thousand. Railway's edge sets X-Real-IP; locally it's the socket.
+// Den visits per client address: a visit is cheap, but nobody should crawl every den in a minute.
+const VISIT_LIMIT = { MAX: 120, WINDOW_MS: 60_000 };
+const visitHits = new Map(); // ip -> { start, n }
+function allowVisit(ip, now = Date.now()) {
+  if (!ip) return true;
+  if (visitHits.size > 10_000) for (const [k, e] of visitHits) if (now - e.start >= VISIT_LIMIT.WINDOW_MS) visitHits.delete(k);
+  let e = visitHits.get(ip);
+  if (!e || now - e.start >= VISIT_LIMIT.WINDOW_MS) visitHits.set(ip, (e = { start: now, n: 0 }));
+  if (e.n >= VISIT_LIMIT.MAX) return false;
+  e.n++;
+  return true;
+}
 const NEW_DEN_LIMIT = { MAX: 60, WINDOW_MS: 3_600_000 };
 const newDenHits = new Map(); // ip -> { start, n }
 const clientIp = (req) => String((req && req.headers["x-real-ip"]) || (req && req.socket && req.socket.remoteAddress) || "").trim().slice(0, 64);
@@ -2075,6 +2126,14 @@ async function handle(req, res) {
       return json(res, 200, snapshot(url.searchParams.get("token"), clientIp(req)));
     }
     if (url.pathname === "/api/config" && req.method === "GET") return json(res, 200, configPayload());
+    if ((url.pathname === "/api/den" || url.pathname === "/api/den/random") && req.method === "GET") {
+      if (!allowVisit(clientIp(req))) return json(res, 429, { error: "slow_down" });
+      const tok = url.searchParams.get("token");
+      const r = url.pathname === "/api/den" ? visitDen(state, url.searchParams.get("id"), tok) : randomDen(state, tok);
+      if (!r.ok) return json(res, 404, { error: r.error });
+      const { ok, ...body } = r;
+      return json(res, 200, body);
+    }
     if (url.pathname === "/api/leaderboard" && req.method === "GET") {
       return json(res, 200, leaderboard(state, url.searchParams.get("token"), Date.now(), { chainReadAt: chainReadAt() }));
     }
@@ -2146,7 +2205,7 @@ module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certElig
 Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
   raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
-  leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS,
+  leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS, viewerFlags, denView, visitDen, randomDen, allowVisit, VISIT_LIMIT,
   WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername, usernameProblem, createDen, purgeNameless, runMigrations,
   REPLAY_NIGHT, REPLAY_NONSTOP_NIGHT, REPLAY_API_SINK, REPLAY_MIN_SLEEP_MS, replaySchedule, replayLocate, replayCumulativeBlocks, cumulativeBlocks: replayCumulativeBlocks,
   replayReading, replayTick, leaveReplay, advanceTo,

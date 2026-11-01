@@ -2457,3 +2457,71 @@ test("purge: nameless dens go (with their feed lines and revenge entries); named
   assert.ok(st2.players[TB]);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ---------- v4 feature 4: visiting dens ----------
+test("visits: a den's look and public numbers only; never crates, items, boosts, wallet or token", () => {
+  const st = raidWorld({ def: { watts: 50_000, username: "Host", wallet: "0x" + "2".repeat(40), skin: "skin_panda", roomTier: 2 } });
+  st.players[TA].username = "Guest";
+  const host = st.players[TB];
+  own(host, "fur_sofa");
+  host.placed = [{ pid: "s1", item: "fur_sofa", x: 3, y: 2, flip: true, extra: "x" }];
+  host.crates = [{ id: "c1", at: T0, i: 2, j: 2, c: { kind: "decor", item: "fur_sunflower" } }];
+  host.items.shield_token = 2;
+  host.effects.double_wheel = T0 + 3_600_000;
+  host.raidedBy = [{ pid: "zzz", at: T0, avenged: false }];
+  const r = S.visitDen(st, pidOf(TB), TA, T0);
+  assert.equal(r.ok, true);
+  assert.deepEqual(Object.keys(r.den).sort(), ["bedTier", "fixtures", "floor", "lifetimeWatts", "name", "placed", "publicId", "roomTier", "shield", "skin", "verified", "wallpaper", "watts", "wheelTier"]);
+  assert.deepEqual([r.den.name, r.den.verified, r.den.skin, r.den.roomTier, r.den.watts], ["Host", true, "skin_panda", 2, 50_000]);
+  assert.deepEqual(r.den.placed, [{ pid: "s1", item: "fur_sofa", x: 3, y: 2, flip: true }]);
+  assert.deepEqual(r.den.fixtures, host.fixtures);
+  assert.notEqual(r.den.fixtures, host.fixtures); // a copy
+  const text = JSON.stringify(r);
+  for (const secret of [TB, TA, "0x2222", "crates", "fur_sunflower", "shield_token", "double_wheel", "raidedBy", "zzz", "shieldDay", "walletNonce"]) assert.ok(!text.includes(secret), secret);
+  assert.equal(S.visitDen(st, "nope", TA, T0).error, "unknown_den");
+  assert.equal(S.visitDen(st, undefined, TA, T0).error, "unknown_den");
+});
+
+test("visits: the raid flags match the leaderboard's for the same viewer; a raised shield shows", () => {
+  const st = raidWorld({ def: { watts: 50_000 } });
+  for (const t of [TA, TB, TC]) st.players[t].username = "u" + t[0];
+  const lb = S.leaderboard(st, TA, T0).rows;
+  for (const t of [TA, TB, TC]) {
+    const row = lb.find((x) => x.publicId === pidOf(t)), v = S.visitDen(st, pidOf(t), TA, T0);
+    assert.deepEqual([v.raid.raidable, v.raid.revenge, v.raid.you, v.raid.fresh, v.raid.shielded], [row.raidable, row.revenge, row.you, row.fresh, row.shielded], t);
+  }
+  assert.equal(S.visitDen(st, pidOf(TB), TA, T0).raid.raidable, true);
+  assert.equal(S.visitDen(st, pidOf(TA), TA, T0).raid.you, true);
+  assert.equal(S.visitDen(st, pidOf(TB), null, T0).raid.raidable, false); // anonymous: look only
+  st.players[TB].shield = { until: T0 + 60_000, kind: "bought" };
+  const v = S.visitDen(st, pidOf(TB), TA, T0);
+  assert.deepEqual([v.den.shield, v.raid.shielded, v.raid.raidable], [{ until: T0 + 60_000, kind: "bought" }, true, false]);
+  assert.deepEqual(S.visitDen(st, pidOf(TB), TA, T0 + 60_000).den.shield, { until: 0, kind: null });
+});
+
+test("visits: a random den is any named den but yours, spread across dens", () => {
+  const st = { players: {} };
+  const toks = Array.from({ length: 6 }, (_, i) => String.fromCharCode(100 + i).repeat(32));
+  toks.forEach((t, i) => (st.players[t] = Object.assign(S.newPlayer(1, T0, t), { username: i < 5 ? `den${i}` : null })));
+  const seen = new Map(), rng = prng(3);
+  for (let k = 0; k < 600; k++) {
+    const r = S.randomDen(st, toks[0], T0, rng);
+    assert.equal(r.ok, true);
+    assert.notEqual(r.den.publicId, pidOf(toks[0]), "never yourself");
+    assert.ok(r.den.name.startsWith("den"), "only named dens");
+    seen.set(r.den.publicId, (seen.get(r.den.publicId) || 0) + 1);
+  }
+  assert.equal(seen.size, 4);
+  for (const n of seen.values()) assert.ok(n > 100, String(n));
+  const lonely = { players: { [TA]: Object.assign(S.newPlayer(1, T0, TA), { username: "Solo" }) } };
+  assert.equal(S.randomDen(lonely, TA, T0).error, "no_dens");
+});
+
+test("visits: per-address rate limit", () => {
+  const ip = "203.0.113.200";
+  let ok = 0;
+  for (let i = 0; i < S.VISIT_LIMIT.MAX + 5; i++) if (S.allowVisit(ip, T0)) ok++;
+  assert.equal(ok, S.VISIT_LIMIT.MAX);
+  assert.equal(S.allowVisit(ip, T0 + S.VISIT_LIMIT.WINDOW_MS), true); // a new window
+  assert.equal(S.allowVisit(null, T0), true);
+});

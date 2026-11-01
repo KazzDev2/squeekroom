@@ -447,6 +447,10 @@ const S = {
   idle: false, // server's view: asleep by the chain (no settled block for IDLE_AFTER_MS): bed income flows
   meAt: 0, // serverTime of the newest `me` applied (drops an older snapshot that lands late)
 };
+// Visiting: while V.den is set the room shows that den (read-only) instead of mine. Everything the
+// renderer draws comes from shownDen(); my own den (S.me) keeps running the HUD, shop and raids.
+const V = { den: null, raid: null, busy: false, timer: 0 };
+const shownDen = () => V.den || S.me;
 const params = new URLSearchParams(location.search);
 const UTC_OVERRIDE = params.has("utc") ? Number(params.get("utc")) : null; // ?utc=22 previews the tint at that hour
 
@@ -551,8 +555,7 @@ function applyMe(me, first = false, opts = {}) {
   if (wasPreview && !S.preview) first = true; // the real den just arrived: start the meters from it
   const prev = wasPreview && !S.preview ? null : S.me;
   S.me = me;
-  myFixtures = me.fixtures || null;
-  placeFixtures();
+  if (!V.den) { myFixtures = me.fixtures || null; placeFixtures(); } // a visit keeps the visited den's fixtures
   S.watching = !!me.watching;
   if (first || !prev) meter.shown = me.watts;
   else if (me.lifetimeWatts > prev.lifetimeWatts) onAccrual(me.lifetimeWatts - prev.lifetimeWatts, !!opts.soft);
@@ -725,7 +728,7 @@ const ham = { init: false, mode: "sleep", x: SPOT.bed.x, y: SPOT.bed.y, gy: SPOT
 // when flipped); id is then the iso id, so the "_front" overlay drawn at the same origin is iso_bed_tN_front.
 function bedGeom(at = null) {
   const f = at || fixture("bed"), flip = !!f.flip, c = isoTileCenter(f.i, f.j), foot = c.y + ISO.FOOT;
-  const tier = clamp((S.me && S.me.bedTier) | 0, 0, 5), flat = `bed_t${tier}`;
+  const tier = clamp((shownDen() && shownDen().bedTier) | 0, 0, 5), flat = `bed_t${tier}`;
   const s = (window.SPRITES || {})[flat];
   const w = (s && s.w) || 28, h = (s && s.h) || 10, sl = (s && s.sleep) || [w >> 1, h - 3];
   const x = Math.round(c.x - w / 2), y = foot - h;
@@ -925,7 +928,7 @@ addEventListener("resize", () => { fit(); positionTool(); });
 
 function itemsIn(zone) {
   const out = [];
-  for (const p of (S.me && S.me.placed) || []) {
+  for (const p of (shownDen() && shownDen().placed) || []) {
     if (P.mode === "move" && p.pid === P.pid) continue; // the ghost stands in for it while moving
     const it = S.catalog.get(p.item);
     if (it && it.zone === zone) out.push([p, it]);
@@ -982,7 +985,7 @@ function diamondCanvas(fill, rim, hatch = null, k = 1) {
   return c;
 }
 const drawTileOverlay = (c, i, j, img) => { const t = isoTileTop(i, j); c.drawImage(img, t.x, t.y); };
-const matTier = () => clamp((S.me && S.me.roomTier) | 0, 0, 5);
+const matTier = () => clamp((shownDen() && shownDen().roomTier) | 0, 0, 5);
 function matEdge(t) { const s = (window.SPRITES || {})[`floor_mat_t${t}`]; return ((s && s.edge) || [2, 13, 14]).map((i) => PALETTE[i] || "#888888"); }
 // 16 x 16 swatch canvas of a wallpaper / flooring style (sprite, or the flat painter's top-left corner)
 function swatch(id, kind) {
@@ -1138,7 +1141,7 @@ function rugHit(p, it, L) {
 }
 
 function render(st) {
-  const me = S.me;
+  const me = shownDen();
   fxOpts(st);
   g.globalCompositeOperation = "source-over";
   g.globalAlpha = 1;
@@ -1292,7 +1295,7 @@ function fixtureRect(k, i, j, flip) {
   return { x: b.x, y: b.y, w: b.w, h: b.h };
 }
 function drawHamster() {
-  const skin = (S.me && S.me.skin) || "skin_classic";
+  const skin = (shownDen() && shownDen().skin) || "skin_classic";
   let kind = "sit", frame = 0, x = ham.x, y = ham.y;
   if (ham.mode === "run") { kind = "run"; frame = Math.floor(ham.runPhase) % 4; y -= frame % 2 ? 1 : 0; }
   else if (ham.mode === "move") { kind = ham.move && ham.move.hop ? "sit" : "run"; frame = Math.floor(ham.runPhase) % 4; }
@@ -1365,6 +1368,7 @@ function rasterPop(p, str, color, sc) {
 }
 // kind: "earn" (yellow, at the wheel or bed), "pip" (bare "+" trickle while he sleeps), "hit" (red, top centre)
 function spawnPop(kind, n = 0) {
+  if (V.den && kind !== "hit") return; // my income pops belong over my own wheel and bed
   let p = null;
   for (const q of pops) if (q.on && q.kind === kind && kind !== "pip" && q.t < 250) { p = q; n += q.n; break; } // same poll burst: one popup
   if (!p) for (const q of pops) if (!q.on) { p = q; break; }
@@ -1596,7 +1600,7 @@ function revalidate() {
   P.valid = P.it.zone === "fixture" ? checkFixture(P.it.fixture, c.x, c.y, P.flip) : checkSpot(P.it, c.x, c.y, P.mode === "move" ? P.pid : null, P.flip);
 }
 function hitTest(L) {
-  if (!S.me || S.preview) return null;
+  if (!S.me || S.preview || V.den) return null;
   const order = { floor: 0, rug: 1, wall: 2 }; // topmost layer first; floor billboards front-most first
   const depth = (p, it) => (it.zone === "floor" ? floorGeom(it, p.x, p.y, p.flip).d : 0);
   const list = S.me.placed.map((p) => [p, S.catalog.get(p.item)]).filter(([, it]) => it && it.zone)
@@ -1612,6 +1616,7 @@ function hitTest(L) {
   return null;
 }
 function enterPlace(itemId) {
+  if (V.den) leaveVisit(); // placing happens at home
   const it = S.catalog.get(itemId);
   if (!it || !it.zone || unplaced(itemId) <= 0) return;
   selPid = null;
@@ -1746,6 +1751,7 @@ addEventListener("keydown", (e) => {
   if (RU.open) { raidKey(e); return; } // so is the raid
   if (LB.open && e.key === "Escape") { closeLb(); return; }
   if (e.target && e.target.closest && e.target.closest("input,textarea,select")) return;
+  if (e.key === "Escape" && V.den) { leaveVisit(); return; }
   if (e.key === "Escape") { if (P.mode) cancelMode(); else select(null); }
   else if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey && !e.altKey) {
     if (P.mode) { P.flip = !P.flip; P.userFlip = true; revalidate(); renderPlacing(); } else if (selPid) flipPlaced(findPlaced(selPid));
@@ -2197,7 +2203,7 @@ function boostThumb(k) {
 
 // the shield bubble over my den
 function drawShieldBubble() {
-  const sh = myShield();
+  const sh = V.den ? (V.den.shield && V.den.shield.until > nowS() ? { up: true, kind: V.den.shield.kind, left: V.den.shield.until - nowS() } : { up: false }) : myShield();
   if (!sh.up) return;
   const bruise = sh.kind === "bruise", t = performance.now() / 1000;
   const cx = LW / 2, cy = ISO.Y0 + 74, rx = LW / 2 - 6, ry = 116;
@@ -2237,7 +2243,7 @@ function drawCrate(c, G) {
   if (k < 1) { const sx = G.x + G.w / 2 + 6, sy = G.y + 6 - Math.round(k * 4); g.fillStyle = "#fff8d0"; g.fillRect(sx, sy - 1, 1, 3); g.fillRect(sx - 1, sy, 3, 1); }
 }
 function crateAt(L) {
-  if (!S.me || !S.me.crates || !S.me.crates.length) return null;
+  if (V.den || !S.me || !S.me.crates || !S.me.crates.length) return null;
   for (const c of [...S.me.crates].sort((a, b) => b.i + b.j - (a.i + a.j))) { // front-most first
     const G = crateGeom(c), pad = 3;
     if (L.x >= G.x - pad && L.x < G.x + G.w + pad && L.y >= G.y + G.h * 0.35 - pad && L.y < G.y + G.h + pad) return c;
@@ -2301,7 +2307,7 @@ function renderFirstHint() {
   const me = S.me;
   const fresh = !!me && !me.wheelTier && !me.placed.length && !ls.get("sr_placed_once")
     && !Object.entries(me.owned || {}).some(([id, n]) => n > 0 && !DEFAULT_IDS.has(id));
-  $("firstHint").hidden = !fresh || !!P.mode;
+  $("firstHint").hidden = !fresh || !!P.mode || !!V.den;
 }
 // Username: unique, 3-16 of [A-Za-z0-9_] (the server re-checks). Picked in the onboarding step
 // (nameModal, after the tutorial), changed here in the side panel. No wallet needed.
@@ -2896,12 +2902,90 @@ function renderLb() {
     row.setAttribute("aria-label", `Rank ${r.rank}, ${rowName(r)}${r.verified ? " (wallet verified)" : ""}${you ? " (you)" : ""}, ${roomMaterial(r.roomTier | 0)} den, ${fmt(r.watts)} watts${raidable ? ", raidable" : ""}${r.revenge ? ", revenge" : ""}`);
     row.appendChild(wt);
     li.appendChild(row);
+    const vb = elx("button", "lbvisit", "👁");
+    vb.type = "button";
+    vb.title = you ? "Your den" : `Visit ${rowName(r)}'s den`;
+    vb.setAttribute("aria-label", vb.title);
+    vb.onclick = () => (you ? leaveVisit() : visitDen(r.publicId));
+    li.appendChild(vb);
     box.appendChild(li);
   }
   if (focusPid) { const f = box.querySelector(`[data-pid="${CSS.escape(focusPid)}"]`); if (f) f.focus({ preventScroll: true }); }
 }
 $("raidChip").onclick = () => (LB.open ? closeLb() : openLb());
 $("lbClose").onclick = closeLb;
+
+// ----- visiting other dens: the room shows theirs, read-only, until Back home -----
+async function fetchDen(path) {
+  try {
+    const r = await fetch(path, { cache: "no-store" });
+    return { ok: r.ok, j: await r.json().catch(() => ({})) };
+  } catch { return { ok: false, j: { error: "network" } }; }
+}
+const denUrl = (pid) => `/api/den?id=${encodeURIComponent(pid)}&token=${encodeURIComponent(token)}`;
+// pid null: a random den
+async function visitDen(pid) {
+  if (V.busy || !S.me || S.preview) return;
+  if (pid && pid === myPid()) { leaveVisit(); return; }
+  V.busy = true;
+  const r = await fetchDen(pid ? denUrl(pid) : `/api/den/random?token=${encodeURIComponent(token)}`);
+  V.busy = false;
+  if (!r.ok || !r.j.den) {
+    const e = r.j.error;
+    toast(e === "slow_down" ? "Easy there. Try again in a minute." : e === "no_dens" ? "No other dens yet." : e === "unknown_den" ? "That den is gone." : "Can't reach the server", "err");
+    return;
+  }
+  if (r.j.raid && r.j.raid.you) { leaveVisit(); return; }
+  if (P.mode) cancelMode();
+  select(null);
+  if (LB.open) closeLb();
+  showVisit(r.j);
+  clearInterval(V.timer);
+  V.timer = setInterval(refreshVisit, 10_000);
+}
+function showVisit(j) {
+  V.den = j.den;
+  V.raid = j.raid || {};
+  myFixtures = V.den.fixtures;
+  placeFixtures();
+  ham.init = false; // he starts over in this den's wheel or bed
+  renderVisitBar();
+  renderFirstHint();
+}
+async function refreshVisit() {
+  if (!V.den || document.hidden) return;
+  const pid = V.den.publicId, r = await fetchDen(denUrl(pid));
+  if (!V.den || V.den.publicId !== pid) return;
+  if (r.ok && r.j.den) { V.den = r.j.den; V.raid = r.j.raid || {}; myFixtures = V.den.fixtures; placeFixtures(); renderVisitBar(); }
+  else if (r.j.error === "unknown_den") { leaveVisit(); toast("That den is gone.", "err"); }
+}
+function leaveVisit() {
+  if (!V.den) return;
+  clearInterval(V.timer);
+  V.den = null;
+  V.raid = null;
+  myFixtures = S.me ? S.me.fixtures : null;
+  placeFixtures();
+  ham.init = false;
+  renderVisitBar();
+  renderFirstHint();
+}
+function renderVisitBar() {
+  const bar = $("visitBar");
+  bar.hidden = !V.den;
+  if (!V.den) return;
+  const nm = $("visitName");
+  nm.textContent = `${V.den.name}'s den`;
+  if (V.den.verified) nm.appendChild(verifiedBadge());
+  $("visitRaid").hidden = !(V.raid && V.raid.raidable);
+}
+$("visitHome").onclick = leaveVisit;
+$("visitRaid").onclick = () => {
+  if (!V.den) return;
+  openRaid({ publicId: V.den.publicId, name: V.den.name, verified: V.den.verified, watts: V.den.watts, roomTier: V.den.roomTier,
+    revenge: !!V.raid.revenge, raidable: !!V.raid.raidable, fresh: !!V.raid.fresh, shielded: !!V.raid.shielded });
+};
+$("lbRandom").onclick = () => visitDen(null);
 
 // ----- raid modal -----
 const RU = { open: false, row: null, mult: 0, stake: 0, busy: false, result: null, back: null, built: false, countRaf: 0 };
@@ -3317,13 +3401,21 @@ function feedLine(e, mine) {
   const atkMe = e.atkId === mine, defMe = e.defId === mine;
   if (defMe) li.className = "me"; else if (atkMe) li.className = "mine";
   const name = (s) => elx("b", null, s || "anon");
+  const link = (s, pid) => { // a name you can visit
+    if (!pid) return name(s);
+    const b = elx("button", "fname", s || "anon");
+    b.type = "button";
+    b.title = `Visit ${s || "anon"}'s den`;
+    b.onclick = (ev) => { ev.stopPropagation(); visitDen(pid); };
+    return b;
+  };
   const parts = [];
   if (e.win) {
-    parts.push(atkMe ? name("You") : name(e.atk), " raided ", defMe ? name("you") : name(e.def), " ");
+    parts.push(atkMe ? name("You") : link(e.atk, e.atkId), " raided ", defMe ? name("you") : link(e.def, e.defId), " ");
     parts.push(elx("span", "w", `${atkMe ? "+" : "−"}${amt} W`));
     if (e.crit) parts.push(" ", elx("span", "critf", "crit"));
   } else {
-    parts.push(atkMe ? name("You") : name(e.atk), " failed on ", defMe ? name("you") : name(e.def), " ");
+    parts.push(atkMe ? name("You") : link(e.atk, e.atkId), " failed on ", defMe ? name("you") : link(e.def, e.defId), " ");
     parts.push(elx("span", "b", `−${amt} W`));
   }
   for (const p of parts) tx.append(p);
@@ -3631,7 +3723,8 @@ window.__squeekroom = { S, tut: { TUT, W: TUT_W, H: TUT_H }, ham, wheel, sparks,
   get selPid() { return selPid; }, get FX() { return FX; },
   renderNow() { const st = liveStatus(); tick10(); render(st); }, // paints one frame even when rAF is paused (hidden tab)
   renderCert, openCert, closeCert, certLeftWords, get cert() { return certUi.cert; },
-  v3: { crateGeom, crateAt, openCrateUi, myShield, boostOn, logical, LW } };
+  v3: { crateGeom, crateAt, openCrateUi, myShield, boostOn, logical, LW },
+  visit: { V, visitDen, leaveVisit, shownDen } };
 // the narrow surface public/wallet.js builds on (it never touches game internals beyond this)
 window.__squeekroom.bridge = { S, post, applyMe, toast, errorWords, refreshLb() { if (LB.open) loadLb(); } };
 
