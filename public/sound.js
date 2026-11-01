@@ -1,5 +1,5 @@
-// Squeek Den sound: little synthesized effects and two chiptune loops, all made live with WebAudio
-// (no audio files). Browsers only allow sound after a click or key, so nothing plays before that.
+// Squeek Den sound: little synthesized effects (made live with WebAudio) and two CC0 music tracks.
+// Browsers only allow sound after a click or key, so nothing plays before that.
 //   SqueekSound.sfx(name, opts)   SqueekSound.music("den" | "drop")   SqueekSound.button(el)
 // Mode (localStorage sd_sound): "all" (music + effects), "sfx" (effects only), "off".
 window.SqueekSound = (() => {
@@ -8,7 +8,7 @@ const KEY = "sd_sound", MODES = ["all", "sfx", "off"];
 let mode = "all";
 try { const m = localStorage.getItem(KEY); if (MODES.includes(m)) mode = m; } catch {}
 let ctx = null, master = null, musicBus = null, sfxBus = null, noiseBuf = null, pulse = {};
-let song = null, playing = null, step = 0, nextAt = 0, timer = 0;
+let song = null, playing = null;
 const buttons = new Set(), last = new Map();
 
 // ---------- the audio graph ----------
@@ -41,7 +41,8 @@ function unlock() {
 for (const ev of ["pointerdown", "keydown", "touchend"]) addEventListener(ev, unlock, { capture: true, passive: true });
 document.addEventListener("visibilitychange", () => { // quiet in a hidden tab
   if (!ctx) return;
-  if (document.hidden) ctx.suspend(); else if (mode !== "off") ctx.resume();
+  if (document.hidden) { ctx.suspend(); if (el) el.pause(); }
+  else if (mode !== "off") { ctx.resume(); if (playing && el) el.play().catch(() => {}); }
 });
 
 // ---------- building blocks ----------
@@ -121,82 +122,37 @@ function sfx(name, o = {}) {
 }
 
 // ---------- music ----------
-// Each song: tempo (8th notes per minute), parts as bars of 8 steps: a note, "." rest, "-" hold.
-const SONGS = {
-  den: { // "Burrow Lullaby": soft, F major, loops every 16 bars
-    bpm8: 184, swing: 0.06,
-    lead: [
-      "A4 . C5 . F5 - E5 C5", "D5 - - . A4 . F4 .", "Bb4 . D5 . F5 - E5 D5", "C5 - - . G4 . E4 .",
-      "A4 . C5 . F5 - G5 A5", "E5 - - . C5 . A4 .", "D5 . Bb4 . E5 . C5 .", "F5 - - - . . . .",
-      "F5 . D5 . Bb4 . D5 .", "E5 . C5 . G4 . C5 .", "C5 . A4 . E4 . A4 .", "F5 - E5 - D5 - C5 -",
-      "D5 . F5 . Bb5 - A5 G5", "G5 - E5 . C5 . E5 .", "D5 . C5 . Bb4 . A4 .", "G4 - - - C5 . E5 .",
-    ],
-    bass: [
-      "F2 . C3 . F2 . C3 .", "D2 . A2 . D2 . A2 .", "Bb1 . F2 . Bb1 . F2 .", "C2 . G2 . C2 . G2 .",
-      "F2 . C3 . F2 . C3 .", "A1 . E2 . A1 . E2 .", "Bb1 . F2 . C2 . G2 .", "F2 . C3 . F2 . . .",
-      "Bb1 . F2 . Bb1 . F2 .", "C2 . G2 . C2 . G2 .", "A1 . E2 . A1 . E2 .", "D2 . A2 . D2 . A2 .",
-      "Bb1 . F2 . Bb1 . F2 .", "C2 . G2 . C2 . G2 .", "Bb1 . F2 . Bb1 . F2 .", "C2 . G2 . C2 . . .",
-    ],
-    drums: ["k . h . . . h .", "k . h . . . h h"],
-    vol: { lead: 0.055, bass: 0.11, kick: 0.16, hat: 0.018 }, leadDuty: 0.25,
-  },
-  drop: { // "Tunnel Hop": bouncy, C major
-    bpm8: 280, swing: 0,
-    lead: [
-      "C5 . E5 G5 . E5 C5 .", "A4 . C5 E5 . C5 A4 .", "F4 . A4 C5 . F5 E5 D5", "D5 - B4 . G4 . B4 D5",
-      "E5 . G5 . C6 - G5 E5", "A5 - E5 . C5 . E5 .", "F5 . A5 . G5 . B5 .", "C6 - - . G5 . E5 .",
-    ],
-    bass: [
-      "C2 C3 C2 C3 C2 C3 C2 C3", "A1 A2 A1 A2 A1 A2 A1 A2", "F1 F2 F1 F2 F1 F2 F1 F2", "G1 G2 G1 G2 G1 G2 G1 G2",
-      "C2 C3 C2 C3 C2 C3 C2 C3", "A1 A2 A1 A2 A1 A2 A1 A2", "F1 F2 F1 F2 G1 G2 G1 G2", "C2 C3 C2 C3 G1 G2 B1 B2",
-    ],
-    drums: ["k . h . s . h .", "k . h k s . h h"],
-    vol: { lead: 0.05, bass: 0.085, kick: 0.2, hat: 0.025, snare: 0.06 }, leadDuty: 0.125,
-  },
+// Two CC0 (public domain) tracks by Zane Little Music, from opengameart.org: streamed by an <audio>
+// element and routed through the music bus, so the speaker button and fades work the same.
+const TRACKS = {
+  den: { src: "music/apple_cider.ogg", vol: 0.5 }, // "Apple Cider"
+  drop: { src: "music/pixel_sprinter_loop.ogg", vol: 0.42 }, // "Pixel Sprinter" (loop)
 };
-const parse = (bars) => bars.join(" ").trim().split(/\s+/);
-function compile(s) {
-  const lead = parse(s.lead), bass = parse(s.bass), n = lead.length;
-  const notes = (seq, len) => seq.map((tok, i) => {
-    if (tok === "." || tok === "-") return null;
-    let hold = 1;
-    while (i + hold < len && seq[(i + hold) % len] === "-") hold++;
-    return { f: hz(tok), hold };
-  });
-  return { ...s, n, lead: notes(lead, n), bass: notes(bass, bass.length), drums: s.drums.map((b) => b.split(" ")) };
-}
-const COMPILED = {};
+const canOgg = (() => { try { return !!new Audio().canPlayType('audio/ogg; codecs="vorbis"'); } catch { return false; } })();
+let el = null, elNode = null;
 function startMusic() {
-  if (!ctx || mode !== "all" || !song) return;
-  const s = COMPILED[song] || (COMPILED[song] = compile(SONGS[song]));
-  playing = s; step = 0; nextAt = ctx.currentTime + 0.08;
+  if (!ctx || mode !== "all" || !song || !canOgg) return;
+  const tr = TRACKS[song];
+  if (!el) {
+    el = new Audio();
+    el.loop = true;
+    el.preload = "auto";
+    elNode = ctx.createMediaElementSource(el);
+    elNode.connect(musicBus);
+  }
+  if (!el.src.endsWith(tr.src)) el.src = tr.src;
+  playing = tr;
   musicBus.gain.cancelScheduledValues(ctx.currentTime);
   musicBus.gain.setValueAtTime(Math.max(0.0001, musicBus.gain.value), ctx.currentTime);
-  musicBus.gain.exponentialRampToValueAtTime(1, ctx.currentTime + 1.2);
-  clearInterval(timer);
-  timer = setInterval(schedule, 25);
-  schedule();
+  musicBus.gain.exponentialRampToValueAtTime(tr.vol, ctx.currentTime + 1.5);
+  if (!document.hidden) el.play().catch(() => {});
 }
 function stopMusic() {
-  clearInterval(timer); timer = 0; playing = null;
-  if (ctx) { musicBus.gain.cancelScheduledValues(ctx.currentTime); musicBus.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.15); }
-}
-function schedule() {
-  const s = playing;
-  if (!s || !ctx) return;
-  const dt = 60 / s.bpm8;
-  while (nextAt < ctx.currentTime + 0.3) { // a little ahead, so a busy frame never makes the music stutter
-    const i = step % s.n, at = nextAt + (i % 2 ? s.swing * dt : 0), V = s.vol;
-    const L = s.lead[i];
-    if (L) tone(musicBus, { f: L.f, at, dur: L.hold * dt * 0.92, duty: s.leadDuty, vol: V.lead, attack: 0.01, release: 0.08 });
-    const B = s.bass[i % s.bass.length];
-    if (B) tone(musicBus, { f: B.f, at, dur: Math.min(B.hold * dt, dt * 1.6) * 0.9, type: "triangle", vol: V.bass, attack: 0.005, release: 0.05 });
-    const bar = Math.floor(step / 8), d = s.drums[bar % s.drums.length][i % 8];
-    if (d === "k") tone(musicBus, { f: 150, f2: 45, at, dur: 0.12, type: "sine", vol: V.kick });
-    else if (d === "h") noise(musicBus, { at, dur: 0.035, vol: V.hat, freq: 8000, type: "highpass" });
-    else if (d === "s") noise(musicBus, { at, dur: 0.11, vol: V.snare || 0.05, freq: 1800, q: 0.6 });
-    nextAt += dt; step++;
-  }
+  playing = null;
+  if (!ctx || !el) return;
+  musicBus.gain.cancelScheduledValues(ctx.currentTime);
+  musicBus.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.15);
+  setTimeout(() => { if (!playing && el) el.pause(); }, 700);
 }
 
 // ---------- the switch ----------
@@ -223,10 +179,10 @@ function button(el) {
   paint();
 }
 function music(name) {
-  if (!SONGS[name] || song === name) return;
+  if (!TRACKS[name] || song === name) return;
   song = name;
   if (ctx && mode === "all") startMusic();
 }
 
-return { sfx, music, button, setMode, get mode() { return mode; }, get state() { return { ctx: ctx ? ctx.state : null, song, playing: !!playing, step } } };
+return { sfx, music, button, setMode, get mode() { return mode; }, get state() { return { ctx: ctx ? ctx.state : null, song, playing: !!playing, canOgg, el: el ? { src: el.src, paused: el.paused, t: el.currentTime } : null } } };
 })();
