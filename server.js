@@ -116,6 +116,9 @@ const BALANCE = {
   // shield is up the den can't start raids (turtle mode). A successful raid against a den gives it
   // BRUISE_MS of free immunity that doesn't block its own raids; buying a shield replaces it.
   SHIELD: { MS: 3 * 3_600_000, PER_DAY: 1, PRICE_MIN: 500, PRICE_PCT: 3, BRUISE_MS: 600_000 },
+  // Sales switch for the Boosts tab: false = boosts and the Raid Shield can't be bought with watts;
+  // they come only from lucky crates (boost items, shield tokens). The bruise shield is unaffected.
+  BOOSTS_FOR_SALE: false,
   // Boosts: single-use, bought (the price burns) or found in crates; one active per kind, never stacked.
   // Priced against ~31k W/day of tier-0 income: worth it when timed well, a loss when wasted.
   BOOSTS: {
@@ -641,6 +644,7 @@ function useBoost(st, token, body, now = Date.now()) {
     if (!((p.items[b.kind] | 0) > 0)) return fail("no_item");
     p.items[b.kind] -= 1;
   } else if (b.from === "watts") {
+    if (!BALANCE.BOOSTS_FOR_SALE) return fail("not_for_sale");
     if (p.watts < B.PRICE) return { ok: false, error: "poor", need: B.PRICE - p.watts };
     p.watts -= B.PRICE;
   } else return fail("bad_from");
@@ -662,6 +666,7 @@ function raiseShield(st, token, body, now = Date.now()) {
     if (!((p.items.shield_token | 0) > 0)) return fail("no_item");
     p.items.shield_token -= 1;
   } else if (b.from === "watts") {
+    if (!BALANCE.BOOSTS_FOR_SALE) return fail("not_for_sale");
     const price = shieldPrice(p);
     if (p.watts < price) return { ok: false, error: "poor", need: price - p.watts };
     p.watts -= price;
@@ -1854,7 +1859,7 @@ POST_ROUTES["/api/username"] = POST_ROUTES["/api/wallet/username"] = (b, p, toke
   return okMe(p, { username: r.username });
 };
 const RAID_ERR_STATUS = { hamster_asleep: 409, chain_unknown: 409, chain_stale: 409, no_raids_left: 429, bad_target: 404, unknown_player: 404, not_eligible: 403, self_target: 400, shielded: 409, target_shielded: 409 };
-const SHOP_ERR_STATUS = { unknown_player: 404, boost_active: 409, shield_active: 409, shield_used_today: 429, unknown_crate: 404 };
+const SHOP_ERR_STATUS = { unknown_player: 404, not_for_sale: 403, boost_active: 409, shield_active: 409, shield_used_today: 429, unknown_crate: 404 };
 const WALLET_ERR_STATUS = { unknown_player: 404, no_nonce: 409, nonce_expired: 410, wallet_taken: 409, username_taken: 409 };
 const DEV_ROUTES = {
   "/api/dev/advance": (b) => {
