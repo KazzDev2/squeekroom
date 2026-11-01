@@ -62,7 +62,7 @@ const SC = window.SqueekScenes;
 if (SC) {
   const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
   const items = [...document.querySelectorAll("canvas[data-scene]")].map((cv) => {
-    const s = SC.scenes[+cv.dataset.scene], c = cv.getContext("2d");
+    const s = (SC.all || SC.scenes)[+cv.dataset.scene], c = cv.getContext("2d");
     c.imageSmoothingEnabled = false;
     const cap = document.querySelector(`figcaption[data-title="${cv.dataset.scene}"]`);
     if (cap && s) cap.textContent = s.title;
