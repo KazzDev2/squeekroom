@@ -40,8 +40,6 @@ const KEYS = {
   shield: (B) => dur(B.SHIELD.MS),
   goldenOneIn: (B) => fmt(B.GOLDEN.ONE_IN),
   goldenMult: (B) => mult(B.GOLDEN.MULT_PCT),
-  certWatts: (B) => fmt(B.CERT_LIFETIME_WATTS),
-  certDays: (B) => String(B.CERT_ACTIVE_DAYS),
 };
 fetch("/api/config", { cache: "no-store" })
   .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
