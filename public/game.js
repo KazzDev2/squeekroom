@@ -2602,6 +2602,7 @@ function certLeftWords(me) {
   if (d) parts.push(`${d} active day${d === 1 ? "" : "s"}`);
   return parts.length ? `${parts.join(" and ")} to go` : "ready to claim";
 }
+const CERT_UI = false; // the certificate isn't promised yet: no claim button (the progress line is hidden in index.html too)
 let claimBusy = false;
 function renderCertHud(me) {
   const life = $("life"), cb = $("certBtn"), cert = me.commemorative;
@@ -2609,7 +2610,7 @@ function renderCertHud(me) {
   life.classList.toggle("ready", !cert && !!me.certEligible);
   const tip = cert ? `Open certificate Nº ${cert.serial}` : me.certEligible ? "Your certificate is ready to claim" : `Certificate: ${certLeftWords(me)}`;
   if (life.title !== tip) { life.title = tip; life.setAttribute("aria-label", `${$("lifeLine").textContent}. ${tip}`); }
-  cb.hidden = !cert && !me.certEligible;
+  cb.hidden = !CERT_UI || (!cert && !me.certEligible);
   cb.classList.toggle("claimed", !!cert);
   const label = cert ? `Your certificate · Nº ${cert.serial}` : claimBusy ? "Claiming…" : "Claim your certificate";
   if (cb.textContent !== label) cb.textContent = label;
