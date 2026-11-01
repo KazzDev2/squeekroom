@@ -1,7 +1,8 @@
-// The five "how to play" scenes: tiny live pictures drawn from the game's own sprites (sprites*.js,
+// The "how to play" scenes: tiny live pictures drawn from the game's own sprites (sprites*.js,
 // loaded first). Shared by the tutorial in game.js and the guide page. Each stage is 192 x 108, shown
 // scaled up and pixelated: the plain wallpaper and straw floor of a den, floor line y = 80.
-//   SqueekScenes.scenes[i] = { title, text, draw(ctx, seconds, { skin }) }
+//   SqueekScenes.scenes[i] = { title, text, draw(ctx, seconds, { skin }) }: the tutorial's five steps
+//   SqueekScenes.all: those, then the guide-only ones (lucky crates, golden blocks)
 (() => {
 "use strict";
 const TUT_W = 192, TUT_H = 108, TUT_FLOOR = 80;
@@ -88,6 +89,28 @@ function tutArrowUp(c, x, y, col) {
   c.fillStyle = col; c.fillRect(x, y + 3, 1, 5); for (let r = 1; r < 3; r++) c.fillRect(x - r, y + r, 2 * r + 1, 1);
 }
 const TUT_MULT = ["1X", "1.25X", "1.6X", "2X", "2.6X", "3.5X"];
+const TUT_CURSOR = ["1.....", "11....", "121...", "1221..", "12221.", "122221", "12211.", "11.121", "....11"];
+function tutCursor(c, x, y) { // a little pointer, tip at (x, y)
+  for (let r = 0; r < TUT_CURSOR.length; r++) for (let k = 0; k < 6; k++) {
+    const p = TUT_CURSOR[r][k];
+    if (p !== ".") { c.fillStyle = p === "1" ? OUTLINE : "#ffffff"; c.fillRect(x + k, y + r, 1, 1); }
+  }
+}
+function tutBurst(c, t, x, y, n, r0, r1, cols) { // a ring of sparks flying out, t in 0..1
+  c.globalAlpha = Math.max(0, 1 - t);
+  for (let k = 0; k < n; k++) {
+    const a = (k / n) * Math.PI * 2, r = lerp(r0, r1, t);
+    c.fillStyle = cols[k % cols.length];
+    c.fillRect(Math.round(x + Math.cos(a) * r), Math.round(y + Math.sin(a) * r * 0.75), k % 2 ? 1 : 2, k % 2 ? 1 : 2);
+  }
+  c.globalAlpha = 1;
+}
+function tutBanner(c, str, x, y, col) { // a label on a dark strip, so gold reads on the cream wall and straw
+  const w = str.length * 4 + 5;
+  c.fillStyle = "rgba(29,26,20,.78)"; c.fillRect(Math.round(x - w / 2), y - 2, w, 10);
+  tutText(c, str, x, y, col);
+}
+function tutFlash(c, a) { if (a > 0) { c.fillStyle = `rgba(255,209,102,${a.toFixed(3)})`; c.fillRect(0, 0, TUT_W, TUT_H); } }
 
 const TUT = [
   { title: "He runs, you earn", text: "Squeektoshi is a real hamster. Every Squeek block he runs generates electricity (Watts), even while you're away.",
@@ -178,17 +201,72 @@ const TUT = [
     } },
 ];
 
-window.SqueekScenes = {
-  W: TUT_W,
-  H: TUT_H,
-  scenes: TUT.map((s) => ({
-    title: s.title,
-    text: s.text,
-    draw(c, t, o = {}) {
-      frame10 = Math.floor(t * 10);
-      skin = o.skin || "skin_classic";
-      s.draw(c, t);
-    },
-  })),
-};
+// guide-only scenes
+const EXTRA = [
+  { title: "Lucky crates", text: "While you watch, a block can drop a crate in your den. Tap it to see what's inside.",
+    draw(c, t) {
+      tutBg(c, false);
+      const P = 4, n = Math.floor(t / P), p = t % P, f = Math.floor(t * 12) % 4;
+      tutWheel(c, 16, 30, t * 1.4, 0);
+      tutHam(c, "run", f, 40, 74 - (f % 2));
+      tutText(c, `BLOCK ${5204 + Math.floor(t * 1.5)}`, 6, 6, "#eef0f5", false);
+      const cx = 128, rest = TUT_FLOOR - 16;
+      if (p < 2.2) {
+        let y;
+        if (p < 0.6) y = lerp(-18, rest, (p / 0.6) ** 2); // it drops in
+        else if (p < 0.8) y = rest - Math.round(Math.sin(((p - 0.6) / 0.2) * Math.PI) * 4); // one bounce
+        else y = rest - (Math.floor(p * 3) % 4 === 0 ? 1 : 0); // and a little hop now and then
+        if (p > 0.4) { c.fillStyle = "rgba(0,0,0,.2)"; c.fillRect(cx - 7, TUT_FLOOR, 14, 2); }
+        if (!sprite(c, "crate", 0, cx - 8, Math.round(y), {})) { c.fillStyle = OUTLINE; c.fillRect(cx - 8, Math.round(y), 16, 16); c.fillStyle = "#c2410c"; c.fillRect(cx - 7, Math.round(y) + 1, 14, 14); }
+        if (p >= 0.8 && (p * 1.4) % 1 < 0.5) { const sy = rest - 2 - Math.round(((p * 1.4) % 1) * 6); c.fillStyle = "#fff8d0"; c.fillRect(cx + 7, sy - 1, 1, 3); c.fillRect(cx + 6, sy, 3, 1); }
+        if (p >= 1.3) { const k = Math.min(1, (p - 1.3) / 0.6), press = p >= 1.95 ? 1 : 0; tutCursor(c, Math.round(lerp(176, cx + 1, k)), Math.round(lerp(104, rest + 7, k)) + press); }
+      } else {
+        const q = (p - 2.2) / 1.8;
+        const [str, col] = [["+400W", "#ffd166"], ["BOOST", "#ffd166"], ["SHIELD", "#ffd166"], ["RARE", "#f472b6"]][n % 4];
+        tutBurst(c, Math.min(1, q * 1.6), cx, rest + 8, 12, 3, 26, [col, "#fff8d0"]);
+        c.globalAlpha = Math.min(1, (1 - q) * 2);
+        tutBanner(c, str, cx, Math.round(rest - 2 - q * 18), col);
+        c.globalAlpha = 1;
+        tutFlash(c, q < 0.25 ? 0.3 * (1 - q / 0.25) : 0);
+      }
+    } },
+  { title: "Golden blocks", text: "Now and then a block is golden, and it pays ten times the watts to everyone watching.",
+    draw(c, t) {
+      tutBg(c, false);
+      const P = 5, p = t % P, gold = p >= 2.8, q = gold ? (p - 2.8) / 2.2 : 0, f = Math.floor(t * 12) % 4;
+      tutWheel(c, 72, 30, t * (gold ? 2.2 : 1.4), 0);
+      tutHam(c, "run", f, 96, 74 - (f % 2));
+      tutText(c, `BLOCK ${5204 + Math.floor(t / P) * 3 + (p < 1.4 ? 0 : gold ? 2 : 1)}`, 6, 6, gold ? "#ffd166" : "#eef0f5", false);
+      for (const s of [0, 1.4]) { // two plain blocks first
+        if (p < s || p >= s + 1.3) continue;
+        const k = (p - s) / 1.3;
+        c.globalAlpha = Math.min(1, (1 - k) * 2);
+        tutText(c, "+10W", 96, Math.round(24 - k * 16), "#eef0f5");
+        c.globalAlpha = 1;
+      }
+      if (gold) {
+        for (let k = 0; k < 9; k++) { // a shower of watts
+          const x = 14 + ((k * 53) % 166), y = Math.round(-6 + (q * 1.6 - (k % 4) * 0.12) * 100);
+          if (y > -6 && y < TUT_FLOOR - 2) tutCoin(c, x, y);
+        }
+        tutBurst(c, Math.min(1, q * 1.4), 96, 54, 18, 8, 60, ["#ffd166", "#fff8d0", "#f5a623"]);
+        c.globalAlpha = Math.min(1, (1 - q) * 2);
+        tutBanner(c, "+100W", 96, Math.round(26 - q * 16), "#ffd166");
+        c.globalAlpha = 1;
+        if (Math.floor(p * 4) % 2) tutBanner(c, "GOLDEN BLOCK", 96, 92, "#ffd166");
+        tutFlash(c, q < 0.3 ? 0.45 * (1 - q / 0.3) : 0);
+      }
+    } },
+];
+const wrap = (s) => ({
+  title: s.title,
+  text: s.text,
+  draw(c, t, o = {}) {
+    frame10 = Math.floor(t * 10);
+    skin = o.skin || "skin_classic";
+    s.draw(c, t);
+  },
+});
+const scenes = TUT.map(wrap);
+window.SqueekScenes = { W: TUT_W, H: TUT_H, scenes, all: [...scenes, ...EXTRA.map(wrap)] };
 })();
