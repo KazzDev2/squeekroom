@@ -28,7 +28,6 @@ const KEYS = {
   mults: (B) => `${mult(Math.min(...B.RAID.MULT_PCT))} to ${mult(max(B.RAID.MULT_PCT))}`,
   lootCap: (B) => `${B.RAID.LOOT_MAX_DEF_PCT}%`,
   crit: (B) => `${B.RAID.CRIT_CHANCE_PCT}%`,
-  critMult: (B) => mult(B.RAID.CRIT_MULT_PCT),
   bruise: (B) => dur(B.SHIELD.BRUISE_MS),
   crateChance: (B) => `${B.CRATES.CHANCE_PCT}%`,
   cratesDay: (B) => String(B.CRATES.PER_DAY),

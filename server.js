@@ -82,9 +82,10 @@ const BALANCE = {
   // p = clamp((EDGE / M) x (1 - defense) x tilt, P_MIN, P_MAX), raised to at least 1/M when the target
   // holds at least the attacker's watts, so attacker EV = S x (p x M - 1) does not depend on M (the
   // multiplier only dials variance). Punching up is never -EV; peer raids into strong rooms and
-  // revenge on poorer rooms can be. A win pays exactly (M - 1) x stake, and 5% of wins crit for x1.5.
-  // Stakes stop where a crit would hit the loot cap, so the cap never cuts a win and no stake is a
-  // trap. A loss burns the whole stake: the
+  // revenge on poorer rooms can be. A win takes exactly (M - 1) x stake from the defender (rounded up,
+  // never past the loot cap), and 5% of wins crit: the game adds half again on top (minted, counted in
+  // state.minted), so a crit never costs the defender more. Stakes stop where the loot would hit the
+  // cap, so the cap never cuts a win and no stake is a trap. A loss burns the whole stake: the
   // defender gets nothing (a share would let alt dens wager welcome watts into a main), so being
   // raided is -EV. The UI shows odds and loot, never EV: working that out is part of the game.
   RAID: {
@@ -96,11 +97,11 @@ const BALANCE = {
     TILT_MAX_PCT: 175, // reached at ~9.4x the attacker's watts
     P_MIN_PCT: 2,
     P_MAX_PCT: 90,
-    CRIT_CHANCE_PCT: 5, // win: loot = (M - 1) x stake, a crit x CRIT_MULT, <= LOOT_MAX_DEF_PCT of the defender
-    CRIT_MULT_PCT: 150,
+    CRIT_CHANCE_PCT: 5, // win: loot = ceil((M - 1) x stake) <= LOOT_MAX_DEF_PCT of the defender; a crit adds
+    CRIT_MULT_PCT: 150, // loot x (CRIT_MULT - 100)% on top, paid by the game, not the defender
     LOOT_MAX_DEF_PCT: 25, // one raid takes at most 25% of the defender's balance
     STAKE_MIN: 50, // stake >= max(STAKE_MIN, STAKE_MIN_BAL_PCT of the attacker's balance)
-    STAKE_MIN_BAL_PCT: 5, // stake <= min(balance, cap / ((M - 1) x CRIT_MULT)): see stakeBounds()
+    STAKE_MIN_BAL_PCT: 5, // stake <= min(balance, cap / (M - 1)): see stakeBounds()
     ELIGIBLE_MIN_PCT: 70, // targets must hold >= 70% of the attacker's balance (punch-up only)...
     REVENGE_WINDOW_MS: 86_400_000, // ...unless they raided the attacker within 24 h (once per provocation)
     RAIDED_BY_MAX: 20,
@@ -1008,8 +1009,9 @@ function raidChance(attacker, defender, multPct) {
   return raidOdds(multPct, raidDefensePct(defender), wealthTilt(attacker.watts, defender.watts), isPunchUp(attacker.watts, defender.watts));
 }
 // One resolution, rolls in a fixed order: win, then crit (a loss uses one roll).
-// Loot is capped at LOOT_MAX_DEF_PCT of the defender's balance, crit included, so no single roll can
-// empty a room however big the stake. A loss loses the whole stake, and it all burns.
+// loot (taken from the defender) is ceil((M - 1) x stake), capped at LOOT_MAX_DEF_PCT of their balance,
+// so no single raid can empty a room. A crit adds bonus = loot x (CRIT_MULT - 100)%, paid by the game.
+// A loss loses the whole stake, and it all burns.
 // oddsPts (Lucky Whisker) adds percentage points after all other maths, still capped at P_MAX.
 // Pure: returns the outcome, mutates nothing.
 function resolveRaid(attacker, defender, stake, multPct, rng = Math.random, oddsPts = 0) {
@@ -1017,23 +1019,22 @@ function resolveRaid(attacker, defender, stake, multPct, rng = Math.random, odds
   let p = raidChance(attacker, defender, multPct);
   if (oddsPts > 0 && p > 0) p = Math.min(R.P_MAX_PCT / 100, p + oddsPts / 100);
   if (!(rng() < p)) return { win: false, p, stakeLost: stake };
-  const cap = lootCap(defender.watts);
-  let loot = Math.min(Math.floor(((multPct - 100) * stake) / 100), cap);
+  const loot = Math.max(0, Math.min(Math.ceil(((multPct - 100) * stake) / 100), lootCap(defender.watts)));
   const crit = rng() < R.CRIT_CHANCE_PCT / 100;
-  if (crit) loot = Math.min(Math.floor((loot * R.CRIT_MULT_PCT) / 100), cap);
-  return { win: true, p, loot: Math.max(0, loot), crit };
+  const bonus = crit ? Math.floor((loot * (R.CRIT_MULT_PCT - 100)) / 100) : 0;
+  return { win: true, p, loot, crit, bonus };
 }
 const lootCap = (defWatts) => Math.floor((Math.max(0, defWatts) * BALANCE.RAID.LOOT_MAX_DEF_PCT) / 100);
 // Stake bounds: min = max(50, 5% of the balance); max = the balance, and with a target and a
-// multiplier also the largest stake whose crit loot (M - 1) x S x 1.5 fits under the target's loot
-// cap. Past it the cap would eat the crit (and then the win itself) while the loss kept growing.
+// multiplier also the largest stake whose loot (M - 1) x S fits under the target's loot cap. Past it
+// the cap would cut the win while the loss kept growing. (A crit's bonus is paid on top, uncapped.)
 // limit: which bound sets max ("balance" | "target"). max < min: can't raid (at this multiplier).
 function stakeBounds(watts, defWatts = null, multPct = null) {
   const R = BALANCE.RAID;
   const bal = Math.max(0, Math.floor(watts));
   const min = Math.max(R.STAKE_MIN, Math.ceil((bal * R.STAKE_MIN_BAL_PCT) / 100));
   if (defWatts == null || multPct == null) return { min, max: bal, limit: "balance" };
-  const top = Math.floor((lootCap(defWatts) * 10_000) / ((multPct - 100) * R.CRIT_MULT_PCT));
+  const top = Math.floor((lootCap(defWatts) * 100) / (multPct - 100));
   return top < bal ? { min, max: top, limit: "target" } : { min, max: bal, limit: "balance" };
 }
 // The multiplier as shown (1.5, 2, 3, 5, 10) or as its percentage (150 .. 1000). null if neither.
@@ -1138,7 +1139,8 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
   if (lucky) { atk.effects.lucky_whisker = false; r.lucky = true; }
   if (r.win) {
     def.watts -= r.loot;
-    atk.watts += r.loot;
+    atk.watts += r.loot + r.bonus;
+    if (r.bonus > 0) st.minted = (Number.isFinite(st.minted) ? st.minted : 0) + r.bonus; // supply accounting (lib/alert.js)
     def.shield = { until: now + BALANCE.SHIELD.BRUISE_MS, kind: "bruise" }; // a bruise: a few minutes of peace
   } else {
     const insured = boostActive(atk, "wager_insurance", now);
@@ -1155,7 +1157,7 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
   if (!Array.isArray(def.raidedBy)) def.raidedBy = [];
   def.raidedBy = def.raidedBy.filter((e) => e && now - e.at < R.REVENGE_WINDOW_MS);
   pushRing(def.raidedBy, { pid: atk.publicId, at: now, avenged: false }, R.RAIDED_BY_MAX);
-  const feed = { at: now, atk: displayName(atk), atkId: atk.publicId, def: displayName(def), defId: def.publicId, win: r.win, amount: r.win ? r.loot : stake - (r.refund || 0), crit: r.win ? r.crit : false }; // a loss: what actually burned
+  const feed = { at: now, atk: displayName(atk), atkId: atk.publicId, def: displayName(def), defId: def.publicId, win: r.win, amount: r.win ? r.loot : stake - (r.refund || 0), crit: r.win ? r.crit : false, bonus: r.win ? r.bonus : 0 }; // amount: what the defender lost (a loss: what burned); bonus: a crit's extra, from the game
   if (!Array.isArray(st.raidFeed)) st.raidFeed = [];
   pushRing(st.raidFeed, feed, R.FEED_MAX);
   invalidateLeaderboard(st);
@@ -1242,6 +1244,7 @@ let state = {
   born: null,
   certSerial: 0,
   burned: 0, // watts destroyed by lost raid stakes (supply accounting)
+  minted: 0, // watts created by raid crits (supply accounting; lib/alert.js subtracts it)
   lastGolden: null, // newest golden block {height, at}
   raidFeed: [], // last BALANCE.RAID.FEED_MAX raids, oldest first
   players: {},
@@ -1255,6 +1258,7 @@ function patchState(st, now = Date.now()) {
   if (!Number.isFinite(st.lastAdvanceAt) && st.height != null) st.lastAdvanceAt = now;
   st.lastBedTickAt = null; // bed income never pays for the time the server was down
   if (!Number.isFinite(st.burned)) st.burned = 0;
+  if (!Number.isFinite(st.minted)) st.minted = 0;
   if (!Array.isArray(st.raidFeed)) st.raidFeed = [];
   for (const [token, p] of Object.entries(st.players)) if (p && typeof p === "object") patchPlayer(p, token);
   return st;
