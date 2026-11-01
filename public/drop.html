@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Burrow Drop</title>
+<meta name="robots" content="noindex">
+<link rel="icon" type="image/svg+xml" href="logo.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --bg:#f3efe6; --panel:#fffdf8; --ink:#1d1a14; --muted:#6b645a; --line:#d9d2c3; --squeek:#f5a623; --gold:#c2410c;
+  --display:"Silkscreen",ui-monospace,monospace; --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15130f; --panel:#1e1b16; --ink:#f1ece2; --muted:#a39b8d; --line:#3a352c; --gold:#ffd166; color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#15130f; --panel:#1e1b16; --ink:#f1ece2; --muted:#a39b8d; --line:#3a352c; --gold:#ffd166; color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 var(--mono);padding:0 16px 24px;min-height:100vh}
+main{max-width:520px;margin:0 auto;display:flex;flex-direction:column;align-items:center}
+header{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 0 8px;flex-wrap:wrap}
+h1{font-family:var(--display);font-weight:700;font-size:18px;letter-spacing:.5px;margin:0;display:flex;align-items:center;gap:8px}
+h1 img{width:30px;height:30px}
+.tag{font-family:var(--display);font-size:10px;letter-spacing:.4px;border:1.5px solid var(--ink);border-radius:4px;padding:2px 6px;background:var(--panel)}
+.back{font-family:var(--display);font-size:11px;color:var(--ink);text-decoration:none;background:var(--squeek);border:2px solid var(--ink);border-radius:6px;padding:6px 10px;box-shadow:2px 2px 0 var(--ink)}
+.stats{width:100%;display:flex;justify-content:space-between;gap:10px;margin:2px 0 8px;font-family:var(--display);font-size:12px;letter-spacing:.3px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 10px;display:flex;flex-direction:column;min-width:0}
+.stat small{font-size:9px;color:var(--muted);letter-spacing:.4px}
+.stat b{font-size:16px;font-weight:700}
+.stat.stash b{color:var(--gold)}
+.gold{font-family:var(--display);font-size:10px;color:#1d1a14;background:#ffd166;border:1.5px solid #1d1a14;border-radius:4px;padding:1px 6px;align-self:center}
+canvas#board{display:block;width:min(100%, calc((100vh - 190px) * 240 / 360));min-width:240px;aspect-ratio:240/360;height:auto;image-rendering:pixelated;border:3px solid var(--ink);border-radius:8px;box-shadow:4px 4px 0 var(--ink);background:#3d1e0d;touch-action:none;cursor:crosshair}
+#dropBtn{margin-top:14px;font-family:var(--display);font-size:15px;letter-spacing:.4px;color:#1d1a14;background:var(--squeek);border:2px solid #1d1a14;border-radius:8px;padding:10px 26px;box-shadow:3px 3px 0 #1d1a14;cursor:pointer}
+#dropBtn:hover:not(:disabled){background:#ffb84a}
+#dropBtn:active:not(:disabled){transform:translate(2px,2px);box-shadow:1px 1px 0 #1d1a14}
+#dropBtn:disabled{opacity:.55;cursor:default}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1><img src="logo.svg" alt="" width="30" height="30">BURROW DROP <span class="tag">PREVIEW</span></h1>
+  <a class="back" href="/">Back to your den</a>
+</header>
+<div class="stats">
+  <div class="stat"><small>WATTS</small><b id="watts">10,000</b></div>
+  <span class="gold" id="golden" hidden>GOLDEN BOARD</span>
+  <div class="stat stash" style="text-align:right"><small>STASH</small><b id="stash">5,000</b></div>
+</div>
+<canvas id="board" width="240" height="360" role="img" aria-label="Burrow Drop board"></canvas>
+<button type="button" id="dropBtn">Drop · 500 W</button>
+</main>
+<script src="sprites.js"></script>
+<script src="sprites_crate.js"></script>
+<script src="scenes.js"></script>
+<script src="drop_sim.js"></script>
+<script src="drop.js"></script>
+</body>
+</html>
