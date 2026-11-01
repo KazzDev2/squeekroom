@@ -371,11 +371,15 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
 .roomcol{position:relative}
 .tlcol{position:absolute;left:10px;top:10px;z-index:4;width:min(280px,calc(100% - 20px));display:flex;flex-direction:column;align-items:flex-start;gap:6px;pointer-events:none}
 .tlcol>*{pointer-events:auto}
-.droplogo{display:block;width:64px;height:64px;filter:drop-shadow(0 3px 0 rgba(0,0,0,.35));transition:transform .1s}
-.droplogo canvas{display:block;width:64px;height:64px;image-rendering:pixelated}
-.droplogo:hover{transform:translateY(-2px) scale(1.06)}
+.droplogo{display:flex;flex-direction:column;align-items:center;gap:4px;text-decoration:none;transition:transform .1s}
+.dlring{display:grid;place-items:center;width:62px;height:62px;border-radius:50%;background:rgba(17,19,25,.86);border:3px solid var(--squeek);box-shadow:0 0 0 2px #1d1a14,0 6px 16px rgba(0,0,0,.35)}
+.dlring canvas{display:block;width:48px;height:48px;image-rendering:pixelated}
+.dllabel{font-family:var(--display);font-size:10px;letter-spacing:.8px;line-height:1;color:#fff8d0;background:rgba(17,19,25,.86);border:1px solid var(--dk-line);border-radius:6px;padding:3px 6px}
+.droplogo:hover{transform:translateY(-2px) scale(1.05)}
+.droplogo:hover .dlring{border-color:#ffd166}
 .droplogo:active{transform:scale(.96)}
-.droplogo:focus-visible{outline:2px solid var(--squeek);outline-offset:2px}
+.droplogo:focus-visible{outline:none}
+.droplogo:focus-visible .dlring{box-shadow:0 0 0 2px #1d1a14,0 0 0 5px var(--squeek)}
 .feed{position:relative;width:100%;background:rgba(17,19,25,.86);color:var(--dk-ink);border:1px solid var(--dk-line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.35);font-size:11px;overflow:hidden}
 .feed[hidden]{display:none}
 .feedhead{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:6px;width:100%;padding:6px 9px;cursor:pointer;font-family:var(--display);font-size:10px;letter-spacing:.3px;color:var(--dk-ink)}
@@ -404,7 +408,10 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
 @media (max-width:860px){
   .tlcol{position:static;width:auto;gap:0;pointer-events:auto}
   .feed{position:static;width:100%;border-radius:0;border-left:0;border-right:0;box-shadow:none;background:var(--dk-in)}
-  .droplogo{margin:8px 0 4px max(16px,env(safe-area-inset-left,0px))}
+  .droplogo{position:absolute;left:max(8px,env(safe-area-inset-left,0px));top:8px;z-index:5} /* pinned on the room, like other games' corner buttons */
+  .dlring{width:50px;height:50px;border-width:2px}
+  .dlring canvas{width:38px;height:38px}
+  .dllabel{font-size:9px;padding:2px 5px}
   .feedlist{max-height:180px}
   .lb{width:100vw;border-left:0}
   .mult .mx{font-size:12px}
@@ -542,7 +549,7 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
       <button type="button" class="feedhead" id="feedHead" aria-expanded="true" aria-controls="feedList">RAIDS <span class="n" id="feedCount"></span><span class="car" id="feedCar">▾</span></button>
       <ol class="feedlist" id="feedList" aria-live="polite"></ol>
     </section>
-    <a class="droplogo" id="dropGame" href="drop.html" title="Burrow Drop" aria-label="Burrow Drop"><canvas id="dropIcon" width="32" height="32" aria-hidden="true"></canvas></a>
+    <a class="droplogo" id="dropGame" href="drop.html" title="Burrow Drop" aria-label="Burrow Drop"><span class="dlring"><canvas id="dropIcon" width="32" height="32" aria-hidden="true"></canvas></span><span class="dllabel" aria-hidden="true">BURROW</span></a>
     </div>
     <div class="invbar" id="invbar">
       <div class="invhead" id="invHead"><b>YOUR THINGS</b></div>
