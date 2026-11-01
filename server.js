@@ -18,6 +18,7 @@
 // Env: PORT (default 8788), SQUEEK_API (default https://api.squeekchain.com/v1),
 //      DATA_DIR (where state.json lives; mount a persistent disk here in production),
 //      CORE_ADDRESS, SEPOLIA_RPC (comma-separated)
+//      ALERT_WEBHOOK (Discord webhook for security alerts, see lib/alert.js; never commit it)
 //      Replay only: REPLAY_SPEED (default 3), REPLAY_START_HEIGHT (default 5204),
 //      REPLAY_EPOCH (ISO time the schedule is anchored to, default 2026-10-30T21:00:00Z)
 
@@ -27,6 +28,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const zlib = require("node:zlib");
 const ethsig = require("./lib/ethsig.js");
+const alert = require("./lib/alert.js");
 
 const PORT = Number(process.env.PORT || 8788);
 const API = process.env.SQUEEK_API || "https://api.squeekchain.com/v1";
@@ -901,7 +903,9 @@ function writeNow() {
   fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
   const tmp = DATA_FILE + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(state));
+  security.beforeWrite();
   fs.renameSync(tmp, DATA_FILE);
+  security.wrote();
 }
 async function writeChunked() {
   const gen = writeGen;
@@ -918,7 +922,11 @@ async function writeChunked() {
   await fs.promises.mkdir(path.dirname(DATA_FILE), { recursive: true });
   const tmp = DATA_FILE + ".chunked.tmp";
   await fs.promises.writeFile(tmp, text);
-  if (gen === writeGen) await fs.promises.rename(tmp, DATA_FILE);
+  if (gen === writeGen) {
+    security.beforeWrite();
+    await fs.promises.rename(tmp, DATA_FILE);
+    security.wrote();
+  }
 }
 function save() {
   if (saving) { saveAgain = true; return; }
@@ -1278,6 +1286,7 @@ async function poll() {
       state.apiError = String(e.message || e);
     }
   }
+  security.tick(state, { saving });
   save();
 }
 
@@ -1673,6 +1682,7 @@ async function handle(req, res) {
       return json(res, 200, leaderboard(state, url.searchParams.get("token"), Date.now(), { chainReadAt: chainReadAt() }));
     }
     const devRoute = DEMO ? DEV_ROUTES[url.pathname] : undefined;
+    if (!DEMO && url.pathname.startsWith("/api/dev/")) security.devProbe(url.pathname, clientIp(req));
     const route = Object.hasOwn(POST_ROUTES, url.pathname) ? POST_ROUTES[url.pathname] : devRoute;
     if (route && req.method === "POST") {
       let b;
@@ -1704,9 +1714,13 @@ async function handle(req, res) {
     return serveStatic(req, res, full);
   } catch (e) {
     console.error("request failed:", req.method, url.pathname, e);
+    security.serverError(url.pathname);
     json(res, 500, { error: "server_error" });
   }
 }
+
+// Security alerts (lib/alert.js): a no-op unless ALERT_WEBHOOK is set.
+const security = alert.createSecurity({ dataFile: DATA_FILE, BALANCE, baseBpm: SPEED_BASE_BPM, demo: DEMO });
 
 function listen() {
   const server = http.createServer(handle);
@@ -1742,6 +1756,7 @@ if (require.main === module) {
     process.exit(1);
   }
   load();
+  security.boot();
   playerCount = Object.keys(state.players).length;
   poll();
   setInterval(poll, POLL_MS);
