@@ -1867,6 +1867,15 @@ test("replay nonstop: the real runs stretched over the whole cycle, same blocks 
 const SH = BALANCE.SHIELD, BO = BALANCE.BOOSTS, CR = BALANCE.CRATES, GO = BALANCE.GOLDEN;
 const H1 = 3_600_000;
 const okRaid = (st, a, d, now = T0) => raid(st, a, d, 1000, 2, now, seq(LOSE));
+// Boost and shield sales are switched off for now (BALANCE.BOOSTS_FOR_SALE); these tests cover the
+// purchase rules for when they're switched back on.
+function saleTest(name, fn) {
+  test(`${name} (with sales on)`, () => {
+    const was = BALANCE.BOOSTS_FOR_SALE;
+    BALANCE.BOOSTS_FOR_SALE = true;
+    try { fn(); } finally { BALANCE.BOOSTS_FOR_SALE = was; }
+  });
+}
 
 test("v3 balance knobs: shield, boosts, crates, golden", () => {
   assert.deepEqual(SH, { MS: 3 * H1, PER_DAY: 1, PRICE_MIN: 500, PRICE_PCT: 3, BRUISE_MS: 600_000 });
@@ -1882,9 +1891,28 @@ test("v3 balance knobs: shield, boosts, crates, golden", () => {
   assert.deepEqual(GO, { ONE_IN: 150, MULT_PCT: 1000 });
   assert.deepEqual(S.BOOST_KINDS, ["double_wheel", "deep_sleep", "lucky_whisker", "wager_insurance"]);
   assert.deepEqual(S.configPayload().balance.SHIELD, SH); // shipped to the client with the rest of BALANCE
+  assert.equal(BALANCE.BOOSTS_FOR_SALE, false); // for now: crates only
 });
 
-test("shield: price max(500, 3% of the balance), burned; 3 h; once per UTC day; tokens waive the price", () => {
+test("sales off: boosts and the shield can't be bought, only used from crate finds", () => {
+  const p = fresh({ watts: 100_000 }), st = { lastAdvanceAt: T0, players: { [TA]: p } };
+  for (const k of S.BOOST_KINDS) assert.equal(S.useBoost(st, TA, { kind: k, from: "watts" }, T0).error, "not_for_sale", k);
+  assert.equal(S.raiseShield(st, TA, { from: "watts" }, T0).error, "not_for_sale");
+  assert.equal(p.watts, 100_000);
+  assert.deepEqual([p.effects.double_wheel, p.shield.until, p.shieldDay], [0, 0, null]);
+  // crate finds still work
+  p.items.double_wheel = 1;
+  p.items.shield_token = 1;
+  assert.ok(S.useBoost(st, TA, { kind: "double_wheel", from: "item" }, T0).ok);
+  assert.ok(S.raiseShield(st, TA, { from: "token" }, T0).ok);
+  assert.deepEqual([p.items.double_wheel, p.items.shield_token, p.watts, p.shield.kind], [0, 0, 100_000, "bought"]);
+  // and the bruise shield after a lost defence is free as ever
+  const w = raidWorld({ def: { watts: 50_000 } });
+  raid(w, TA, TB, 1000, 2, T0, seq(WIN, 0.5, 0.99));
+  assert.equal(w.players[TB].shield.kind, "bruise");
+});
+
+saleTest("shield: price max(500, 3% of the balance), burned; 3 h; once per UTC day; tokens waive the price", () => {
   assert.equal(S.shieldPrice(fresh({ watts: 0 })), 500);
   assert.equal(S.shieldPrice(fresh({ watts: 16_666 })), 500); // 3% = 499.98
   assert.equal(S.shieldPrice(fresh({ watts: 16_667 })), 500);
@@ -1912,7 +1940,7 @@ test("shield: price max(500, 3% of the balance), burned; 3 h; once per UTC day; 
   assert.deepEqual([S.raiseShield(poor, TC, { from: "watts" }, T0).error, S.raiseShield(poor, TC, { from: "watts" }, T0).need], ["poor", 200]);
 });
 
-test("shield: blocks raids in (excluded from targets, no raid used) and out (turtle mode)", () => {
+saleTest("shield: blocks raids in (excluded from targets, no raid used) and out (turtle mode)", () => {
   const st = raidWorld({ def: { watts: 50_000 } });
   assert.ok(S.raiseShield(st, TB, { from: "watts" }, T0).ok);
   const r = okRaid(st, TA, TB);
@@ -1936,7 +1964,7 @@ test("shield: blocks raids in (excluded from targets, no raid used) and out (tur
   assert.ok(okRaid(st, TA, TB, later).ok);
 });
 
-test("shield: a successful raid bruises the defender for 10 min (free, raids out still allowed); a failed one doesn't", () => {
+saleTest("shield: a successful raid bruises the defender for 10 min (free, raids out still allowed); a failed one doesn't", () => {
   const st = raidWorld({ def: { watts: 50_000 } });
   assert.ok(okRaid(st, TA, TB).ok); // a loss
   assert.deepEqual(st.players[TB].shield, { until: 0, kind: null });
@@ -1957,7 +1985,7 @@ test("shield: a successful raid bruises the defender for 10 min (free, raids out
   assert.deepEqual(st2.players[TB].shield, { until: T0 + 5 + 3 * H1, kind: "bought" });
 });
 
-test("shield: visible in the den's own snapshot (publicPlayer) and to everyone on the leaderboard", () => {
+saleTest("shield: visible in the den's own snapshot (publicPlayer) and to everyone on the leaderboard", () => {
   const p = Object.assign(S.newPlayer(1000, T0, TA), { watts: 40_000 });
   let me = S.publicPlayer(p, T0);
   assert.deepEqual(me.shield, { until: 0, kind: null, usedToday: false, price: 1200 });
@@ -1969,7 +1997,7 @@ test("shield: visible in the den's own snapshot (publicPlayer) and to everyone o
   assert.equal(S.leaderboard(st, null, T0 + 1).rows[0].shielded, true); // anonymous viewers see it too
 });
 
-test("boosts: buy (price burns) or use a crate copy; one active per kind, never stacked", () => {
+saleTest("boosts: buy (price burns) or use a crate copy; one active per kind, never stacked", () => {
   const st = { lastAdvanceAt: T0, players: { [TA]: fresh({ watts: 20_000 }) } };
   const p = st.players[TA];
   assert.equal(S.useBoost(st, TA, { kind: "nope", from: "watts" }, T0).error, "bad_boost");
@@ -2055,7 +2083,7 @@ test("boosts: Wager Insurance refunds half the next FAILED wager, survives wins"
   assert.equal(l2.result.refund, undefined); // spent
 });
 
-test("boosts + shield persist across a restart (JSON round trip + patchState) and old dens are backfilled", () => {
+saleTest("boosts + shield persist across a restart (JSON round trip + patchState) and old dens are backfilled", () => {
   const p = fresh({ watts: 50_000, lastHeartbeat: T0 });
   const st = { lastAdvanceAt: T0, players: { [TA]: p } };
   S.useBoost(st, TA, { kind: "double_wheel", from: "watts" }, T0);

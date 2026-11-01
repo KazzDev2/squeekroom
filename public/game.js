@@ -2139,8 +2139,9 @@ function renderFxChips(me) {
 }
 
 // shop cards for the Boosts tab: pseudo items keyed "boost:<kind>"
+const boostsForSale = () => !!(S.balance && S.balance.BOOSTS_FOR_SALE); // off for now: crate finds only
 function buildBoostCards(box) {
-  const h = document.createElement("div"); h.className = "sub"; h.textContent = "Single use · bought watts burn"; box.appendChild(h);
+  const h = document.createElement("div"); h.className = "sub"; h.textContent = boostsForSale() ? "Single use · bought watts burn" : "Single use · found in lucky crates"; box.appendChild(h);
   for (const k of BOOST_ORDER) {
     const it = { id: `boost:${k}`, boost: k, name: BOOST_INFO[k].name, zone: null };
     const el = document.createElement("div");
@@ -2163,11 +2164,13 @@ function boostCardState(k, me) {
     if (sh.up && sh.kind === "bought") return { label: `Up · ${durText(sh.left)}`, disabled: true, note: "nobody can raid you", price: "" };
     if (me && me.shield && me.shield.usedToday) return { label: "Used today", disabled: true, note: `next one after 00:00 UTC`, price: "" };
     if (tok) return { label: "Use token", from: "token", price: "free", own: `${tok} token${tok === 1 ? "" : "s"}`, note: sh.kind === "bruise" ? "replaces the bruise shield" : "" };
+    if (!boostsForSale()) return { label: "Crate only", disabled: true, note: "shield tokens drop from lucky crates", price: "" };
     return { label: "Raise shield", from: "watts", price: `${fmt(price)} W`, poor: watts < price, need: price - watts, note: "max(500, 3% of your watts)" };
   }
   const cfg = boostCfg(k), n = held(k), price = cfg.PRICE || 0;
   if (boostOn(k)) return { label: cfg.MS ? `Active · ${durText(boostLeft(k))}` : "Armed", disabled: true, note: cfg.MS ? "running now" : "used on your next raid", price: "", own: n ? `have ${n}` : "" };
   if (n) return { label: `Use (${n})`, from: "item", price: "from a crate", own: `have ${n}` };
+  if (!boostsForSale()) return { label: "Crate only", disabled: true, note: "drops from lucky crates", price: "" };
   return { label: "Buy & use", from: "watts", price: `${fmt(price)} W`, poor: watts < price, need: price - watts };
 }
 function updateBoostCard(c, me) {
@@ -2187,6 +2190,7 @@ function boostErrorWords(j, k) {
     case "shield_used_today": return "You've used today's shield. The next one is after 00:00 UTC.";
     case "shield_active": return "Your shield is still up.";
     case "no_item": return "You don't have one of those left.";
+    case "not_for_sale": return "Boosts aren't for sale right now. They drop from lucky crates.";
     default: return errorWords(j);
   }
 }
