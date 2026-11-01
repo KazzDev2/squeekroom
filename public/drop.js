@@ -1,6 +1,6 @@
-// Burrow Drop (preview): aim, drop, watch Squeektoshi bounce down the burrow. Every path comes from
-// drop_sim.js (the same code a server would run); this file only draws and replays it. Preview only:
-// the watts here are pretend and live in this tab.
+// Burrow Drop: aim, drop, watch Squeektoshi bounce down the burrow. The server rolls every drop
+// (POST /api/drop, with the den's real watts) and answers with a seed; drop_sim.js replays the very same
+// path here from it. The board (golden or not, a crate, the prize on it) is the server's too.
 (() => {
 "use strict";
 const D = window.BurrowDrop, PX = window.SqueekScenes.px;
@@ -8,18 +8,22 @@ const { W, H, BALL_R, RAIL_Y, LEFT, RIGHT, DIV_TOP, PAY } = D;
 const $ = (id) => document.getElementById(id);
 const cv = $("board"), g = cv.getContext("2d");
 g.imageSmoothingEnabled = false;
-const OUT = PX.OUTLINE, COST = 500, START_WATTS = 10_000;
+const OUT = PX.OUTLINE;
+let COST = 500; // BALANCE.DROP.COST, from /api/config
+const TOKEN = (() => { try { return localStorage.getItem("sr_token") || ""; } catch { return ""; } })();
+const CATALOG = new Map();
+const RARITY = { common: "#d1d5db", uncommon: "#4ade80", rare: "#60a5fa", epic: "#c084fc", legendary: "#ffd166" };
 const fmt = (n) => Math.round(n).toLocaleString("en-US");
 const lerp = (a, b, t) => a + (b - a) * t;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
-const AIM_MIN = LEFT + BALL_R + 1, AIM_MAX = RIGHT - BALL_R - 1;
+const { AIM_MIN, AIM_MAX } = D;
 const SND = window.SqueekSound, sfx = (name, o) => { if (SND) SND.sfx(name, o); };
 
 const st = {
-  watts: START_WATTS, shownWatts: START_WATTS, stash: COST * PAY.STASH_START, shownStash: COST * PAY.STASH_START,
-  aim: W / 2, mode: "aim", sim: null, i: 0, done: 0,
-  golden: false, crate: -1, seedOn: D.seeds.map(() => true),
+  watts: 0, shownWatts: 0, stash: 0, shownStash: 0,
+  aim: W / 2, mode: "load", sim: null, i: 0, done: 0, // load | noden | aim | wait | fall | done
+  golden: false, crate: -1, prize: null, seedOn: D.seeds.map(() => true), res: null, next: null, msg: "", msgUntil: 0,
   flash: new Map(), rootWob: D.roots.map(() => 0), squash: D.ACORNS.map(() => 0), wheelFlash: 0, slotFlash: -1, slotT: 0,
   pops: [], parts: [], coins: [], shake: 0, banner: null, chain: 0, lastSeedF: -999, won: 0, trail: [],
 };
@@ -198,6 +202,42 @@ function drawCrate(t) {
   else { g.fillStyle = OUT; g.fillRect(x, y, 16, 16); g.fillStyle = "#c2410c"; g.fillRect(x + 1, y + 1, 14, 14); }
   if ((t * 1.5) % 1 < 0.35) { g.fillStyle = "#fff8d0"; g.fillRect(x + 15, y - 2, 1, 3); g.fillRect(x + 14, y - 1, 3, 1); }
 }
+// an item's flat art, fitted into a box (pixel art is only ever halved, never smeared)
+const iconCache = new Map();
+function itemIcon(it, frame) {
+  const spr = (window.SPRITES || {})[it.sprite];
+  if (!spr || typeof window.drawSprite !== "function") return null;
+  const fr = frame % (spr.frames ? spr.frames.length : 1), key = it.id + "|" + fr;
+  if (iconCache.has(key)) return iconCache.get(key);
+  const c = document.createElement("canvas");
+  c.width = spr.w; c.height = spr.h;
+  window.drawSprite(c.getContext("2d"), spr, fr, 0, 0, {});
+  iconCache.set(key, c);
+  return c;
+}
+function drawIcon(it, cx, cy, box, t) {
+  const spr = (window.SPRITES || {})[it.sprite], n = spr && spr.frames ? spr.frames.length : 1;
+  const ic = itemIcon(it, it.animated && !still ? Math.floor(t * 5) % n : 0);
+  if (!ic) { disc(g, cx, cy, 5, RARITY[it.rarity] || "#ffffff"); return; }
+  const k = Math.max(ic.width, ic.height) > box ? 0.5 : 1, w = ic.width * k, h = ic.height * k;
+  g.drawImage(ic, Math.round(cx - w / 2), Math.round(cy - h / 2), w, h);
+}
+function drawPrize(t) {
+  if (!st.prize || st.prizeGone) return;
+  const sp = D.PRIZE_SPOTS[st.prize.spot], it = CATALOG.get(st.prize.item);
+  if (!sp || !it) return;
+  const col = RARITY[it.rarity] || "#ffffff", bob = still ? 0 : Math.round(Math.sin(t * 2.5) * 1.2), y = sp.y + bob;
+  g.globalAlpha = 0.28 + 0.14 * Math.sin(t * 4);
+  disc(g, sp.x, y, 11.5, col);
+  g.globalAlpha = 1;
+  disc(g, sp.x, y, 9.5, OUT);
+  disc(g, sp.x, y, 8.5, "#3a2a1a");
+  drawIcon(it, sp.x, y, 16, t);
+  if (it.rarity === "legendary" || it.rarity === "epic") { // a twinkle orbits the good stuff
+    const a = t * 3, n = it.rarity === "legendary" ? 3 : 1;
+    for (let k = 0; k < n; k++) { const b = a + (k * Math.PI * 2) / n, x = Math.round(sp.x + Math.cos(b) * 12), yy = Math.round(y + Math.sin(b) * 12); g.fillStyle = "#fff8d0"; g.fillRect(x, yy - 1, 1, 3); g.fillRect(x - 1, yy, 3, 1); }
+  }
+}
 // Squeektoshi curled into a ball: the body turns, the light stays top-left
 function drawBall(bx, by, ang, alpha = 1) {
   const c = Math.cos(ang), s = Math.sin(ang), R = BALL_R + 0.5;
@@ -230,26 +270,72 @@ function burst(x, y, n, cols, speed = 1.6) {
 }
 function coinShower(n) { for (let k = 0; k < n; k++) st.coins.push({ x: LEFT + 8 + Math.random() * (RIGHT - LEFT - 16), y: -10 - Math.random() * 120, vy: 1 + Math.random() * 1.5 }); }
 
-// ---------- a drop ----------
-function newBoard() {
+// ---------- talking to the server ----------
+async function api(path, body) {
+  try {
+    const r = body ? await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: TOKEN, ...body }) })
+      : await fetch(path, { cache: "no-store" });
+    let j = {};
+    try { j = await r.json(); } catch {}
+    return { ok: r.ok, j };
+  } catch { return { ok: false, j: { error: "offline" } }; }
+}
+function setBoard(b) {
+  st.golden = !!(b && b.golden);
+  st.crate = b && Number.isInteger(b.crate) ? b.crate : -1;
+  st.prize = b && b.prize ? b.prize : null;
+  st.prizeGone = false;
   st.seedOn = D.seeds.map(() => true);
-  st.golden = Math.random() < 1 / 8;
-  st.crate = Math.random() < 1 / 3 ? Math.floor(Math.random() * D.crateSpots.length) : -1;
   renderHud();
 }
-function drop() {
+async function load() {
+  const r = await api(`/api/state?token=${encodeURIComponent(TOKEN)}`);
+  if (!r.ok) { say("Can't reach the server", 4000); return; }
+  if (Number.isFinite(r.j.dropStash)) st.stash = r.j.dropStash;
+  const me = r.j.me;
+  if (!me) { st.mode = "noden"; renderHud(); return; }
+  st.watts = me.watts;
+  if (st.mode === "load" || st.mode === "noden") { st.mode = "aim"; st.shownWatts = st.watts; st.shownStash = st.stash; }
+  if (st.mode === "aim" && me.drop) setBoard(me.drop.board);
+  renderHud();
+}
+function say(msg, ms = 1800) { st.msg = msg; st.msgUntil = performance.now() + ms; renderHud(); setTimeout(renderHud, ms + 30); }
+const DROP_WORDS = { poor: "Not enough watts", too_fast: "One at a time", unknown_player: "No den yet", offline: "You're offline" };
+
+// ---------- a drop ----------
+async function drop() {
+  if (st.mode === "noden") { location.href = "/"; return; }
   if (st.mode !== "aim") return;
-  if (st.watts < COST) { st.watts += START_WATTS; renderHud(); sfx("coin"); return; } // preview: a top-up
-  st.watts -= COST;
-  st.stash += Math.round((COST * PAY.STASH_FEED_PCT) / 100);
-  const seed = (Math.random() * 4294967296) >>> 0;
-  st.sim = D.simulate(st.aim, seed, { crate: st.crate });
-  st.found = null; st.fly = null; st.reveal = null;
+  if (st.watts < COST) { say("Not enough watts"); return; }
+  st.mode = "wait"; renderHud();
   sfx("drop");
-  st.mode = "fall"; st.i = 0; st.ev = 0; st.chain = 0; st.lastSeedF = -999; st.won = 0; st.trail = []; st.banner = null; st.slotFlash = -1;
+  const r = await api("/api/drop", { aim: st.aim });
+  if (!r.ok || !r.j.result) {
+    st.mode = "aim";
+    say(DROP_WORDS[r.j.error] || "That didn't work");
+    if (r.j.error === "unknown_player") st.mode = "noden";
+    load();
+    return;
+  }
+  const R = r.j.result;
+  st.res = R;
+  st.next = { board: r.j.board, watts: r.j.me ? r.j.me.watts : st.watts - COST + R.total, stash: r.j.stash };
+  st.watts -= COST; // what's left while he falls; the winnings land at the end
+  setBoard(R.board); // the board this drop was played on (it was already showing)
+  st.sim = D.simulate(R.aim, R.seed, { crate: R.board.crate, prize: R.board.prize ? R.board.prize.spot : -1 });
+  st.found = null; st.won = null; st.fly = null; st.reveal = null;
+  st.mode = "fall"; st.i = 0; st.chain = 0; st.lastSeedF = -999; st.trail = []; st.banner = null; st.slotFlash = -1;
   renderHud();
 }
 function seedPay(chain) { return Math.round((COST * PAY.SEED_PCT * Math.min(chain, PAY.COMBO_MAX) * (st.golden ? 2 : 1)) / 100); }
+function crateWords(c) {
+  if (!c) return null;
+  if (c.kind === "watts") return { str: `+${fmt(c.watts)}W`, col: "#ffd166" };
+  if (c.kind === "boost") return { str: "BOOST", col: "#ffd166" };
+  if (c.kind === "shield") return { str: "SHIELD", col: "#ffd166" };
+  if (c.kind === "decor") return { str: "RARE!", col: "#f472b6" };
+  return { str: "CRATE", col: "#eef0f5" };
+}
 function onEvent(e) {
   const F = st.sim.frames, bx = F[e.f * 3], by = F[e.f * 3 + 1];
   if (e.kind === "peb") { st.flash.set("peb" + e.i, 0.14); sfx("peg", { pitch: 1 - by / H }); }
@@ -260,24 +346,29 @@ function onEvent(e) {
     st.seedOn[e.i] = false;
     st.chain = e.f - st.lastSeedF < PAY.COMBO_FRAMES ? st.chain + 1 : 1;
     st.lastSeedF = e.f;
-    const w = seedPay(st.chain);
-    st.won += w;
     const s = D.seeds[e.i];
-    pop(s.x, s.y - 6, `+${w}W`, "#ffd166");
+    pop(s.x, s.y - 6, `+${seedPay(st.chain)}W`, "#ffd166");
     if (st.chain > 1) pop(s.x, s.y - 16, `COMBO X${Math.min(st.chain, PAY.COMBO_MAX)}`, "#4ade80");
     burst(s.x, s.y, 7, ["#ffd166", "#fff8d0"]);
     sfx("seed", { chain: st.chain });
   } else if (e.kind === "crate") {
     const c = D.crateSpots[e.i];
     st.crate = -1;
-    const finds = [["+400W", "#ffd166", 400], ["BOOST", "#ffd166", 0], ["SHIELD", "#ffd166", 0], ["RARE!", "#f472b6", 0]];
-    const [str, col, w] = finds[Math.floor(Math.random() * finds.length)];
-    st.won += w;
-    st.found = { str, col };
-    st.fly = { x: c.x, y: c.y, vx: bx < c.x ? 1.1 : -1.1, vy: -2.4, t: 0 }; // knocked loose: it hops up, then pops open
+    st.found = crateWords(st.res.crate) || { str: "CRATE", col: "#eef0f5" };
+    st.fly = { kind: "crate", x: c.x, y: c.y, vx: bx < c.x ? 1.1 : -1.1, vy: -2.4, t: 0 }; // knocked loose: it hops up, then pops open
     burst(c.x, c.y, 8, ["#c2410c", "#ffd166"], 1.4);
     st.shake = Math.max(st.shake, 0.12);
     sfx("crateHit");
+  } else if (e.kind === "prize") {
+    const sp = D.PRIZE_SPOTS[e.i], it = st.prize && CATALOG.get(st.prize.item);
+    st.prizeGone = true;
+    if (it) {
+      st.won = { it, dup: st.res.prize ? st.res.prize.dup : 0 };
+      st.fly = { kind: "prize", x: sp.x, y: sp.y, vx: bx < sp.x ? 1.1 : -1.1, vy: -2.6, t: 0 };
+      burst(sp.x, sp.y, 12, [RARITY[it.rarity], "#fff8d0"], 1.8);
+      st.shake = Math.max(st.shake, it.rarity === "legendary" ? 0.3 : 0.14);
+      sfx("crateHit");
+    }
   } else if (e.kind === "slot") {
     st.slotFlash = e.i; st.slotT = 0;
     if (st.sim.slotId !== "stash") sfx("land", { slot: st.sim.slotId }); // the stash gets its fanfare at the end
@@ -285,25 +376,26 @@ function onEvent(e) {
   }
 }
 function finish() {
-  const id = st.sim.slotId;
-  let land = 0;
-  if (id === "stash") { land = st.stash; st.stash = COST * PAY.STASH_START; coinShower(40); st.shake = 0.5; sfx("jackpot"); }
-  else land = Math.round(COST * PAY[id]);
-  st.watts += land + st.won;
-  const total = land + st.won;
-  const cr = st.found ? { c: `CRATE ${st.found.str}`, ccol: st.found.col } : {};
-  st.banner = Object.assign(id === "stash" ? { a: "JACKPOT", b: `+${fmt(total)} W`, col: "#ffd166", t: 0 }
-    : id === "dead" ? { a: "DEAD END", b: total ? `+${fmt(total)} W` : "", col: "#9ca3af", t: 0 }
-    : { a: id === "pantry" ? "PANTRY" : "NEST", b: `+${fmt(total)} W`, col: id === "pantry" ? "#ffd166" : "#eef0f5", t: 0 }, cr);
-  st.mode = "done"; st.done = id === "stash" ? 3.2 : 1.7;
+  const R = st.res, id = R.slotId, N = st.next;
+  if (st.sim.slotId !== id) console.warn("drop replay landed elsewhere:", st.sim.slotId, "server:", id); // the server's word stands
+  if (id === "stash") { coinShower(40); st.shake = 0.5; sfx("jackpot"); }
+  st.watts = N.watts;
+  st.stash = N.stash;
+  const lines = [];
+  if (st.found) lines.push({ str: `CRATE ${st.found.str}`, col: st.found.col });
+  if (st.won) lines.push(st.won.dup ? { str: `${st.won.it.name.toUpperCase()} AGAIN +${fmt(st.won.dup)}W`, col: "#eef0f5" } : { str: `NEW ${st.won.it.name.toUpperCase()}`, col: RARITY[st.won.it.rarity] });
+  st.banner = Object.assign(id === "stash" ? { a: "JACKPOT", b: `+${fmt(R.total)} W`, col: "#ffd166", t: 0 }
+    : id === "dead" ? { a: "DEAD END", b: R.total ? `+${fmt(R.total)} W` : "", col: "#9ca3af", t: 0 }
+    : { a: id === "pantry" ? "PANTRY" : "NEST", b: `+${fmt(R.total)} W`, col: id === "pantry" ? "#ffd166" : "#eef0f5", t: 0 }, { lines });
+  st.mode = "done"; st.done = id === "stash" ? 3.2 : st.won && !st.won.dup ? 2.6 : 1.7;
   renderHud();
 }
 
 // ---------- hud ----------
 function renderHud() {
-  const b = $("dropBtn");
-  b.disabled = st.mode !== "aim";
-  b.textContent = st.watts < COST ? "Top up" : `Drop · ${fmt(COST)} W`;
+  const b = $("dropBtn"), msg = st.msg && performance.now() < st.msgUntil ? st.msg : "";
+  b.disabled = !["aim", "noden"].includes(st.mode) || !!msg;
+  b.textContent = msg || (st.mode === "noden" ? "Make your den first" : st.mode === "load" ? "Opening…" : `Drop · ${fmt(COST)} W`);
   $("golden").hidden = !st.golden;
 }
 function tickHud(dt) {
@@ -337,7 +429,7 @@ function step(dt) {
     if (st.i >= n - 1) finish();
   } else if (st.mode === "done") {
     st.done -= dt;
-    if (st.done <= 0) { st.mode = "aim"; st.sim = null; newBoard(); }
+    if (st.done <= 0) { st.mode = "aim"; st.sim = null; setBoard(st.next.board); st.next = null; }
   }
   for (const [k, v] of st.flash) { if (v - dt <= 0) st.flash.delete(k); else st.flash.set(k, v - dt); }
   st.rootWob = st.rootWob.map((w) => Math.max(0, w - dt * 3));
@@ -367,6 +459,7 @@ function draw(t) {
   drawWheel(still ? 0 : t * 60 * D.WHEEL.omega);
   D.seeds.forEach((s, i) => { if (st.seedOn[i]) drawSeed(s, i, t); });
   drawCrate(t);
+  drawPrize(t);
   // the dividers, in front of the chambers
   for (const x of D.dividers) {
     g.fillStyle = OUT; g.fillRect(x - 2, DIV_TOP - 1, 4, H - 10 - DIV_TOP + 1);
@@ -374,7 +467,7 @@ function draw(t) {
     g.fillStyle = "#e3b27a"; g.fillRect(x - 1, DIV_TOP, 1, H - 10 - DIV_TOP);
   }
   // him
-  if (st.mode === "aim") {
+  if (st.mode === "aim" || st.mode === "wait") {
     const bob = still ? 0 : Math.round(Math.sin(t * 4) * 1);
     for (let y = RAIL_Y + 12; y < RAIL_Y + 44; y += 5) if (((y + Math.floor(t * 20)) % 10) < 5) { g.fillStyle = "rgba(255,248,208,.55)"; g.fillRect(Math.round(st.aim), y, 1, 2); }
     drawBall(st.aim, RAIL_Y + bob, 0);
@@ -406,26 +499,45 @@ function draw(t) {
   }
   if (st.fly) {
     const c = st.fly; c.t += 1 / 60; c.x += c.vx; c.y += c.vy; c.vy += 0.12;
-    const s = (window.SPRITES || {}).crate, x = Math.round(c.x - 8), y = Math.round(c.y - 8 + Math.sin(c.t * 30));
-    if (s && typeof window.drawSprite === "function") window.drawSprite(g, s, 0, x, y, {}); else { g.fillStyle = "#c2410c"; g.fillRect(x, y, 16, 16); }
+    const wob = Math.sin(c.t * 30);
+    if (c.kind === "prize") { disc(g, c.x, c.y + wob, 9.5, OUT); disc(g, c.x, c.y + wob, 8.5, "#3a2a1a"); drawIcon(st.won.it, c.x, c.y + wob, 16, T); }
+    else {
+      const s = (window.SPRITES || {}).crate, x = Math.round(c.x - 8), y = Math.round(c.y - 8 + wob);
+      if (s && typeof window.drawSprite === "function") window.drawSprite(g, s, 0, x, y, {}); else { g.fillStyle = "#c2410c"; g.fillRect(x, y, 16, 16); }
+    }
     if (c.t > 0.42) {
-      burst(c.x, c.y, 22, ["#ffd166", "#f5a623", "#fff8d0", st.found.col], 2.6);
-      st.reveal = { x: clamp(c.x, 50, W - 50), y: clamp(c.y - 30, 24, DIV_TOP - 90), t: 0 };
-      st.fly = null; st.shake = Math.max(st.shake, 0.18);
-      sfx("crateOpen");
+      const col = c.kind === "prize" ? RARITY[st.won.it.rarity] : st.found.col, legend = c.kind === "prize" && st.won.it.rarity === "legendary";
+      burst(c.x, c.y, legend ? 40 : 22, ["#ffd166", "#f5a623", "#fff8d0", col], legend ? 3.2 : 2.6);
+      st.reveal = { kind: c.kind, x: clamp(c.x, 64, W - 64), y: clamp(c.y - 30, 24, DIV_TOP - 96), t: 0 };
+      st.fly = null; st.shake = Math.max(st.shake, legend ? 0.4 : 0.18);
+      if (legend) coinShower(16);
+      sfx(c.kind === "prize" && !st.won.dup && ["epic", "legendary"].includes(st.won.it.rarity) ? "jackpot" : "crateOpen");
     }
   }
-  if (st.reveal && st.found) { // what was inside, big, for a moment
-    const r = st.reveal; r.t += 1 / 60;
-    if (r.t > 1.8) st.reveal = null;
+  if (st.reveal) { // what was inside, big, for a moment
+    const r = st.reveal, prize = r.kind === "prize", life = prize ? 2.4 : 1.8; r.t += 1 / 60;
+    if (r.t > life || (prize ? !st.won : !st.found)) st.reveal = null;
     else {
-      const k = Math.min(1, r.t * 8), y = Math.round(r.y - r.t * 6);
-      g.globalAlpha = Math.min(1, (1.8 - r.t) * 3);
-      strip(g, r.x, y - 3, 96 * k, 24);
-      if (k >= 1) {
-        const s = (window.SPRITES || {}).crate;
-        if (s && typeof window.drawSprite === "function") window.drawSprite(g, s, 0, Math.round(r.x - 44), y, {});
-        bigText(g, st.found.str, r.x + 8, y + 2, st.found.col, 2);
+      const k = Math.min(1, r.t * 8), y = Math.round(r.y - r.t * 5);
+      g.globalAlpha = Math.min(1, (life - r.t) * 3);
+      if (prize) {
+        const it = st.won.it, col = RARITY[it.rarity], name = it.name.toUpperCase(), big = name.length <= 16 ? 2 : 1;
+        const wd = Math.min(W - 8, Math.max(110, name.length * 4 * big + 40)), cx = clamp(r.x, wd / 2 + 4, W - wd / 2 - 4); // always inside the board
+        strip(g, cx, y - 4, wd * k, 34);
+        if (k >= 1) {
+          g.fillStyle = col; g.fillRect(Math.round(cx - wd / 2), y - 4, wd, 1); g.fillRect(Math.round(cx - wd / 2), y + 29, wd, 1);
+          drawIcon(it, cx - wd / 2 + 14, y + 13, 18, T);
+          PX.text(g, st.won.dup ? "AGAIN" : it.rarity.toUpperCase(), cx + 12, y, col);
+          bigText(g, name, cx + 12, y + 9, st.won.dup ? "#eef0f5" : col, big);
+          if (st.won.dup) PX.text(g, `+${fmt(st.won.dup)}W`, cx + 12, y + 22, "#ffd166");
+        }
+      } else {
+        strip(g, r.x, y - 3, 96 * k, 24);
+        if (k >= 1) {
+          const s = (window.SPRITES || {}).crate;
+          if (s && typeof window.drawSprite === "function") window.drawSprite(g, s, 0, Math.round(r.x - 44), y, {});
+          bigText(g, st.found.str, r.x + 8, y + 2, st.found.col, 2);
+        }
       }
       g.globalAlpha = 1;
     }
@@ -434,10 +546,11 @@ function draw(t) {
     const b = st.banner; b.t += 1 / 60;
     const s = Math.min(1, b.t * 6), jack = b.a === "JACKPOT";
     if (!jack || Math.floor(b.t * 6) % 2 === 0 || b.t > 1.2) {
-      strip(g, W / 2, DIV_TOP - 46, 150, b.c ? 44 : 34);
-      bigText(g, b.a, W / 2, DIV_TOP - 44, b.col, s >= 1 ? 3 : 2);
-      if (b.b) bigText(g, b.b, W / 2, DIV_TOP - 23, b.col === "#9ca3af" ? "#eef0f5" : b.col, 2);
-      if (b.c) PX.text(g, b.c, W / 2, DIV_TOP - 9, b.ccol);
+      const extra = b.lines.length * 9, top = DIV_TOP - 46 - Math.max(0, extra - 10);
+      strip(g, W / 2, top, 170, 34 + extra);
+      bigText(g, b.a, W / 2, top + 2, b.col, s >= 1 ? 3 : 2);
+      if (b.b) bigText(g, b.b, W / 2, top + 23, b.col === "#9ca3af" ? "#eef0f5" : b.col, 2);
+      b.lines.forEach((l, k) => PX.text(g, l.str, W / 2, top + 37 + k * 9, l.col));
     }
   }
   g.restore();
@@ -457,13 +570,15 @@ $("dropBtn").addEventListener("click", drop);
 addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft" || e.key === "ArrowRight") { if (st.mode === "aim") st.aim = clamp(st.aim + (e.key === "ArrowLeft" ? -3 : 3), AIM_MIN, AIM_MAX); e.preventDefault(); }
   else if (e.key === " " || e.key === "Enter") { if (document.activeElement !== $("dropBtn")) { drop(); e.preventDefault(); } }
-  else if (e.key === "g" || e.key === "G") { if (st.mode === "aim") { st.golden = !st.golden; renderHud(); } }
 });
 
-$("watts").textContent = fmt(st.watts);
-$("stash").textContent = fmt(st.stash);
-newBoard();
+renderHud();
 if (SND) { SND.music("drop"); SND.button($("soundBtn")); }
 requestAnimationFrame(frame);
-window.__drop = { st, D, drop, step };
+fetch("/api/config").then((r) => r.json()).then((cfg) => {
+  if (cfg.balance && cfg.balance.DROP) COST = cfg.balance.DROP.COST;
+  for (const it of cfg.catalog || []) CATALOG.set(it.id, it);
+}).catch(() => {}).finally(() => { load(); });
+setInterval(() => { if (!document.hidden && (st.mode === "aim" || st.mode === "noden")) load(); }, 10_000); // the shared stash moves
+window.__drop = { st, D, drop, step, load };
 })();

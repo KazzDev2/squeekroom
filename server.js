@@ -33,6 +33,7 @@ const crypto = require("node:crypto");
 const zlib = require("node:zlib");
 const ethsig = require("./lib/ethsig.js");
 const alert = require("./lib/alert.js");
+const DropSim = require("./public/drop_sim.js"); // Burrow Drop's board + physics, shared with the browser
 
 const PORT = Number(process.env.PORT || 8788);
 const API = process.env.SQUEEK_API || "https://api.squeekchain.com/v1";
@@ -137,6 +138,19 @@ const BALANCE = {
   // Keyed off settled blocks and watching only: nothing here rewards making him run.
   CRATES: { CHANCE_PCT: 1, PER_DAY: 5, MAX_UNOPENED: 3, ROLLS_MAX: 50, WATTS_MIN: 200, WATTS_MAX: 800, DUP_WATTS: 800,
     TABLE_PCT: { watts: 60, boost: 25, shield: 10, decor: 5 } },
+  // Burrow Drop (public/drop.html): pay COST, aim, and the server rolls the drop (public/drop_sim.js:
+  // the same deterministic physics the browser replays from the seed). Chambers and seeds pay per
+  // DropSim.PAY; the shared stash starts at STASH_START x COST, grows STASH_FEED_PCT of every drop and
+  // stops at STASH_MAX x COST. Every board shows one drop-only prize (PRIZE_PCT by rarity; rarer ones
+  // sit in harder spots); hitting it wins it, or DUP_WATTS if the den already has one. Some boards are
+  // golden (seeds x2) or have a lucky crate wedged on a root (the usual crate table).
+  // Tuned on simulated drops with every prize already owned and the stash at its cap: about 0.89 back
+  // per drop on average, 0.955 at the best aim, so the game always takes in more watts than it pays out.
+  DROP: {
+    COST: 500, STASH_START: 6, STASH_MAX: 14, STASH_FEED_PCT: 5, GOLDEN_ONE_IN: 8, CRATE_ONE_IN: 10, MIN_GAP_MS: 1500,
+    PRIZE_PCT: { common: 55, uncommon: 26, rare: 12, epic: 5, legendary: 2 },
+    DUP_WATTS: { common: 10, uncommon: 40, rare: 150, epic: 500, legendary: 1500 },
+  },
   // Golden blocks: a settled height is golden when its hash says so (~1 in ONE_IN, the same answer on
   // every boot). It pays MULT_PCT wheel watts to every den watching when it settles; others get the normal rate.
   GOLDEN: { ONE_IN: 150, MULT_PCT: 1000 },
@@ -180,6 +194,7 @@ const tileKey = ([i, j]) => i * 100 + j;
 // {id, name, cat, price, w, h, zone, sprite, tier?, multPct?, animated?, crate?, remap?, colorOf?}
 // w/h are in cells; zone is "floor" | "wall" | "rug" for placeables, null otherwise.
 // crate: only found in lucky crates, never sold (price 0, but not one of the free defaults).
+// drop: only won in Burrow Drop (rarity: common | uncommon | rare | epic | legendary), never sold.
 // Colourways reuse their base item's art (sprite and iso_ sprite) with remap: [[from, to], ...]
 // palette-index pairs; the client builds the 16-entry map. colorOf names the base item.
 const style = (id, name, cat, price) => ({ id, name, cat, price, w: 0, h: 0, zone: null, sprite: id });
@@ -188,6 +203,7 @@ const bed = (tier, name, price) => ({ id: `bed_t${tier}`, name, cat: "bed", pric
 const roomMat = (tier, material, price) => ({ id: `room_t${tier}`, name: `${material} Room`, cat: "room", price, w: 0, h: 0, zone: null, sprite: `room_t${tier}`, tier, material });
 const place = (id, name, cat, price, w, h, zone, animated) => ({ id, name, cat, price, w, h, zone, sprite: id, ...(animated ? { animated: true } : {}) });
 const crateOnly = (id, name, cat, w, h, zone, animated) => ({ ...place(id, name, cat, 0, w, h, zone, animated), crate: true });
+const dropOnly = (id, name, cat, w, h, zone, rarity, animated) => ({ ...place(id, name, cat, 0, w, h, zone, animated), drop: true, rarity });
 
 const CATALOG = [
   // wheel upgrades (strictly in order; with beds, the only items that change generation)
@@ -271,6 +287,15 @@ const CATALOG = [
   place("wall_fish_tank", "Fish Tank", "wall", 22_000, 2, 2, "wall", true),
   crateOnly("wall_lucky_lantern", "Lucky Lantern", "wall", 1, 2, "wall", true),
   crateOnly("wall_shooting_star", "Shooting Star", "wall", 2, 1, "wall", true),
+  // Burrow Drop prizes (art: public/sprites_drop.js)
+  dropOnly("fur_pebble_cairn", "Pebble Cairn", "furniture", 1, 1, "floor", "common"),
+  dropOnly("fur_root_stool", "Root Stool", "furniture", 1, 1, "floor", "common"),
+  dropOnly("fur_seed_sack", "Seed Sack", "furniture", 1, 1, "floor", "common"),
+  dropOnly("fur_acorn_lamp", "Acorn Lamp", "furniture", 1, 2, "floor", "uncommon"),
+  dropOnly("wall_burrow_map", "Burrow Map", "wall", 2, 1, "wall", "uncommon"),
+  dropOnly("fur_coin_jar", "Coin Jar", "furniture", 1, 1, "floor", "rare", true),
+  dropOnly("fur_golden_acorn", "Golden Acorn", "furniture", 1, 1, "floor", "epic", true),
+  dropOnly("fur_crystal_geode", "Crystal Geode", "furniture", 2, 1, "floor", "legendary", true),
   // hamster skins (palette remaps of one sprite set)
   style("skin_classic", "Classic", "skin", 0),
   style("skin_albino", "Albino", "skin", 20_000),
@@ -307,7 +332,7 @@ const SINGLE_COPY = new Set(["wallpaper", "floor", "skin"]);
 const TIER_FIELD = { wheel: "wheelTier", bed: "bedTier", room: "roomTier" };
 const tierField = (cat) => (Object.hasOwn(TIER_FIELD, cat) ? TIER_FIELD[cat] : null);
 const DEFAULTS = { skin: "skin_classic", wallpaper: "wp_plain", floor: "fl_straw" };
-const FREE_IDS = CATALOG.filter((i) => i.price === 0 && !i.crate).map((i) => i.id); // every player owns these
+const FREE_IDS = CATALOG.filter((i) => i.price === 0 && !i.crate && !i.drop).map((i) => i.id); // every player owns these
 
 // ---------- fixtures: the wheel and the bed ----------
 const FIXTURES = ["wheel", "bed"];
@@ -772,13 +797,102 @@ function openCrate(st, token, body, now = Date.now()) {
   const k = typeof id === "string" && Array.isArray(p.crates) ? p.crates.findIndex((c) => c && c.id === id) : -1;
   if (k < 0) return fail("unknown_crate");
   const [crate] = p.crates.splice(k, 1);
-  let got = crate.c || { kind: "watts", watts: BALANCE.CRATES.WATTS_MIN };
+  return { ok: true, got: giveCrate(p, crate.c || { kind: "watts", watts: BALANCE.CRATES.WATTS_MIN }) };
+}
+// What a crate holds lands in the den (watts on the balance only: not earnings). Returns what was given.
+function giveCrate(p, got) {
   if (got.kind === "decor" && (!CATALOG_BY_ID.has(got.item) || (p.owned && p.owned[got.item]))) got = { kind: "watts", watts: BALANCE.CRATES.DUP_WATTS, dup: got.item };
   if (got.kind === "watts") p.watts += got.watts;
   else if (got.kind === "boost" && ITEM_KINDS.includes(got.boost)) p.items[got.boost] = (p.items[got.boost] | 0) + 1;
   else if (got.kind === "shield") p.items.shield_token = (p.items.shield_token | 0) + 1;
   else if (got.kind === "decor") p.owned[got.item] = 1;
-  return { ok: true, got };
+  return got;
+}
+
+// ---------- Burrow Drop ----------
+// The den's next board is decided here, before the drop (so it can't be re-rolled by asking again),
+// and kept in p.drop.board until a drop uses it. The stash is shared by everyone (state.drop.stash).
+const RARITIES = ["common", "uncommon", "rare", "epic", "legendary"];
+const DROP_ITEMS = CATALOG.filter((i) => i.drop);
+function newDropBoard(rng = Math.random) {
+  const B = BALANCE.DROP, roll = rng() * 100;
+  let tier = RARITIES[0], acc = 0;
+  for (const t of RARITIES) { acc += B.PRIZE_PCT[t]; if (roll < acc) { tier = t; break; } }
+  const items = DROP_ITEMS.filter((i) => i.rarity === tier);
+  const spots = DropSim.PRIZE_SPOTS.map((sp, k) => [sp, k]).filter(([sp]) => sp.tier === tier);
+  const prize = items.length && spots.length
+    ? { item: items[Math.floor(rng() * items.length) % items.length].id, spot: spots[Math.floor(rng() * spots.length) % spots.length][1] }
+    : null;
+  const golden = rng() < 1 / B.GOLDEN_ONE_IN;
+  const crate = rng() < 1 / B.CRATE_ONE_IN ? Math.floor(rng() * DropSim.crateSpots.length) % DropSim.crateSpots.length : -1;
+  return { golden, crate, prize };
+}
+function validDropBoard(b) {
+  if (!b || typeof b !== "object" || typeof b.golden !== "boolean") return false;
+  if (!Number.isInteger(b.crate) || b.crate < -1 || b.crate >= DropSim.crateSpots.length) return false;
+  if (b.prize === null) return true;
+  const it = b.prize && CATALOG_BY_ID.get(b.prize.item), sp = b.prize && DropSim.PRIZE_SPOTS[b.prize.spot];
+  return !!(it && it.drop && sp && Number.isInteger(b.prize.spot) && sp.tier === it.rarity);
+}
+function dropBoard(p, rng = Math.random) {
+  if (!p.drop || typeof p.drop !== "object" || Array.isArray(p.drop)) p.drop = { n: 0, lastAt: 0, board: null };
+  if (!validDropBoard(p.drop.board)) p.drop.board = newDropBoard(rng);
+  return p.drop.board;
+}
+function dropStash(st) {
+  const B = BALANCE.DROP;
+  if (!st.drop || typeof st.drop !== "object" || Array.isArray(st.drop)) st.drop = {};
+  if (!Number.isFinite(st.drop.stash)) st.drop.stash = B.COST * B.STASH_START;
+  return st.drop.stash;
+}
+// body {aim}: one drop. Returns the seed (the browser replays the same path) and every payout.
+function playDrop(st, token, body, now = Date.now(), { rng = Math.random, seed = null } = {}) {
+  const p = getPlayer(st, token);
+  if (!p) return fail("unknown_player");
+  const B = BALANCE.DROP, b = body && typeof body === "object" ? body : {};
+  if (typeof b.aim !== "number" || !Number.isFinite(b.aim)) return fail("bad_aim");
+  const aim = Math.min(DropSim.AIM_MAX, Math.max(DropSim.AIM_MIN, b.aim));
+  const board = dropBoard(p, rng);
+  if (now - (p.drop.lastAt || 0) < B.MIN_GAP_MS) return fail("too_fast");
+  if (!(p.watts >= B.COST)) return { ok: false, error: "poor", need: B.COST - p.watts };
+  const s = seed != null ? seed >>> 0 : crypto.randomBytes(4).readUInt32LE(0);
+  const r = DropSim.simulate(aim, s, { crate: board.crate, prize: board.prize ? board.prize.spot : -1 });
+  const P = DropSim.PAY;
+  p.watts -= B.COST;
+  dropStash(st);
+  st.drop.stash = Math.min(B.COST * B.STASH_MAX, st.drop.stash + Math.round((B.COST * B.STASH_FEED_PCT) / 100));
+  let land = 0, stashWon = 0;
+  if (r.slotId === "stash") { land = stashWon = st.drop.stash; st.drop.stash = B.COST * B.STASH_START; }
+  else land = Math.round(B.COST * P[r.slotId]);
+  let seeds = 0, chain = 0, lastF = -1e9;
+  for (const e of r.events) {
+    if (e.kind !== "seed") continue;
+    chain = e.f - lastF < P.COMBO_FRAMES ? chain + 1 : 1;
+    lastF = e.f;
+    seeds += Math.round((B.COST * P.SEED_PCT * Math.min(chain, P.COMBO_MAX) * (board.golden ? 2 : 1)) / 100);
+  }
+  const crate = r.crateHit ? giveCrate(p, rollCrateContents(p, rng)) : null;
+  let prize = null;
+  if (r.prizeHit && board.prize) {
+    const it = CATALOG_BY_ID.get(board.prize.item), have = !!(p.owned && p.owned[it.id]);
+    const dup = have ? B.DUP_WATTS[it.rarity] | 0 : 0;
+    if (have) p.watts += dup; else p.owned[it.id] = 1;
+    prize = { item: it.id, rarity: it.rarity, dup };
+  }
+  p.watts += land + seeds;
+  const out = land + seeds + (prize ? prize.dup : 0) + (crate && crate.kind === "watts" ? crate.watts : 0);
+  st.drop.played = (st.drop.played | 0) + 1; // house numbers, to check the tuning on real play
+  st.drop.in = (st.drop.in || 0) + B.COST;
+  st.drop.out = (st.drop.out || 0) + out;
+  p.drop.n = (p.drop.n | 0) + 1;
+  p.drop.lastAt = now;
+  p.drop.board = newDropBoard(rng);
+  return {
+    ok: true,
+    result: { seed: s, aim, board, slot: r.slot, slotId: r.slotId, land, stashWon, seeds, crate, prize, total: out },
+    board: p.drop.board,
+    stash: st.drop.stash,
+  };
 }
 
 // ---------- boosts + the Raid Shield ----------
@@ -874,6 +988,7 @@ function canBuy(player, itemId) {
   const item = typeof itemId === "string" ? CATALOG_BY_ID.get(itemId) : undefined;
   if (!item) return { ok: false, error: "unknown_item" };
   if (item.crate) return { ok: false, error: "crate_only" };
+  if (item.drop) return { ok: false, error: "drop_only" };
   const field = tierField(item.cat);
   if (field) {
     const cur = player[field] | 0;
@@ -1928,6 +2043,7 @@ function publicPlayer(p, now = Date.now()) {
     shield: { until: shieldUp(p, now) ? p.shield.until : 0, kind: shieldUp(p, now) ? p.shield.kind : null, usedToday: shieldUsedToday(p, now), price: shieldPrice(p) },
     crates: (p.crates || []).map(({ id, at, i, j }) => ({ id, at, i, j })), // never the contents
     cratesToday: p.crateDay === utcDay(now) ? p.cratesToday | 0 : 0,
+    drop: { board: dropBoard(p), played: p.drop.n | 0 }, // Burrow Drop: the next board (decided by the server)
   };
 }
 let playerCount = 0;
@@ -1961,6 +2077,7 @@ function snapshot(token, ip = null) {
     raid: viewer ? raidStatus(state, viewer, now, readAt) : null, // this viewer's raid window + cooldown
     raidFeed: (Array.isArray(state.raidFeed) ? state.raidFeed : []).slice(-BALANCE.RAID.FEED_SNAPSHOT), // oldest first
     burned: state.burned || 0,
+    dropStash: dropStash(state), // Burrow Drop's shared jackpot
     lastError: state.lastError,
     apiError: state.apiError || null,
     players: playerCount,
@@ -2077,6 +2194,12 @@ const POST_ROUTES = {
     if (!r.ok) { const { ok, error, ...extra } = r; return err(SHOP_ERR_STATUS[error] || 400, error, extra); }
     return okMe(p, { shield: r.shield });
   },
+  // {aim}: one Burrow Drop
+  "/api/drop": (b, p, token) => {
+    const r = playDrop(state, token, b);
+    if (!r.ok) { const { ok, error, ...extra } = r; return err(DROP_ERR_STATUS[error] || 400, error, extra); }
+    return okMe(p, { result: r.result, board: r.board, stash: r.stash });
+  },
   // {id}: open a lucky crate
   "/api/crate": (b, p, token) => {
     const r = openCrate(state, token, b);
@@ -2104,6 +2227,7 @@ POST_ROUTES["/api/username"] = POST_ROUTES["/api/wallet/username"] = (b, p, toke
   return okMe(p, { username: r.username });
 };
 const RAID_ERR_STATUS = { hamster_asleep: 409, chain_unknown: 409, chain_stale: 409, no_raids_left: 429, bad_target: 404, unknown_player: 404, not_eligible: 403, self_target: 400, shielded: 409, target_shielded: 409 };
+const DROP_ERR_STATUS = { unknown_player: 404, bad_aim: 400, too_fast: 429, poor: 400 };
 const SHOP_ERR_STATUS = { unknown_player: 404, not_for_sale: 403, boost_active: 409, shield_active: 409, shield_used_today: 429, unknown_crate: 404 };
 const WALLET_ERR_STATUS = { unknown_player: 404, no_nonce: 409, nonce_expired: 410, wallet_taken: 409, username_taken: 409, server_full: 503, too_many_dens: 429, den_exists: 409 };
 const DEV_ROUTES = {
@@ -2235,7 +2359,7 @@ Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, apply
   wattsFor, speedPctFrom, speedOpts, replayRunMeanBpm, recordSpeedSample,
   BOOST_KINDS, ITEM_KINDS, boostActive, useBoost, raiseShield, shieldUp, boughtShieldUp, shieldPrice, isGoldenBlock, goldenBetween,
   rollCrateContents, rollCrates, crateTile, openCrate,
-  COLORWAYS, FREE_IDS });
+  COLORWAYS, FREE_IDS, playDrop, newDropBoard, validDropBoard, dropBoard, dropStash, DROP_ITEMS, RARITIES });
 
 if (require.main === module) {
   if (DEMO && REPLAY_REQUESTED) {

@@ -23,7 +23,6 @@ main{max-width:520px;margin:0 auto;display:flex;flex-direction:column;align-item
 header{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 0 8px;flex-wrap:wrap}
 h1{font-family:var(--display);font-weight:700;font-size:18px;letter-spacing:.5px;margin:0;display:flex;align-items:center;gap:8px}
 h1 img{width:30px;height:30px}
-.tag{font-family:var(--display);font-size:10px;letter-spacing:.4px;border:1.5px solid var(--ink);border-radius:4px;padding:2px 6px;background:var(--panel)}
 .snd{width:34px;height:32px;display:inline-grid;place-items:center;color:var(--ink);background:var(--panel);border:2px solid var(--ink);border-radius:6px;box-shadow:2px 2px 0 var(--ink);cursor:pointer;padding:0}
 .snd[data-mode="off"]{opacity:.6}
 .hdr-r{display:flex;gap:8px;align-items:center}
@@ -44,19 +43,20 @@ canvas#board{display:block;width:min(100%, calc((100vh - 190px) * 240 / 360));mi
 <body>
 <main>
 <header>
-  <h1><img src="logo.svg" alt="" width="30" height="30">BURROW DROP <span class="tag">PREVIEW</span></h1>
+  <h1><img src="logo.svg" alt="" width="30" height="30">BURROW DROP</h1>
   <span class="hdr-r"><button type="button" class="snd" id="soundBtn"></button><a class="back" href="/">Back to your den</a></span>
 </header>
 <div class="stats">
-  <div class="stat"><small>WATTS</small><b id="watts">10,000</b></div>
+  <div class="stat"><small>WATTS</small><b id="watts">…</b></div>
   <span class="gold" id="golden" hidden>GOLDEN BOARD</span>
-  <div class="stat stash" style="text-align:right"><small>STASH</small><b id="stash">5,000</b></div>
+  <div class="stat stash" style="text-align:right"><small>STASH</small><b id="stash">…</b></div>
 </div>
 <canvas id="board" width="240" height="360" role="img" aria-label="Burrow Drop board"></canvas>
 <button type="button" id="dropBtn">Drop · 500 W</button>
 </main>
 <script src="sprites.js"></script>
 <script src="sprites_crate.js"></script>
+<script src="sprites_drop.js"></script>
 <script src="scenes.js"></script>
 <script src="sound.js"></script>
 <script src="drop_sim.js"></script>

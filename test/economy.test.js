@@ -25,7 +25,7 @@ test("catalog: unique ids, schema, defaults free, wheel tiers 1..5", () => {
     assert.ok(Number.isInteger(i.price) && i.price >= 0);
     assert.ok(["wheel", "bed", "room", "wallpaper", "floor", "rug", "furniture", "wall", "skin"].includes(i.cat));
   }
-  const free = CATALOG.filter((i) => i.price === 0 && !i.crate).map((i) => i.id).sort();
+  const free = CATALOG.filter((i) => i.price === 0 && !i.crate && !i.drop).map((i) => i.id).sort();
   assert.deepEqual(free, ["fl_pine", "fl_straw", "skin_classic", "wp_dirt", "wp_plain"]);
   const wheels = CATALOG.filter((i) => i.cat === "wheel");
   assert.deepEqual(wheels.map((w) => w.tier), [1, 2, 3, 4, 5]);
