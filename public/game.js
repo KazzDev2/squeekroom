@@ -2417,9 +2417,11 @@ $("certShare").onclick = async () => {
 // ---------- raids: header chip, leaderboard, raid modal, result, feed ----------
 // The server rolls and re-validates every raid (window, daily allowance, eligibility, stake); the
 // client mirrors the maths so each option shows its odds and loot. EV is never shown on purpose.
-const RAID_DEFAULTS = { EDGE_PCT: 110, MULT_PCT: [150, 200, 300, 500, 1000], DEFENSE_PCT: [0, 5, 10, 15, 20, 25], DEF_SHARE_PCT: [0, 5, 10, 15, 20, 25], TILT_EXP: 0.25, TILT_MIN_PCT: 75, TILT_MAX_PCT: 175,
+// A failed raid burns the whole wager (the defender gets nothing), and a den raids and can be raided
+// only once it has earned MIN_EARNED watts from the wheel or bed.
+const RAID_DEFAULTS = { EDGE_PCT: 110, MULT_PCT: [150, 200, 300, 500, 1000], DEFENSE_PCT: [0, 5, 10, 15, 20, 25], TILT_EXP: 0.25, TILT_MIN_PCT: 75, TILT_MAX_PCT: 175,
   P_MIN_PCT: 2, P_MAX_PCT: 90, LOOT_U_MIN_PCT: 75, LOOT_U_MAX_PCT: 125, CRIT_CHANCE_PCT: 5, CRIT_MULT_PCT: 150, LOOT_MAX_DEF_PCT: 25, STAKE_MIN: 50, STAKE_MIN_BAL_PCT: 5,
-  ELIGIBLE_MIN_PCT: 70, REVENGE_WINDOW_MS: 86_400_000, PER_DAY: 10 };
+  ELIGIBLE_MIN_PCT: 70, REVENGE_WINDOW_MS: 86_400_000, PER_DAY: 10, MIN_EARNED: 5000 };
 const RB = () => ({ ...RAID_DEFAULTS, ...((S.balance && S.balance.RAID) || {}) });
 // p = clamp((EDGE / M) x (1 - d) x clamp((def / me) ^ 0.25, 0.75, 1.75), 0.02, 0.90), M as a percentage,
 // and at least 1/M when the target holds at least my watts
@@ -2442,7 +2444,6 @@ function raidStakeBounds(watts, defWatts = null, multPct = null) {
   const top = Math.floor((lootCap(defWatts) * 10_000) / ((multPct - 100) * R.LOOT_U_MAX_PCT));
   return top < bal ? { min, max: top, limit: "target" } : { min, max: bal, limit: "balance" };
 }
-const sharePct = (t) => RB().DEF_SHARE_PCT[t | 0] ?? 0;
 function lootRange(multPct, stake, defWatts) {
   const R = RB(), cap = lootCap(defWatts), base = (multPct - 100) * stake;
   return [Math.min(Math.floor((base * R.LOOT_U_MIN_PCT) / 10_000), cap), Math.min(Math.floor((base * R.LOOT_U_MAX_PCT) / 10_000), cap)];
@@ -2462,12 +2463,19 @@ S.raid = null; S.raidFeed = []; S.burned = 0;
 function applyRaidStatus(raid) {
   if (!raid || typeof raid !== "object") { S.raid = null; return; }
   const per = Number(raid.perDay) || RB().PER_DAY;
-  S.raid = { open: !!raid.open, left: Number.isFinite(raid.raidsLeft) ? raid.raidsLeft : per, perDay: per, resetAt: Date.now() + Math.max(0, Number(raid.resetMs) || 0) };
+  const need = Number(raid.needEarned) || RB().MIN_EARNED;
+  S.raid = { open: !!raid.open, left: Number.isFinite(raid.raidsLeft) ? raid.raidsLeft : per, perDay: per, resetAt: Date.now() + Math.max(0, Number(raid.resetMs) || 0),
+    ready: raid.ready !== false, earned: Number(raid.earned) || 0, need };
 }
 const raidsLeftNow = () => (S.raid ? (Date.now() >= S.raid.resetAt ? S.raid.perDay : S.raid.left) : 0);
 const resetIn = () => (S.raid ? Math.max(0, S.raid.resetAt - Date.now()) : 0);
-function raidPhase() { // none | open | spent | locked
+// earned so far toward the raid floor: the live lifetime when we have it (it only grows), else the server's count
+const earnedNow = () => Math.max(S.raid ? S.raid.earned : 0, (S.me && S.me.lifetimeWatts) || 0);
+const raidNeed = () => (S.raid && S.raid.need) || RB().MIN_EARNED;
+const freshWords = () => `Earn ${fmt(raidNeed())} W from the wheel or bed first. Fresh dens can't raid or be raided.`;
+function raidPhase() { // none | fresh | open | spent | locked
   if (!S.raid || !S.me) return "none";
+  if (!S.raid.ready && earnedNow() < raidNeed()) return "fresh";
   if (!S.raid.open) return "locked";
   return raidsLeftNow() > 0 ? "open" : "spent";
 }
@@ -2477,13 +2485,13 @@ function renderRaidChip() {
   const el = $("raidChip"), ph = raidPhase();
   el.hidden = ph === "none";
   if (ph === "none") return;
-  const html = `⚔ Raid <span class="cd">${ph === "locked" ? lockedWhy() : `${raidsLeftNow()} left`}</span>`;
+  const html = `⚔ Raid <span class="cd">${ph === "fresh" ? `${fmt(Math.min(earnedNow(), raidNeed()))}/${fmt(raidNeed())} W` : ph === "locked" ? lockedWhy() : `${raidsLeftNow()} left`}</span>`;
   const sig = ph + html;
   if (sig === chipSig) return;
   chipSig = sig;
-  el.className = `raidchip ${ph}`;
+  el.className = `raidchip ${ph === "fresh" ? "locked fresh" : ph}`;
   el.innerHTML = html;
-  el.title = ph === "locked" ? "Raids only work while Squeektoshi runs" : ph === "spent" ? `Out of raids. More in ${durText(resetIn())}` : "Leaderboard";
+  el.title = ph === "fresh" ? freshWords() : ph === "locked" ? "Raids only work while Squeektoshi runs" : ph === "spent" ? `Out of raids. More in ${durText(resetIn())}` : "Leaderboard";
   el.setAttribute("aria-expanded", String(LB.open));
 }
 
@@ -2503,11 +2511,11 @@ const defensePct = (t) => RB().DEFENSE_PCT[t | 0] ?? 0;
 // display name: the server's `name` (wallet username, else the room nick); nick for older payloads
 const rowName = (r) => (r && (r.name || r.nick)) || "anon";
 function verifiedBadge() { const b = elx("span", "vbadge", "✓"); b.title = "Wallet-verified username"; b.setAttribute("aria-label", "wallet verified"); return b; }
-const rowMatLine = (r) => `${roomMaterial(r.roomTier | 0)} den${defensePct(r.roomTier) ? ` · −${defensePct(r.roomTier)}% odds` : ""}${sharePct(r.roomTier) ? ` · keeps ${sharePct(r.roomTier)}% of failed raids` : ""}`;
+const rowMatLine = (r) => `${roomMaterial(r.roomTier | 0)} den${defensePct(r.roomTier) ? ` · −${defensePct(r.roomTier)}% odds` : ""}`;
 // recomputed against my live watts (the server's flag uses the same rule; it re-checks on raid)
 function rowRaidable(r) {
   const me = S.me;
-  if (!me || r.you || r.publicId === myPid()) return false;
+  if (!me || r.you || r.publicId === myPid() || r.fresh || raidPhase() === "fresh") return false;
   return r.watts * 100 >= me.watts * RB().ELIGIBLE_MIN_PCT || !!r.revenge;
 }
 const minTarget = () => (S.me ? Math.ceil((S.me.watts * RB().ELIGIBLE_MIN_PCT) / 100) : 0);
@@ -2557,6 +2565,7 @@ function raidStateWords() {
   if (ph === "open") return ["open", `<b>${raidsLeftNow()}/${S.raid.perDay}</b> raids left today`];
   if (ph === "spent") return ["", `Out of raids. More in <b>${durText(resetIn())}</b>`];
   if (ph === "locked") return ["", S.idle ? "Squeektoshi is asleep. Raids open when he runs." : "Waiting for a fresh block."];
+  if (ph === "fresh") return ["", `${freshWords()} You're at <b>${fmt(Math.min(earnedNow(), raidNeed()))} W</b>.`];
   return ["", "Loading…"];
 }
 function renderLb() {
@@ -2593,8 +2602,9 @@ function renderLb() {
     const wt = elx("span", "wt", `${fmt(r.watts)} W`);
     if (raidable && me) {
       wt.appendChild(elx("span", "go", "RAID"));
-    } else if (!you) wt.appendChild(elx("small", null, "too small"));
-    row.title = raidable ? `Raid ${rowName(r)}${r.revenge ? " (revenge)" : ""}` : you ? "Your den" : `Under 70% of your watts (${fmt(minTarget())} W). You can only raid up.`;
+    } else if (!you) wt.appendChild(elx("small", null, r.fresh ? "new den" : raidPhase() === "fresh" ? "" : "too small"));
+    row.title = raidable ? `Raid ${rowName(r)}${r.revenge ? " (revenge)" : ""}` : you ? "Your den"
+      : r.fresh ? `New den. It can't be raided until it earns ${fmt(raidNeed())} W.` : raidPhase() === "fresh" ? freshWords() : `Under 70% of your watts (${fmt(minTarget())} W). You can only raid up.`;
     row.setAttribute("aria-label", `Rank ${r.rank}, ${rowName(r)}${r.verified ? " (wallet verified)" : ""}${you ? " (you)" : ""}, ${roomMaterial(r.roomTier | 0)} den, ${fmt(r.watts)} watts${raidable ? ", raidable" : ""}${r.revenge ? ", revenge" : ""}`);
     row.appendChild(wt);
     li.appendChild(row);
@@ -2667,6 +2677,8 @@ function raidBlock(t, sb) {
   const ph = raidPhase();
   if (ph === "locked") return { lock: true, msg: S.idle ? "Squeektoshi is asleep. Raids open when he runs." : "Waiting for a fresh block." };
   if (ph === "spent") return { lock: true, msg: `No raids left today. More in ${durText(resetIn())}.` };
+  if (ph === "fresh") return { lock: true, msg: freshWords() };
+  if (t.fresh) return { lock: true, msg: `${escapeHtml(rowName(t))} is a new den. It can't be raided until it earns ${fmt(raidNeed())} W.` };
   if (!rowRaidable(t)) return { lock: true, msg: `${escapeHtml(rowName(t))} has under 70% of your watts now.` };
   if (sb.max < sb.min) return { lock: true, msg: stakeLockWords(sb) };
   return null;
@@ -2759,7 +2771,10 @@ function raidErrorWords(j) {
     case "chain_stale": return "Waiting for a fresh block.";
     case "no_raids_left": return `No raids left today. More in ${durText(j.resetMs || 0)}.`;
     case "bad_target": return "That den is gone.";
-    case "not_eligible": return `${t ? rowName(t) : "They"} dropped under 70% of your watts.`;
+    case "not_eligible":
+      if (j.reason === "fresh_attacker") return freshWords();
+      if (j.reason === "fresh_target") return `${t ? rowName(t) : "That den"} is a new den. It can't be raided until it earns ${fmt(j.needEarned || raidNeed())} W.`;
+      return `${t ? rowName(t) : "They"} dropped under 70% of your watts.`;
     case "self_target": return "That's your own den.";
     case "bad_mult": return "Pick a multiplier.";
     case "bad_stake": case "stake_out_of_range": return j.max < j.min ? stakeLockWords(j) : `Wager ${fmt(j.min)} to ${fmt(j.max)} W${j.limit === "target" ? ` against this den at ${multLabel(RU.mult)}` : ""}.`;
@@ -2780,6 +2795,7 @@ async function doRaid() {
   if (e === "no_raids_left") applyRaidStatus({ open: true, raidsLeft: 0, perDay: S.raid && S.raid.perDay, resetMs: j.resetMs });
   else if (e === "hamster_asleep" || e === "chain_unknown" || e === "chain_stale") { if (S.raid) S.raid.open = false; else applyRaidStatus({ open: false }); }
   else if (e === "stake_out_of_range" || e === "bad_stake") { if (Number.isFinite(j.max) && j.max >= j.min) RU.stake = clamp(sb.v, j.min, j.max); refresh(); }
+  if (e === "not_eligible" && j.reason === "fresh_attacker" && S.raid) { S.raid.ready = false; if (Number.isFinite(j.earned)) S.raid.earned = j.earned; }
   if (e === "not_eligible" || e === "bad_target") loadLb();
   chipSig = "";
   renderRaidChip();
@@ -2826,7 +2842,7 @@ function showRaidResult(res, t, before) {
   } else {
     $("resBig").textContent = "You lost";
     $("resAmt").textContent = `−${fmt(res.stakeLost || res.stake)} W`;
-    $("resDet").textContent = res.defShare > 0 ? `at ${multLabel(m)}. ${fmt(res.defShare)} W went to ${rowName(t)}, the rest burned` : `wager burned at ${multLabel(m)}`;
+    $("resDet").textContent = `wager burned at ${multLabel(m)}`;
     for (let i = 0; i < 28; i++) {
       const p = elx("i", "fxp ember");
       p.style.left = `${5 + Math.random() * 90}%`;
@@ -2916,7 +2932,7 @@ function applyFeed(list) {
 // someone raided me between two polls: make sure I notice
 function raidedMe(e) {
   const w = !!e.win;
-  toast(w ? `${e.atk} raided you: −${fmt(e.amount)} W` : `${e.atk} tried to raid you and lost ${fmt(e.amount)} W${e.share > 0 ? `. Your den kept ${fmt(e.share)} W of it` : ""}`, w ? "err" : e.share > 0 ? "ok" : undefined);
+  toast(w ? `${e.atk} raided you: −${fmt(e.amount)} W` : `${e.atk} tried to raid you and lost ${fmt(e.amount)} W`, w ? "err" : undefined);
   for (const id of ["feed", "stage"]) { const n = $(id); n.classList.remove("hit"); void n.offsetWidth; n.classList.add("hit"); setTimeout(() => n.classList.remove("hit"), 1600); }
   if (w) { const m = $("meter"); m.classList.remove("poor"); void m.offsetWidth; m.classList.add("poor"); setTimeout(() => m.classList.remove("poor"), 900); }
   raidFx("hit");
@@ -2939,7 +2955,6 @@ function feedLine(e, mine) {
   } else {
     parts.push(atkMe ? name("You") : name(e.atk), " failed on ", defMe ? name("you") : name(e.def), " ");
     parts.push(elx("span", "b", `−${amt} W`));
-    if (defMe && e.share > 0) parts.push(" ", elx("span", "w kept", `+${fmt(e.share)} W kept`));
   }
   for (const p of parts) tx.append(p);
   li.appendChild(tx);
@@ -3070,7 +3085,7 @@ const TUT = [
         for (let k = 0; k < 5; k++) { c.fillStyle = OUTLINE; c.fillRect(x - 12 + k * 5, 6, 4, 4); c.fillStyle = k < tier ? "#22c55e" : "#4b5563"; c.fillRect(x - 11 + k * 5, 7, 2, 2); }
       }
     } },
-  { title: "Raid richer dens", text: "While he runs, wager Watts to rob a den worth at least 0.7x yours. The richer the target, the better your odds.",
+  { title: "Raid richer dens", text: "Once your den has earned 5,000 W, wager Watts while he runs to rob a den worth at least 0.7x yours. The richer the target, the better your odds.",
     draw(c, t) {
       tutBg(c, false);
       const P = 2.6, moved = Math.floor(t / P) % 4, p = (t % P) / P, f = Math.floor(t * 14) % 4;

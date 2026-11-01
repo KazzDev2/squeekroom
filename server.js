@@ -3,8 +3,8 @@
 // he sleeps (no settled block for a while) every room earns a slower trickle from its bed.
 // Watts buy cosmetics; wheel and bed upgrades are the only items that raise generation.
 // While he runs, players may raid richer rooms (POST /api/raid): a won raid moves watts, a lost
-// stake is burned, less a share paid to the defender by room tier. GET /api/leaderboard lists every
-// room by balance.
+// stake burns entirely. Only dens that have earned RAID.MIN_EARNED watts can raid or be raided.
+// GET /api/leaderboard lists every room by balance.
 // Usernames (POST /api/username): every den picks a unique one when it starts; it's the name others see.
 // Optional wallet sign-in (POST /api/wallet/{nonce,verify}): a gasless personal_sign proof binds an EVM
 // address, which adds a verified badge next to the username.
@@ -77,14 +77,13 @@ const BALANCE = {
   // holds at least the attacker's watts, so attacker EV = S x (p x M - 1) does not depend on M (the
   // multiplier only dials variance). Punching up is never -EV; peer raids into strong rooms and
   // revenge on poorer rooms can be. Stakes stop at the point where the loot cap would cut the loot
-  // roll (only a crit can hit the cap), so no stake is a trap. A loss pays the defender a share by
-  // room tier and burns the rest; the share stays far below the loot risk, so being raided is -EV.
-  // The UI shows odds and loot, never EV: working that out is part of the game.
+  // roll (only a crit can hit the cap), so no stake is a trap. A loss burns the whole stake: the
+  // defender gets nothing (a share would let alt dens wager welcome watts into a main), so being
+  // raided is -EV. The UI shows odds and loot, never EV: working that out is part of the game.
   RAID: {
     EDGE_PCT: 110,
     MULT_PCT: [150, 200, 300, 500, 1000], // M = 1.5, 2, 3, 5, 10 ("Heist")
     DEFENSE_PCT: [0, 5, 10, 15, 20, 25], // by the DEFENDER's roomTier 0..5
-    DEF_SHARE_PCT: [0, 5, 10, 15, 20, 25], // of a failed stake, paid to the DEFENDER by roomTier 0..5
     TILT_EXP: 0.25, // tilt = (defenderWatts / attackerWatts) ^ TILT_EXP, clamped below
     TILT_MIN_PCT: 75,
     TILT_MAX_PCT: 175, // reached at ~9.4x the attacker's watts
@@ -101,6 +100,9 @@ const BALANCE = {
     REVENGE_WINDOW_MS: 86_400_000, // ...unless they raided the attacker within 24 h (once per provocation)
     RAIDED_BY_MAX: 20,
     PER_DAY: 10, // raids per attacker per UTC day; being raided has no limit
+    // A den raids and can be raided only once it has EARNED this much (lifetimeWatts: wheel + bed,
+    // never the welcome grant or raid loot), so fresh alt dens can't wager or lose their welcome watts.
+    MIN_EARNED: 5_000,
     FEED_MAX: 50,
     FEED_SNAPSHOT: 20,
     LEADERBOARD_MAX: 200,
@@ -296,6 +298,7 @@ function patchPlayer(p, token) {
   if (!Number.isInteger(p.bedTier)) p.bedTier = 0;
   if (!Number.isFinite(p.bedFrac)) p.bedFrac = 0;
   if (!Number.isInteger(p.roomTier)) p.roomTier = 0;
+  if (!Number.isFinite(p.lifetimeWatts)) p.lifetimeWatts = 0; // raidReady() reads it
   if (!Number.isFinite(p.lastRaidAt)) p.lastRaidAt = 0;
   if (p.raidDay === undefined) p.raidDay = null;
   if (!Number.isInteger(p.raidsToday)) p.raidsToday = 0;
@@ -667,15 +670,14 @@ function raidChance(attacker, defender, multPct) {
   if (!BALANCE.RAID.MULT_PCT.includes(multPct)) return 0;
   return raidOdds(multPct, raidDefensePct(defender), wealthTilt(attacker.watts, defender.watts), isPunchUp(attacker.watts, defender.watts));
 }
-const raidSharePct = (defender) => BALANCE.RAID.DEF_SHARE_PCT[defender.roomTier | 0] ?? BALANCE.RAID.DEF_SHARE_PCT[0];
 // One resolution, rolls in a fixed order: win, then loot U, then crit (a loss uses one roll).
 // Loot is capped at LOOT_MAX_DEF_PCT of the defender's balance, crit included, so no single roll can
-// empty a room however big the stake. A loss loses the whole stake; defShare of it goes to the
-// defender (by their room tier), the rest burns. Pure: returns the outcome, mutates nothing.
+// empty a room however big the stake. A loss loses the whole stake, and it all burns.
+// Pure: returns the outcome, mutates nothing.
 function resolveRaid(attacker, defender, stake, multPct, rng = Math.random) {
   const R = BALANCE.RAID;
   const p = raidChance(attacker, defender, multPct);
-  if (!(rng() < p)) return { win: false, p, stakeLost: stake, defShare: Math.floor((stake * raidSharePct(defender)) / 100) };
+  if (!(rng() < p)) return { win: false, p, stakeLost: stake };
   const uPct = R.LOOT_U_MIN_PCT + (R.LOOT_U_MAX_PCT - R.LOOT_U_MIN_PCT) * rng();
   const cap = lootCap(defender.watts);
   let loot = Math.min(Math.floor(((multPct - 100) * stake * uPct) / 10_000), cap);
@@ -712,6 +714,8 @@ function pendingRevenge(player, pid, now) {
   const list = Array.isArray(player.raidedBy) ? player.raidedBy : [];
   return list.find((e) => e && e.pid === pid && !e.avenged && now >= e.at && now - e.at < BALANCE.RAID.REVENGE_WINDOW_MS) || null;
 }
+// Earned enough (wheel + bed, lifetime) to raid and to be raided. Lifetime only grows, so once true it stays true.
+const raidReady = (p) => !!p && Number.isFinite(p.lifetimeWatts) && p.lifetimeWatts >= BALANCE.RAID.MIN_EARNED;
 // Punch-up rule (target holds >= 70% of the attacker's balance) or a pending revenge.
 function raidEligibility(attacker, defender, now) {
   if (attacker === defender || (attacker.publicId && attacker.publicId === defender.publicId)) return { ok: false, error: "self_target" };
@@ -728,7 +732,8 @@ function raidWindow(lastAdvanceAt, now = Date.now(), chainReadAt = null, st = nu
   return { open: true, reason: null };
 }
 function raidStatus(st, player, now = Date.now(), chainReadAt = null) {
-  return { open: raidWindow(st.lastAdvanceAt, now, chainReadAt, st).open, raidsLeft: raidsLeft(player, now), perDay: BALANCE.RAID.PER_DAY, resetMs: msToUtcMidnight(now) };
+  return { open: raidWindow(st.lastAdvanceAt, now, chainReadAt, st).open, raidsLeft: raidsLeft(player, now), perDay: BALANCE.RAID.PER_DAY, resetMs: msToUtcMidnight(now),
+    ready: raidReady(player), earned: Math.max(0, player.lifetimeWatts | 0), needEarned: BALANCE.RAID.MIN_EARNED };
 }
 
 // publicId -> token index per state object (built lazily, extended on player creation; a miss
@@ -760,7 +765,8 @@ const pushRing = (arr, entry, max) => {
 };
 
 // Validate and resolve one raid by the player behind `token` on body {target (publicId), stake, mult}.
-// Order: window -> daily allowance -> target -> eligibility/revenge -> multiplier -> stake. Mutates st only
+// Order: window -> attacker earned enough -> daily allowance -> target -> target earned enough ->
+// eligibility/revenge -> multiplier -> stake. Mutates st only
 // on success. opts.chainReadAt: live-mode freshness (null in demo); opts.rng: injectable for tests.
 function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng = Math.random } = {}) {
   const R = BALANCE.RAID;
@@ -768,11 +774,13 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
   if (!atk) return fail("unknown_player");
   const w = raidWindow(st.lastAdvanceAt, now, chainReadAt, st);
   if (!w.open) return fail(w.reason);
+  if (!raidReady(atk)) return { ok: false, error: "not_eligible", reason: "fresh_attacker", needEarned: R.MIN_EARNED, earned: Math.max(0, atk.lifetimeWatts | 0) };
   if (raidsLeft(atk, now) <= 0) return { ok: false, error: "no_raids_left", resetMs: msToUtcMidnight(now) };
   const b = body && typeof body === "object" ? body : {};
   const defToken = tokenForPublicId(st, b.target);
   if (!defToken) return fail("bad_target");
   const def = st.players[defToken];
+  if (def !== atk && !raidReady(def)) return { ok: false, error: "not_eligible", reason: "fresh_target", needEarned: R.MIN_EARNED };
   const el = raidEligibility(atk, def, now);
   if (!el.ok) return fail(el.error);
   const multPct = parseMultPct(b.mult);
@@ -788,8 +796,7 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
     atk.watts += r.loot;
   } else {
     atk.watts -= stake;
-    def.watts += r.defShare;
-    st.burned = (Number.isFinite(st.burned) ? st.burned : 0) + stake - r.defShare;
+    st.burned = (Number.isFinite(st.burned) ? st.burned : 0) + stake;
   }
   atk.lastRaidAt = now;
   const day = utcDay(now);
@@ -799,7 +806,7 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
   if (!Array.isArray(def.raidedBy)) def.raidedBy = [];
   def.raidedBy = def.raidedBy.filter((e) => e && now - e.at < R.REVENGE_WINDOW_MS);
   pushRing(def.raidedBy, { pid: atk.publicId, at: now, avenged: false }, R.RAIDED_BY_MAX);
-  const feed = { at: now, atk: displayName(atk), atkId: atk.publicId, def: displayName(def), defId: def.publicId, win: r.win, amount: r.win ? r.loot : stake, crit: r.win ? r.crit : false, share: r.win ? 0 : r.defShare };
+  const feed = { at: now, atk: displayName(atk), atkId: atk.publicId, def: displayName(def), defId: def.publicId, win: r.win, amount: r.win ? r.loot : stake, crit: r.win ? r.crit : false };
   if (!Array.isArray(st.raidFeed)) st.raidFeed = [];
   pushRing(st.raidFeed, feed, R.FEED_MAX);
   invalidateLeaderboard(st);
@@ -814,7 +821,7 @@ function leaderboardRows(st, now) {
   if (c && now >= c.at && now - c.at < R.LEADERBOARD_CACHE_MS) return c;
   const all = Object.values(st.players).filter((p) => p && p.publicId);
   all.sort((a, b) => b.watts - a.watts || b.lifetimeWatts - a.lifetimeWatts || (a.publicId < b.publicId ? -1 : a.publicId > b.publicId ? 1 : 0));
-  const rows = all.slice(0, R.LEADERBOARD_MAX).map((p, i) => ({ rank: i + 1, publicId: p.publicId, nick: p.nick, name: displayName(p), verified: !!p.wallet, watts: p.watts, lifetimeWatts: p.lifetimeWatts, roomTier: p.roomTier | 0 }));
+  const rows = all.slice(0, R.LEADERBOARD_MAX).map((p, i) => ({ rank: i + 1, publicId: p.publicId, nick: p.nick, name: displayName(p), verified: !!p.wallet, watts: p.watts, lifetimeWatts: p.lifetimeWatts, roomTier: p.roomTier | 0, fresh: !raidReady(p) }));
   const out = { at: now, rows, total: all.length };
   LB_CACHE.set(st, out);
   return out;
@@ -825,7 +832,7 @@ function leaderboard(st, token, now = Date.now(), { chainReadAt = null } = {}) {
   const rows = c.rows.map((r) => {
     const you = !!viewer && r.publicId === viewer.publicId;
     const revenge = !!viewer && !you && pendingRevenge(viewer, r.publicId, now) != null;
-    const raidable = !!viewer && !you && (r.watts * 100 >= viewer.watts * BALANCE.RAID.ELIGIBLE_MIN_PCT || revenge);
+    const raidable = !!viewer && !you && raidReady(viewer) && !r.fresh && (r.watts * 100 >= viewer.watts * BALANCE.RAID.ELIGIBLE_MIN_PCT || revenge);
     return { ...r, raidable, revenge, you };
   });
   return { rows, total: c.total, cachedAt: c.at, raid: viewer ? raidStatus(st, viewer, now, chainReadAt) : null };
@@ -1729,7 +1736,7 @@ module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certElig
 // Extra helpers for tests (the plan's six names above stay the primary surface).
 Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
-  raidChance, resolveRaid, raidOdds, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
+  raidChance, resolveRaid, raidOdds, raidReady, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS,
   WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername,
   REPLAY_NIGHT, REPLAY_NONSTOP_NIGHT, REPLAY_API_SINK, REPLAY_MIN_SLEEP_MS, replaySchedule, replayLocate, replayCumulativeBlocks, cumulativeBlocks: replayCumulativeBlocks,
