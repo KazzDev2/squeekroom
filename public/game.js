@@ -449,7 +449,7 @@ const S = {
 };
 // Visiting: while V.den is set the room shows that den (read-only) instead of mine. Everything the
 // renderer draws comes from shownDen(); my own den (S.me) keeps running the HUD, shop and raids.
-const V = { den: null, raid: null, busy: false, timer: 0 };
+const V = { den: null, raid: null, busy: false, timer: 0, req: 0 };
 const shownDen = () => V.den || S.me;
 const params = new URLSearchParams(location.search);
 const UTC_OVERRIDE = params.has("utc") ? Number(params.get("utc")) : null; // ?utc=22 previews the tint at that hour
@@ -1616,7 +1616,7 @@ function hitTest(L) {
   return null;
 }
 function enterPlace(itemId) {
-  if (V.den) leaveVisit(); // placing happens at home
+  leaveVisit(); // placing happens at home (and a visit still loading is dropped)
   const it = S.catalog.get(itemId);
   if (!it || !it.zone || unplaced(itemId) <= 0) return;
   selPid = null;
@@ -2354,6 +2354,7 @@ function afterMe() {
   renderFirstHint();
   syncNick();
   maybeAskName();
+  if (nameUi.open && S.me && S.me.username && !S.preview) { nameUi.open = false; $("nameModal").hidden = true; } // named in another tab
   if (!$("tut").hidden) { // the den arrived mid-tutorial: unlock it (or keep it locked), without restarting the slide
     $("tutX").hidden = tutLocked();
     if (tut.i === TUT.length - 1) $("tutNext").textContent = tutLocked() ? "Pick your name" : "Let's go";
@@ -2928,8 +2929,10 @@ async function visitDen(pid) {
   if (V.busy || !S.me || S.preview) return;
   if (pid && pid === myPid()) { leaveVisit(); return; }
   V.busy = true;
+  const req = ++V.req;
   const r = await fetchDen(pid ? denUrl(pid) : `/api/den/random?token=${encodeURIComponent(token)}`);
   V.busy = false;
+  if (req !== V.req) return; // Back home (or a placement) happened meanwhile
   if (!r.ok || !r.j.den) {
     const e = r.j.error;
     toast(e === "slow_down" ? "Easy there. Try again in a minute." : e === "no_dens" ? "No other dens yet." : e === "unknown_den" ? "That den is gone." : "Can't reach the server", "err");
@@ -2960,6 +2963,7 @@ async function refreshVisit() {
   else if (r.j.error === "unknown_den") { leaveVisit(); toast("That den is gone.", "err"); }
 }
 function leaveVisit() {
+  V.req++; // also cancels a visit still loading
   if (!V.den) return;
   clearInterval(V.timer);
   V.den = null;
@@ -3000,9 +3004,9 @@ function stakeNow(mult = RU.mult) {
   return { ...b, v: clamp(Math.round(RU.stake) || b.min, b.min, Math.max(b.min, b.max)) };
 }
 function openRaid(row) {
-  if (!row || !S.me || S.preview) return;
+  if (!row || !S.me || S.preview || RU.busy) return;
   if (!RU.open) RU.back = document.activeElement;
-  RU.open = true; RU.row = row; RU.result = null; RU.busy = false;
+  RU.open = true; RU.row = row; RU.result = null; RU.busy = false; RU.seq = (RU.seq | 0) + 1;
   if (!RU.stake) { const b = raidStakeBounds(S.me.watts); RU.stake = clamp(Math.floor(b.max / 10), b.min, Math.max(b.min, b.max)); }
   $("raidErr").textContent = "";
   showStage("form");
@@ -3129,7 +3133,7 @@ $("stakeNum").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.pr
 document.querySelectorAll("#raidForm [data-q]").forEach((b) => (b.onclick = () => { const sb = stakeNow(); setStake(Math.max(sb.min, Math.floor((sb.max * Number(b.dataset.q)) / 100))); }));
 $("raidGo").onclick = doRaid;
 $("holesBack").onclick = () => { if (!RU.busy) { showStage("form"); renderRaid(); $("raidGo").focus({ preventScroll: true }); } };
-$("raidClose").onclick = closeRaid;
+$("raidClose").onclick = () => { if (!RU.busy) closeRaid(); }; // not while a whack is rolling
 $("resClose").onclick = closeRaid;
 $("resBack").onclick = () => { closeRaid(); if (!LB.open) openLb(); };
 $("raidModal").addEventListener("click", (e) => { if (e.target === e.currentTarget && !RU.busy) closeRaid(); });
@@ -3224,6 +3228,7 @@ async function whack(i) {
   const t = raidTarget(), sb = stakeNow(), mult = RU.mult;
   if (raidBlock(t, sb)) { showStage("form"); renderRaid(); return; }
   RU.busy = true;
+  const seq = (RU.seq = (RU.seq | 0) + 1); // a reply that lands after the box moved on is dropped
   const grid = $("holeGrid"), hole = grid.children[i];
   grid.classList.add("busy");
   for (const h of grid.children) h.disabled = h !== hole;
@@ -3231,11 +3236,13 @@ async function whack(i) {
   const t0 = performance.now();
   const r = await post("/api/raid", { target: t.publicId, stake: sb.v, mult });
   await wait(Math.max(0, 380 - (performance.now() - t0))); // let the whack land
+  if (seq !== RU.seq) { if (r.ok && r.j && r.j.me) applyMe(r.j.me); return; }
   if (r.ok && r.j && r.j.result) {
     const res = r.j.result;
     hole.classList.add(res.win ? "win" : "miss");
     if (res.win) hole.querySelector(".hgain").textContent = `+${fmt(res.loot)}`;
     await wait(res.win ? 900 : 650);
+    if (seq !== RU.seq) { if (r.j.me) applyMe(r.j.me); return; }
     RU.busy = false;
     if (RU.open) onRaidResult(r.j, t);
     else if (r.j.me) applyMe(r.j.me); // closed mid-animation: the result still lands in the den

@@ -59,7 +59,7 @@ window.registerArt({
     ".......................11...............",
   ],
 ] },
-"iso_bed_t1": { w: 42, h: 39, group: "iso bed", name: "Teacup Nest (iso)", iso: { ax: 18, ay: 39 }, sleep: [18, 18], frames: [
+"iso_bed_t1": { w: 42, h: 39, group: "iso bed", name: "Teacup Nest (iso)", iso: { ax: 26, ay: 43 }, sleep: [18, 18], frames: [ // anchored half a tile forward, so the cup sits over its 2-tile footprint like the other beds
   [
     "....................3.....................",
     ".................6..6.....................",

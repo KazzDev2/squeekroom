@@ -1286,19 +1286,25 @@ function load() {
 }
 // One-time migrations, each gated by a flag in state.migrations. Returns true when something changed.
 // anonPurge1 (v4): dens without a username are deleted; they're kept in state.anon-purge.bak.json.
+// The backup is written BEFORE anything is deleted; if it can't be written nothing is deleted and the
+// flag stays unset, so the next boot tries again.
 function runMigrations(st, now = Date.now(), { backupFile = DATA_FILE.replace(/\.json$/, ".anon-purge.bak.json"), log = console.log } = {}) {
   if (!st.migrations || typeof st.migrations !== "object") st.migrations = {};
   if (st.migrations.anonPurge1) return false;
-  const removed = purgeNameless(st);
-  const list = Object.values(removed).filter(Boolean);
-  if (list.length && backupFile) {
+  const doomed = {};
+  for (const [t, p] of Object.entries(st.players || {})) if (!p || typeof p !== "object" || typeof p.username !== "string" || !p.username) doomed[t] = p;
+  if (Object.keys(doomed).length) {
     try {
+      if (!backupFile) throw new Error("no backup file");
       fs.mkdirSync(path.dirname(backupFile), { recursive: true });
-      fs.writeFileSync(backupFile, JSON.stringify({ at: new Date(now).toISOString(), players: removed }));
+      fs.writeFileSync(backupFile, JSON.stringify({ at: new Date(now).toISOString(), players: doomed }));
     } catch (e) {
-      console.error("anon purge: backup failed:", e.message || e);
+      console.error("anon purge: backup failed, nothing deleted (retried next boot):", e.message || e);
+      return false;
     }
   }
+  const removed = purgeNameless(st);
+  const list = Object.values(removed).filter(Boolean);
   st.migrations.anonPurge1 = new Date(now).toISOString();
   const spent = list.filter((p) => Number.isFinite(p.watts) && Number.isFinite(p.lifetimeWatts) && p.watts < p.lifetimeWatts + BALANCE.WELCOME_WATTS).length;
   log(`anon purge: ${list.length} nameless dens deleted (${spent} had spent watts, ${list.filter((p) => p.wallet).length} had a wallet, ${list.filter((p) => p.nick && p.nick !== "anon").length} had a nick); backup: ${list.length ? backupFile : "none"}`);
