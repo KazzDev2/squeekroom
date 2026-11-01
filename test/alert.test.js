@@ -201,6 +201,21 @@ test("supply: minted watts -> jump with the biggest gainers; broken balances -> 
   assert.equal(m.observe(st, T0 + 30_000).bad.length, 1);
 });
 
+test("supply: raid crit bonuses (state.minted) are not a jump; watts beyond them still are", () => {
+  const m = A.createSupplyMonitor(RATES);
+  const players = { a: den(5_000_000), b: den(5_000_000) };
+  const st = world(players);
+  m.observe(st, T0);
+  players.a.watts += 600_000; // a big crit: the game paid the bonus
+  st.minted = (st.minted || 0) + 600_000;
+  assert.equal(m.observe(st, T0 + 10_000), null);
+  players.b.watts += 600_000; // the same again, not counted
+  st.minted += 100;
+  const r = m.observe(st, T0 + 20_000);
+  assert.ok(r && r.jump);
+  assert.equal(r.jump.delta, 599_900);
+});
+
 test("supply: survives a restart (saved snapshot), a state reset rebaselines", () => {
   let saved = null;
   const players = { a: den(5_000) };

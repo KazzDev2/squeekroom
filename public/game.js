@@ -2729,17 +2729,19 @@ function raidP(multPct, defTier, myWatts, defWatts) {
   return clamp(p, R.P_MIN_PCT / 100, R.P_MAX_PCT / 100);
 }
 const lootCap = (defWatts) => Math.floor((Math.max(0, defWatts) * RB().LOOT_MAX_DEF_PCT) / 100);
-// [max(50, 5% of my watts), min(my watts, the target's loot cap / ((M - 1) x 1.5))], as the server
+// [max(50, 5% of my watts), min(my watts, the target's loot cap / (M - 1))], as the server
 // computes it; limit says which bound set max. max < min: no raid at this multiplier.
 function raidStakeBounds(watts, defWatts = null, multPct = null) {
   const R = RB(), bal = Math.max(0, Math.floor(watts));
   const min = Math.max(R.STAKE_MIN, Math.ceil((bal * R.STAKE_MIN_BAL_PCT) / 100));
   if (defWatts == null || multPct == null) return { min, max: bal, limit: "balance" };
-  const top = Math.floor((lootCap(defWatts) * 10_000) / ((multPct - 100) * R.CRIT_MULT_PCT));
+  const top = Math.floor((lootCap(defWatts) * 100) / (multPct - 100));
   return top < bal ? { min, max: top, limit: "target" } : { min, max: bal, limit: "balance" };
 }
-// a win pays exactly (M - 1) x wager (a rare crit pays more), never past the target's loot cap
-const lootFor = (multPct, stake, defWatts) => Math.min(Math.floor(((multPct - 100) * stake) / 100), lootCap(defWatts));
+// a win takes exactly (M - 1) x wager (rounded up), never past the target's loot cap; a crit's bonus is
+// paid on top by the game
+const lootFor = (multPct, stake, defWatts) => Math.min(Math.ceil(((multPct - 100) * stake) / 100), lootCap(defWatts));
+const wonFor = (res) => res.loot + (res.bonus || 0); // what the attacker got
 const multLabel = (m) => `${+(m / 100).toFixed(2)}×`;
 const pctText = (p) => { const v = p * 100; return `${v < 10 ? +v.toFixed(1) : Math.round(v)}%`; };
 const durText = (ms) => { const m = Math.max(1, Math.ceil(ms / 60_000)); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`; };
@@ -3240,7 +3242,7 @@ async function whack(i) {
   if (r.ok && r.j && r.j.result) {
     const res = r.j.result;
     hole.classList.add(res.win ? "win" : "miss");
-    if (res.win) hole.querySelector(".hgain").textContent = `+${fmt(res.loot)}`;
+    if (res.win) hole.querySelector(".hgain").textContent = `+${fmt(wonFor(res))}`;
     await wait(res.win ? 900 : 650);
     if (seq !== RU.seq) { if (r.j.me) applyMe(r.j.me); return; }
     RU.busy = false;
@@ -3289,7 +3291,7 @@ function showRaidResult(res, t, before) {
   if (win) {
     $("resBig").textContent = res.revenge ? "Revenge!" : "You won";
     $("resDet").textContent = `from ${rowName(t)} at ${multLabel(m)}${res.lucky ? ". The Lucky Whisker helped" : ""}`;
-    countUp($("resAmt"), res.loot, res.crit ? 1700 : 1200);
+    countUp($("resAmt"), wonFor(res), res.crit ? 1700 : 1200);
     for (let i = 0; i < (res.crit ? 36 : 22); i++) {
       const a = Math.random() * Math.PI * 2, d = 60 + Math.random() * 110, p = elx("i", "fxp coin");
       p.style.setProperty("--dx", `${Math.round(Math.cos(a) * d)}px`); p.style.setProperty("--dy", `${Math.round(Math.sin(a) * d * 0.7)}px`);
@@ -3297,8 +3299,8 @@ function showRaidResult(res, t, before) {
       box.appendChild(p);
     }
     raidFx(res.crit ? "crit" : "win");
-    gainFlash(res.loot);
-    toast(`${res.crit ? "Crit! " : ""}+${fmt(res.loot)} W from ${rowName(t)}`, "ok");
+    gainFlash(wonFor(res));
+    toast(`${res.crit ? "Crit! " : ""}+${fmt(wonFor(res))} W from ${rowName(t)}`, "ok");
   } else {
     const back = res.refund || 0, lost = (res.stakeLost || res.stake) - back;
     $("resBig").textContent = "You lost";
@@ -3419,7 +3421,7 @@ function feedLine(e, mine) {
   const parts = [];
   if (e.win) {
     parts.push(atkMe ? name("You") : link(e.atk, e.atkId), " raided ", defMe ? name("you") : link(e.def, e.defId), " ");
-    parts.push(elx("span", "w", `${atkMe ? "+" : "−"}${amt} W`));
+    parts.push(elx("span", "w", atkMe ? `+${fmt(e.amount + (e.bonus || 0))} W` : `−${amt} W`)); // the defender lost amount; a crit's bonus came from the game
     if (e.crit) parts.push(" ", elx("span", "critf", "crit"));
   } else {
     parts.push(atkMe ? name("You") : link(e.atk, e.atkId), " failed on ", defMe ? name("you") : link(e.def, e.defId), " ");
