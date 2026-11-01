@@ -542,7 +542,6 @@ function applyState(j) {
   noteGolden(j.golden, first);
   if (typeof j.burned === "number") S.burned = j.burned;
   if (Array.isArray(j.raidFeed)) applyFeed(j.raidFeed);
-  if (Number.isFinite(j.dropStash)) $("dropPot").textContent = `Stash ${fmt(j.dropStash)} W`; // Burrow Drop's shared pot
   if (RU.open) renderRaid();
   if (first) { ham.init = false; liveFetch(); }
 }
@@ -3603,7 +3602,7 @@ addEventListener("keydown", (e) => { // capture phase: it can't be dismissed, an
 // debug handle for the browser console / verification
 if (window.SqueekSound) { window.SqueekSound.music("den"); window.SqueekSound.button($("soundBtn")); }
 
-// the Burrow Drop card's icon: his ball bouncing down a few pebbles into a coin pile, on a loop
+// the Burrow Drop logo on the left rail: his ball bouncing down a few pebbles into a coin pile, on a loop
 const dropIcon = { c: $("dropIcon").getContext("2d"), last: 0 };
 const DI_PEGS = [[9, 11], [23, 11], [16, 18], [7, 24], [25, 24]];
 const DI_PATH = [[16, 2], [15, 7], [12, 6], [9, 9], [11, 12], [14, 14], [17, 13], [19, 16], [21, 20], [20, 23], [18, 26], [16, 28]]; // keyframes, 2 px apart in time
