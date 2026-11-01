@@ -22,6 +22,7 @@ const SND = window.SqueekSound, sfx = (name, o) => { if (SND) SND.sfx(name, o); 
 
 const st = {
   watts: 0, shownWatts: 0, stash: 0, shownStash: 0,
+  look: null, prevLook: null, lookT: 1, hamLook: null,
   aim: W / 2, mode: "load", sim: null, i: 0, done: 0, // load | noden | aim | wait | fall | done
   golden: false, crate: -1, prize: null, seedOn: D.seeds.map(() => true), res: null, next: null, msg: "", msgUntil: 0,
   flash: new Map(), rootWob: D.roots.map(() => 0), squash: D.ACORNS.map(() => 0), wheelFlash: 0, slotFlash: -1, slotT: 0,
@@ -53,43 +54,121 @@ function bigText(c, str, x, y, col, scale = 2) { // the 3x5 font, outlined, draw
 }
 function strip(c, x, y, w, h) { c.fillStyle = "rgba(29,26,20,.8)"; c.fillRect(Math.round(x - w / 2), Math.round(y), Math.round(w), h); }
 
-// ---------- the burrow (painted once) ----------
-const bg = document.createElement("canvas");
-bg.width = W; bg.height = H;
-(function paintBurrow() {
+// ---------- the looks: the burrow follows the hamster ----------
+// Garden dig while Squeektoshi runs, Moonlit burrow while he sleeps, Cozy den when nobody knows (no
+// fresh reading), Crystal cave on every golden board. Only colours change: the board itself never does.
+const BAYER = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+const rgb = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+// a dithered vertical blend from a to b over [y0, y1) (pixel-art friendly: no smooth gradients)
+function dither(c, x0, y0, x1, y1, a, b) {
+  const A = `rgb(${rgb(a)})`, B = `rgb(${rgb(b)})`;
+  for (let y = y0; y < y1; y++) {
+    const t = ((y - y0) / Math.max(1, y1 - y0)) * 16;
+    for (let x = x0; x < x1; x++) { c.fillStyle = t > BAYER[y & 3][x & 3] ? B : A; c.fillRect(x, y, 1, 1); }
+  }
+}
+function speckle(c, r, n, x0, y0, x1, y1, cols, big = 0.3) {
+  for (let k = 0; k < n; k++) { c.fillStyle = cols[k % cols.length]; c.fillRect(Math.floor(x0 + r() * (x1 - x0)), Math.floor(y0 + r() * (y1 - y0)), r() < big ? 2 : 1, 1); }
+}
+const sparkle = (c, x, y, col = "#fff8d0") => { c.fillStyle = col; c.fillRect(x, y - 1, 1, 3); c.fillRect(x - 1, y, 3, 1); };
+const LOOKS = {
+  garden: {
+    root: ["#5a3418", "#a3683a", "#d9a066"], peb: ["#e7e5e4", "#ffffff"], rim: "#e5e7eb", wheelIn: "#6e4a2c",
+    seed: ["#3b3226", "#f3efe6"], glow: "#ffffff", div: ["#c98b4e", "#e3b27a"], ch: "#5b3a22", hang: "#5a3418",
+    paint(c, r) {
+      dither(c, 0, 0, W, 12, "#7dd3fc", "#bae6fd");
+      PX.fillEllipse(c, 60, 5, 9, 3, "#ffffff"); PX.fillEllipse(c, 68, 4, 6, 3, "#ffffff"); PX.fillEllipse(c, 178, 7, 7, 2, "#f0f9ff");
+      c.fillStyle = "#16a34a"; c.fillRect(0, 11, W, 4);
+      for (let x = 0; x < W; x += 2) { c.fillStyle = x % 6 ? "#22c55e" : "#4ade80"; c.fillRect(x, 8 + (x * 7) % 3, 1, 4); }
+      const layers = [["#8b5a2b", "#7a4d24", 14], ["#b7793f", "#a5692f", 110], ["#c08457", "#ad7146", 200], ["#9ca3af", "#7f8693", 282]];
+      const edge = (k, x) => layers[k][2] + (k ? Math.round(Math.sin(x / 13 + k * 2) * 3 + Math.sin(x / 5 + k) * 1) : 0);
+      for (let x = 0; x < W; x++) for (let y = 14; y < H; y++) {
+        let k = layers.length - 1;
+        while (k > 0 && y < edge(k, x)) k--;
+        const top = edge(k, x), bot = k + 1 < layers.length ? edge(k + 1, x) : H, t = ((y - top) / Math.max(1, bot - top)) * 16;
+        c.fillStyle = t > BAYER[y & 3][x & 3] ? layers[k][1] : layers[k][0];
+        c.fillRect(x, y, 1, 1);
+      }
+      speckle(c, r, 500, 0, 16, W, 108, ["#6e4420", "#9a6a38"]);
+      speckle(c, r, 400, 0, 112, W, 198, ["#96612e", "#c98b4e"]);
+      speckle(c, r, 360, 0, 202, W, 280, ["#a86d42", "#d19a6c"]);
+      for (let k = 0; k < 18; k++) PX.fillEllipse(c, 4 + r() * (W - 8), 290 + r() * 60, 2 + r() * 2.5, 1.5 + r(), r() < 0.5 ? "#6b7280" : "#d1d5db");
+      for (let s = 0; s < 12; s++) { c.fillStyle = "#f472b6"; c.fillRect(150 + s, 70 + Math.round(Math.sin(s * 0.9) * 1.5), 1, 2); } // a worm
+      c.fillStyle = "#c2410c"; c.fillRect(162, 70, 1, 1);
+      for (let y = 15; y < 30; y++) { const w = Math.max(1, Math.round((30 - y) / 4)); c.fillStyle = y % 3 ? "#f97316" : "#ea580c"; c.fillRect(32 - w, y, w * 2, 1); } // a carrot from above
+      c.fillStyle = "#16a34a"; c.fillRect(30, 11, 1, 4); c.fillRect(33, 10, 1, 5);
+    },
+  },
+  moonlit: {
+    root: ["#2a1d36", "#5b4470", "#8b6fa3"], peb: ["#a5b4fc", "#e0e7ff"], rim: "#c7d2fe", wheelIn: "#231d42",
+    seed: ["#7a5a10", "#fde68a"], glow: "#fde68a", div: ["#6d5d9e", "#a59ad6"], ch: "#15122b", hang: "#2a1d36",
+    paint(c, r) {
+      dither(c, 0, 0, W, 14, "#0f0c29", "#1e1b4b");
+      speckle(c, r, 26, 0, 0, W, 10, ["#ffffff", "#c7d2fe"], 0);
+      PX.fillEllipse(c, 206, 6, 4.5, 4.5, "#fef9c3"); PX.fillEllipse(c, 208, 5, 3.8, 3.8, "#0f0c29");
+      c.fillStyle = "#14532d"; c.fillRect(0, 12, W, 3);
+      for (let x = 0; x < W; x += 3) { c.fillStyle = "#166534"; c.fillRect(x, 10 + (x % 2), 1, 3); }
+      dither(c, 0, 15, W, H, "#2a2350", "#0c0a18");
+      speckle(c, r, 700, 0, 16, W, H, ["#3a3168", "#181430", "#221c40"]);
+      for (const [x, y, col] of LOOK_SHROOMS) { // glowing mushrooms on the walls
+        c.fillStyle = "#e9e3ff"; c.fillRect(x, y, 1, 3);
+        PX.fillEllipse(c, x + 0.5, y, 2.6, 1.6, OUT); PX.fillEllipse(c, x + 0.5, y, 1.9, 1, col);
+      }
+    },
+  },
+  cozy: {
+    root: ["#5a2d14", "#9a5a2c", "#c98b4e"], peb: ["#d97706", "#fde68a"], rim: "#c98b4e", wheelIn: "#7c4a24",
+    seed: ["#3b3226", "#f3efe6"], glow: "#fff3c4", div: ["#8a4b26", "#c98b4e"], ch: "#5a3418", hang: "#5a2d14",
+    paint(c, r) {
+      c.fillStyle = "#7c3f1d"; c.fillRect(0, 0, W, 15);
+      c.fillStyle = "#a35a2a"; c.fillRect(0, 12, W, 1);
+      c.fillStyle = "#5a2d14"; c.fillRect(0, 14, W, 1);
+      for (let x = 0; x < W; x += 8) { c.fillStyle = (x / 8) % 2 ? "#efe3c8" : "#f6ecd6"; c.fillRect(x, 15, 8, 240); }
+      speckle(c, r, 160, 0, 15, W, 254, ["#e3d3b0"], 0);
+      for (let k = 0; k < 9; k++) { const y = 30 + k * 26; for (let x = 4 + (k % 2) * 4; x < W; x += 8) { c.fillStyle = "#e6c98f"; c.fillRect(x, y, 1, 1); } } // the den's tiny dots
+      c.fillStyle = "#7c3f1d"; c.fillRect(0, 254, W, 6); c.fillStyle = "#a35a2a"; c.fillRect(0, 254, W, 1);
+      for (let y = 260; y < H; y += 7) { c.fillStyle = (y / 7) % 2 ? "#b8783f" : "#c98b4e"; c.fillRect(0, y, W, 7); c.fillStyle = "#8f5228"; c.fillRect(0, y + 6, W, 1); }
+      for (let y = 260; y < H; y += 14) for (let x = (y % 28 ? 30 : 70); x < W; x += 80) { c.fillStyle = "#8f5228"; c.fillRect(x, y, 1, 7); }
+    },
+  },
+  crystal: {
+    root: ["#111827", "#3f4a5c", "#64748b"], peb: ["#67e8f9", "#ecfeff"], rim: "#ffd166", wheelIn: "#1e293b",
+    seed: ["#a16207", "#fde047"], glow: "#fde047", div: ["#475569", "#94a3b8"], ch: "#0f172a", hang: "#111827",
+    paint(c, r) {
+      dither(c, 0, 0, W, H, "#334155", "#0b1120");
+      for (let k = 0; k < 9; k++) { const y0 = 20 + k * 38; for (let x = 0; x < W; x++) if (r() < 0.75) { c.fillStyle = "#1f2937"; c.fillRect(x, y0 + Math.round(Math.sin(x / 11 + k) * 3), 1, 1); } }
+      speckle(c, r, 500, 0, 0, W, H, ["#2b3647", "#3d4a5e"]);
+      for (let k = 0; k < 7; k++) { let x = r() * W, y = 20 + r() * (H - 60); for (let s = 0; s < 22; s++) { c.fillStyle = s % 4 ? "#c9a227" : "#fde68a"; c.fillRect(Math.round(x), Math.round(y), 1, 1); x += r() * 2.2 - 0.6; y += r() * 2 - 0.9; } } // gold veins
+      for (const [x, y, col] of LOOK_CRYSTALS) {
+        c.fillStyle = OUT; c.fillRect(x - 1, y - 4, 5, 7);
+        c.fillStyle = col; c.fillRect(x, y - 3, 3, 5);
+        c.fillStyle = "#ffffff"; c.fillRect(x, y - 3, 1, 2);
+        c.fillStyle = "rgba(0,0,0,.35)"; c.fillRect(x + 2, y - 1, 1, 3);
+      }
+      for (let x = 6; x < W; x += 17) { const h = 3 + ((x * 7) % 6); for (let k = 0; k < h; k++) { c.fillStyle = "#1f2937"; c.fillRect(x - Math.max(0, 2 - (k >> 1)), k, Math.max(1, 5 - k), 1); } } // stalactites
+    },
+  },
+};
+// decorations at fixed spots, kept off the pegs and roots: [x, y, colour]
+const LOOK_SHROOMS = [[14, 120, "#5eead4"], [17, 124, "#f472b6"], [226, 96, "#5eead4"], [222, 200, "#f472b6"], [15, 276, "#5eead4"], [225, 300, "#a78bfa"], [12, 230, "#f472b6"]];
+const LOOK_CRYSTALS = [[13, 60, "#a78bfa"], [224, 110, "#67e8f9"], [14, 190, "#f0abfc"], [222, 238, "#a78bfa"], [16, 300, "#67e8f9"], [100, 26, "#f0abfc"], [150, 340, "#a78bfa"]];
+const lookCache = new Map();
+function lookBg(name) { // the look's background and chambers, painted once
+  if (lookCache.has(name)) return lookCache.get(name);
+  const L = LOOKS[name], bg = document.createElement("canvas");
+  bg.width = W; bg.height = H;
   const c = bg.getContext("2d"), r = D.rng32(20261102);
-  c.fillStyle = "#3d1e0d"; c.fillRect(0, 0, W, H);
-  // the chamber: dug-out earth, darker the deeper it goes
-  c.fillStyle = "#8a4b26"; c.fillRect(LEFT, 14, RIGHT - LEFT, H - 14);
-  for (let k = 0; k < 1400; k++) {
-    const x = LEFT + Math.floor(r() * (RIGHT - LEFT)), y = 14 + Math.floor(r() * (H - 14));
-    c.fillStyle = r() < 0.55 ? "#7c4220" : "#97552c";
-    c.fillRect(x, y, r() < 0.3 ? 2 : 1, 1);
-  }
-  for (let k = 0; k < 26; k++) { // buried pebbles and old roots in the back wall
-    const x = LEFT + 6 + r() * (RIGHT - LEFT - 12), y = 40 + r() * (DIV_TOP - 60);
-    if (r() < 0.6) PX.fillEllipse(c, x, y, 2 + r() * 2, 1 + r() * 1.5, "#74401f");
-    else line(c, x, y, x + (r() - 0.5) * 18, y + 4 + r() * 8, "#764021");
-  }
-  for (let y = 14; y < H; y++) { c.fillStyle = `rgba(20,8,2,${((y - 14) / (H - 14)) * 0.32})`; c.fillRect(LEFT, y, RIGHT - LEFT, 1); }
-  // side walls
-  for (const [x0, x1] of [[0, LEFT], [RIGHT, W]]) {
-    for (let k = 0; k < 120; k++) { c.fillStyle = r() < 0.5 ? "#2e1609" : "#4e2914"; c.fillRect(x0 + Math.floor(r() * (x1 - x0)), Math.floor(r() * H), 1, 1); }
-  }
-  c.fillStyle = "#2a1408"; c.fillRect(LEFT - 1, 14, 1, H); c.fillRect(RIGHT, 14, 1, H);
-  // the surface: grass over the entrance
-  c.fillStyle = "#5a2d14"; c.fillRect(0, 6, W, 8);
-  c.fillStyle = "#166534"; c.fillRect(0, 4, W, 3);
-  c.fillStyle = "#22c55e"; c.fillRect(0, 3, W, 2);
-  for (let x = 0; x < W; x += 3 + Math.floor(r() * 3)) { c.fillStyle = r() < 0.5 ? "#22c55e" : "#4ade80"; c.fillRect(x, 1 + Math.floor(r() * 2), 1, 3); }
-  c.fillStyle = "rgba(0,0,0,.35)"; c.fillRect(LEFT, 14, RIGHT - LEFT, 3);
+  L.paint(c, r);
+  for (let y = 14; y < H; y++) { c.fillStyle = `rgba(0,0,0,${(((y - 14) / (H - 14)) * 0.18).toFixed(3)})`; c.fillRect(0, y, W, 1); } // deeper is darker
+  c.fillStyle = "rgba(0,0,0,.28)"; c.fillRect(0, 0, LEFT, H); c.fillRect(RIGHT, 0, W - RIGHT, H); // the side walls, in shade
+  c.fillStyle = "rgba(0,0,0,.45)"; c.fillRect(LEFT - 1, 14, 1, H); c.fillRect(RIGHT, 14, 1, H);
   // the chambers
   let x = LEFT;
   for (const s of D.SLOTS) {
-    const x0 = x, x1 = x + s.w, top = DIV_TOP + 4;
-    x = x1;
+    const x0 = x, top = DIV_TOP + 4;
+    x += s.w;
+    c.fillStyle = s.id === "stash" ? "#3a2508" : L.ch; c.globalAlpha = 0.85; c.fillRect(x0, top, s.w, H - top); c.globalAlpha = 1;
     if (s.id === "dead") {
-      c.fillStyle = "#4a2a18"; c.fillRect(x0, top, s.w, H - top);
       for (let k = 0; k < 5; k++) PX.fillEllipse(c, x0 + 4 + r() * (s.w - 8), H - 14 + r() * 4, 3 + r() * 2, 2, r() < 0.5 ? "#6b7280" : "#4b5563");
     } else if (s.id === "nest") {
       for (let k = 0; k < 70; k++) { const sx = x0 + r() * s.w, sy = H - 22 + r() * 10; line(c, sx, sy, sx + (r() - 0.5) * 8, sy + 2 + r() * 3, r() < 0.5 ? "#e0b84a" : "#c99a2e"); }
@@ -104,14 +183,12 @@ bg.width = W; bg.height = H;
         }
       }
     } else {
-      c.fillStyle = "#3a2508"; c.fillRect(x0, top, s.w, H - top);
       c.fillStyle = "rgba(255,209,102,.25)"; c.fillRect(x0 + 1, top + 2, s.w - 2, H - top - 2);
       for (let k = 0; k < 7; k++) PX.coin(c, x0 + 5 + (k % 3) * 4 + r(), H - 13 - Math.floor(k / 3) * 3);
       c.fillStyle = "#fff8d0"; c.fillRect(x0 + 4, top + 6, 1, 1); c.fillRect(x0 + s.w - 5, top + 10, 1, 1);
     }
   }
-  // the price strip
-  c.fillStyle = "rgba(29,26,20,.85)"; c.fillRect(LEFT, H - 10, RIGHT - LEFT, 10);
+  c.fillStyle = "rgba(29,26,20,.85)"; c.fillRect(LEFT, H - 10, RIGHT - LEFT, 10); // the price strip
   x = LEFT;
   for (const s of D.SLOTS) {
     const cx = x + s.w / 2;
@@ -119,7 +196,48 @@ bg.width = W; bg.height = H;
     if (s.id === "stash") PX.coin(c, cx, H - 6);
     else PX.text(c, `X${PAY[s.id]}`, cx, H - 8, s.id === "pantry" ? "#ffd166" : s.id === "nest" ? "#eef0f5" : "#9ca3af");
   }
-})();
+  lookCache.set(name, bg);
+  return bg;
+}
+// the living bits on top of the background: fireflies, crystal glints, dust in the light, a butterfly
+function ambient(name, t) {
+  if (still) return;
+  if (name === "moonlit") {
+    for (const [x, y, col] of LOOK_SHROOMS) { g.globalAlpha = 0.18 + 0.12 * Math.sin(t * 2 + x); PX.fillEllipse(g, x + 0.5, y, 5, 4, col); }
+    for (let k = 0; k < 9; k++) {
+      const x = LEFT + 10 + ((k * 53 + Math.sin(t * 0.6 + k) * 18 + t * 4) % (RIGHT - LEFT - 20)), y = 40 + ((k * 37 + Math.cos(t * 0.5 + k * 2) * 14) % (DIV_TOP - 60));
+      g.globalAlpha = 0.25 + 0.25 * Math.sin(t * 3 + k * 1.7); PX.fillEllipse(g, x, y, 2.5, 2.5, "#d9f99d");
+      g.globalAlpha = 0.6 + 0.4 * Math.sin(t * 3 + k * 1.7); g.fillStyle = "#f7fee7"; g.fillRect(Math.round(x), Math.round(y), 1, 1);
+    }
+    g.globalAlpha = 1;
+  } else if (name === "crystal") {
+    LOOK_CRYSTALS.forEach(([x, y], k) => { if ((t * 0.7 + k * 0.37) % 1 < 0.22) sparkle(g, x + 1, y - 5); });
+  } else if (name === "cozy") {
+    for (let k = 0; k < 10; k++) {
+      const ph = (t * 0.05 + k * 0.1) % 1, x = 30 + k * 18 + Math.sin(t * 0.7 + k) * 6, y = 30 + ph * 220;
+      g.globalAlpha = 0.35 * Math.sin(ph * Math.PI); g.fillStyle = "#ffffff"; g.fillRect(Math.round(x), Math.round(y), 1, 1);
+    }
+    g.globalAlpha = 1;
+  } else if (name === "garden") {
+    const x = 40 + ((t * 14) % 170), y = 6 + Math.sin(t * 3) * 3, flap = Math.floor(t * 8) % 2; // a butterfly over the grass
+    g.fillStyle = "#f472b6"; g.fillRect(Math.round(x) - 2, Math.round(y) - (flap ? 1 : 0), 2, flap ? 2 : 1); g.fillRect(Math.round(x) + 1, Math.round(y) - (flap ? 1 : 0), 2, flap ? 2 : 1);
+    g.fillStyle = OUT; g.fillRect(Math.round(x), Math.round(y) - 1, 1, 2);
+  }
+}
+const LK = () => LOOKS[st.look] || LOOKS.cozy;
+function setLook(name) {
+  if (!LOOKS[name] || name === st.look) return;
+  st.prevLook = st.look; st.look = name; st.lookT = 0;
+  document.documentElement.dataset.look = name;
+}
+// which look: golden boards are always the crystal cave; otherwise the hamster decides
+function updateLook() { setLook(st.golden ? "crystal" : st.hamLook || "cozy"); }
+function hamLookFrom(j) {
+  const h = j && j.hamster, now = (j && j.serverTime) || Date.now();
+  const age = h && h.updatedAt ? now - Date.parse(h.updatedAt) : Infinity;
+  if (!h || h.freshness === "stale" || !(age <= 120_000)) return "cozy"; // no fresh reading: nobody knows
+  return j.idle ? "moonlit" : "garden";
+}
 
 // ---------- the moving parts ----------
 function drawRoots(t) {
@@ -127,12 +245,13 @@ function drawRoots(t) {
     const w = st.rootWob[i], n = pts.length;
     const off = (k) => (w > 0.01 ? Math.sin(t * 38 + k * 0.7) * w * (k / n) * 2 : 0);
     const base = pts[0];
-    if (base.x > LEFT + 4 && base.x < RIGHT - 4) { const wx = base.x < W / 2 ? LEFT : RIGHT; line(g, wx, base.y - 10, base.x, base.y, "#5a3418"); } // hangs from the wall
+    const R = LK().root;
+    if (base.x > LEFT + 4 && base.x < RIGHT - 4) { const wx = base.x < W / 2 ? LEFT : RIGHT; line(g, wx, base.y - 10, base.x, base.y, LK().hang); } // hangs from the wall
     for (let k = 0; k < n; k++) disc(g, pts[k].x, pts[k].y + off(k), 3.6, OUT);
-    for (let k = 0; k < n; k++) disc(g, pts[k].x, pts[k].y + off(k), 2.7, "#b97a45");
-    g.fillStyle = "#e0a868";
+    for (let k = 0; k < n; k++) disc(g, pts[k].x, pts[k].y + off(k), 2.7, R[1]);
+    g.fillStyle = R[2];
     for (let k = 0; k < n; k++) g.fillRect(Math.round(pts[k].x), Math.round(pts[k].y + off(k)) - 2, 1, 1);
-    g.fillStyle = "#8a5a2e";
+    g.fillStyle = R[0];
     for (let k = 1; k < n; k += 3) g.fillRect(Math.round(pts[k].x), Math.round(pts[k].y + off(k)) + 1, 2, 1);
   });
 }
@@ -140,8 +259,8 @@ function drawPebbles(t) {
   D.pebbles.forEach((p, i) => {
     const f = st.flash.get("peb" + i) || 0, r = p.r + (f > 0 ? 0.6 : 0);
     disc(g, p.x, p.y, r + 1, OUT);
-    disc(g, p.x, p.y, r, f > 0 ? "#fff8d0" : p.guard ? "#c9a227" : "#9ca3af");
-    g.fillStyle = f > 0 ? "#ffffff" : p.guard ? "#ffe9a8" : "#d1d5db";
+    disc(g, p.x, p.y, r, f > 0 ? "#fff8d0" : p.guard ? "#c9a227" : LK().peb[0]);
+    g.fillStyle = f > 0 ? "#ffffff" : p.guard ? "#ffe9a8" : LK().peb[1];
     g.fillRect(Math.round(p.x - r / 2), Math.round(p.y - r / 2), 1, 1);
   });
 }
@@ -160,11 +279,11 @@ function drawAcorn(a, s) {
   g.fillStyle = "#5a2d14"; g.fillRect(Math.round(a.x), capY - 5, 1, 2);
 }
 function drawWheel(ang) {
-  const { x, y, r } = D.WHEEL, hot = st.wheelFlash > 0, rim = st.golden ? "#ffd166" : "#9ca3af";
+  const { x, y, r } = D.WHEEL, hot = st.wheelFlash > 0, rim = st.golden ? "#ffd166" : LK().rim;
   disc(g, x, y, r + 1, OUT);
   disc(g, x, y, r, hot ? "#fff8d0" : rim);
   disc(g, x, y, r - 2, OUT);
-  disc(g, x, y, r - 3, "#5c3a22");
+  disc(g, x, y, r - 3, LK().wheelIn);
   for (let k = 0; k < 6; k++) {
     const a = ang + (k * Math.PI) / 3;
     line(g, x + Math.cos(a) * 4, y + Math.sin(a) * 4, x + Math.cos(a) * (r - 3), y + Math.sin(a) * (r - 3), k === 0 ? "#d1d5db" : "#8b8f96");
@@ -183,12 +302,12 @@ function drawSeed(s, i, t) {
   const bob = still ? 0 : Math.round(Math.sin(t * 3 + i * 1.7));
   const x = Math.round(s.x - 2), y = Math.round(s.y - 4 + bob);
   g.globalAlpha = 0.22 + 0.12 * Math.sin(t * 4 + i);
-  PX.fillEllipse(g, s.x + 0.5, s.y + bob, 5.5, 6, st.golden ? "#ffd166" : "#fff3c4");
+  PX.fillEllipse(g, s.x + 0.5, s.y + bob, 5.5, 6, LK().glow);
   g.globalAlpha = 1;
   for (let r = 0; r < SEED_ART.length; r++) for (let k = 0; k < 5; k++) {
     const p = SEED_ART[r][k];
     if (p === ".") continue;
-    g.fillStyle = p === "1" ? OUT : p === "2" ? (st.golden ? "#a07a1a" : "#3b3226") : (st.golden ? "#ffe9a8" : "#f3efe6");
+    g.fillStyle = p === "1" ? OUT : p === "2" ? LK().seed[0] : LK().seed[1];
     g.fillRect(x + k, y + r, 1, 1);
   }
   if ((t * 1.3 + i * 0.37) % 2 < 0.25) { g.fillStyle = "#fff8d0"; g.fillRect(x + 5, y, 1, 1); }
@@ -286,12 +405,15 @@ function setBoard(b) {
   st.prize = b && b.prize ? b.prize : null;
   st.prizeGone = false;
   st.seedOn = D.seeds.map(() => true);
+  updateLook();
   renderHud();
 }
 async function load() {
   const r = await api(`/api/state?token=${encodeURIComponent(TOKEN)}`);
   if (!r.ok) { say("Can't reach the server", 4000); return; }
   if (Number.isFinite(r.j.dropStash)) st.stash = r.j.dropStash;
+  st.hamLook = hamLookFrom(r.j);
+  if (st.mode !== "fall") updateLook(); // never mid-drop
   const me = r.j.me;
   if (!me) { st.mode = "noden"; renderHud(); return; }
   st.watts = me.watts;
@@ -437,20 +559,23 @@ function step(dt) {
   st.wheelFlash = Math.max(0, st.wheelFlash - dt);
   st.shake = Math.max(0, st.shake - dt);
   st.slotT += dt;
+  st.lookT = Math.min(1, st.lookT + dt / 0.8);
   draw(T);
   tickHud(dt);
 }
 function draw(t) {
   g.save();
   if (st.shake > 0 && !still) g.translate(Math.round((Math.random() - 0.5) * st.shake * 10), Math.round((Math.random() - 0.5) * st.shake * 10));
-  g.drawImage(bg, 0, 0);
+  if (st.prevLook && st.lookT < 1) { g.drawImage(lookBg(st.prevLook), 0, 0); g.globalAlpha = st.lookT; }
+  g.drawImage(lookBg(st.look || "cozy"), 0, 0);
+  g.globalAlpha = 1;
+  ambient(st.look, t);
   if (st.slotFlash >= 0 && st.slotT < 1.2) { // the chamber he landed in glows
     let x = LEFT; for (let k = 0; k < st.slotFlash; k++) x += D.SLOTS[k].w;
     g.fillStyle = `rgba(255,209,102,${(0.35 * (1 - st.slotT / 1.2)).toFixed(3)})`;
     g.fillRect(x, DIV_TOP, D.SLOTS[st.slotFlash].w, H - DIV_TOP - 10);
   }
   if (st.golden) {
-    g.fillStyle = "rgba(255,209,102,.12)"; g.fillRect(LEFT, 14, RIGHT - LEFT, H - 14);
     for (let k = 0; k < 14; k++) { const x = LEFT + ((k * 67 + t * 9) % (RIGHT - LEFT)), y = 20 + ((k * 41 + t * 14 * (1 + (k % 3))) % (DIV_TOP - 30)); if ((t * 2 + k) % 1.5 < 1) { g.fillStyle = "#fff3c4"; g.fillRect(Math.round(x), Math.round(y), 1, 1); } }
   }
   drawRoots(t);
@@ -463,8 +588,8 @@ function draw(t) {
   // the dividers, in front of the chambers
   for (const x of D.dividers) {
     g.fillStyle = OUT; g.fillRect(x - 2, DIV_TOP - 1, 4, H - 10 - DIV_TOP + 1);
-    g.fillStyle = "#c98b4e"; g.fillRect(x - 1, DIV_TOP, 2, H - 10 - DIV_TOP);
-    g.fillStyle = "#e3b27a"; g.fillRect(x - 1, DIV_TOP, 1, H - 10 - DIV_TOP);
+    g.fillStyle = LK().div[0]; g.fillRect(x - 1, DIV_TOP, 2, H - 10 - DIV_TOP);
+    g.fillStyle = LK().div[1]; g.fillRect(x - 1, DIV_TOP, 1, H - 10 - DIV_TOP);
   }
   // him
   if (st.mode === "aim" || st.mode === "wait") {
@@ -580,5 +705,6 @@ fetch("/api/config").then((r) => r.json()).then((cfg) => {
   for (const it of cfg.catalog || []) CATALOG.set(it.id, it);
 }).catch(() => {}).finally(() => { load(); });
 setInterval(() => { if (!document.hidden && (st.mode === "aim" || st.mode === "noden")) load(); }, 10_000); // the shared stash moves
-window.__drop = { st, D, drop, step, load };
+updateLook();
+window.__drop = { st, D, drop, step, load, setLook, LOOKS };
 })();
