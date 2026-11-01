@@ -1140,7 +1140,7 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
   if (r.win) {
     def.watts -= r.loot;
     atk.watts += r.loot + r.bonus;
-    if (r.bonus > 0) st.minted = (Number.isFinite(st.minted) ? st.minted : 0) + r.bonus; // supply accounting (lib/alert.js)
+    if (r.bonus > 0) st.minted = (Number.isFinite(st.minted) ? st.minted : 0) + r.bonus; // supply accounting
     def.shield = { until: now + BALANCE.SHIELD.BRUISE_MS, kind: "bruise" }; // a bruise: a few minutes of peace
   } else {
     const insured = boostActive(atk, "wager_insurance", now);
@@ -1244,7 +1244,7 @@ let state = {
   born: null,
   certSerial: 0,
   burned: 0, // watts destroyed by lost raid stakes (supply accounting)
-  minted: 0, // watts created by raid crits (supply accounting; lib/alert.js subtracts it)
+  minted: 0, // watts created by raid crit bonuses (supply accounting)
   lastGolden: null, // newest golden block {height, at}
   raidFeed: [], // last BALANCE.RAID.FEED_MAX raids, oldest first
   players: {},
@@ -2191,7 +2191,7 @@ async function handle(req, res) {
 }
 
 // Security alerts (lib/alert.js): a no-op unless ALERT_WEBHOOK is set.
-const security = alert.createSecurity({ dataFile: DATA_FILE, BALANCE, baseBpm: SPEED_BASE_BPM, demo: DEMO });
+const security = alert.createSecurity({ dataFile: DATA_FILE, demo: DEMO });
 
 function listen() {
   const server = http.createServer(handle);
