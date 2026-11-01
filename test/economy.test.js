@@ -391,7 +391,7 @@ test("bed: fractional carry is exact (integers only, nothing lost)", () => {
       assert.ok(Number.isInteger(q.watts) && Number.isInteger(q.lifetimeWatts), `tier ${tier}`);
     }
     const bonus = tier % 2 ? 120 : 100;
-    const exact = (ms * 200 * BALANCE.BED_MULT_PCT[tier] * bonus) / S.BED_FRAC_DEN;
+    const exact = (ms * 200 * BALANCE.BED_MULT_PCT[tier] * bonus * 100) / S.BED_FRAC_DEN; // x100: no Deep Sleep
     assert.equal(q.lifetimeWatts, Math.floor(exact), `tier ${tier}`);
     assert.equal(q.watts, W0 + q.lifetimeWatts);
   }
@@ -844,6 +844,7 @@ test("applyRaid fuzz: watts + burned conserved, integers only, lifetime never mo
     const atk = tokens[Math.floor(rng() * tokens.length)];
     const def = tokens[Math.floor(rng() * tokens.length)];
     st.players[atk].raidsToday = 0; // skip the daily allowance for the fuzz
+    for (const t of tokens) st.players[t].shield.until = 0; // and the bruise shields (all raids share one instant)
     const mult = RA.MULT_PCT[Math.floor(rng() * 5)];
     const { min, max } = S.stakeBounds(st.players[atk].watts, st.players[def].watts, mult);
     // mostly in range (some at either bound); every 10th draw is anywhere, so refusals get fuzzed too
@@ -920,7 +921,7 @@ test("raid allowance: 10 per attacker per UTC day, being raided is unlimited", (
   for (let n = 0; n < RA.PER_DAY; n++) assert.ok(raid(st, TA, TB, 500, 2, at(day + n)).ok, `raid ${n}`);
   const r = raid(st, TA, TB, 500, 2, at(day + 20));
   assert.deepEqual([r.ok, r.error, r.resetMs], [false, "no_raids_left", 14 * 3600_000 - 20]);
-  assert.deepEqual(S.raidStatus(st, st.players[TA], day + 60_000), { open: true, raidsLeft: 0, perDay: RA.PER_DAY, resetMs: 14 * 3600_000 - 60_000, ready: true, earned: RA.MIN_EARNED, needEarned: RA.MIN_EARNED });
+  assert.deepEqual(S.raidStatus(st, st.players[TA], day + 60_000), { open: true, raidsLeft: 0, perDay: RA.PER_DAY, resetMs: 14 * 3600_000 - 60_000, ready: true, earned: RA.MIN_EARNED, needEarned: RA.MIN_EARNED, shielded: false });
   // others can still raid the same room
   for (let n = 0; n < 3; n++) assert.ok(raid(st, TC, TB, 100, 2, at(day + 100 + n)).ok);
   // the count resets at 00:00 UTC
@@ -950,7 +951,7 @@ test("raid window: only while he runs (idle -> hamster_asleep), fresh chain read
   st.lastAdvanceAt = T0 - BALANCE.IDLE_AFTER_MS - 60_000;
   const r = raid(st, TA, TB, 100, 2);
   assert.deepEqual([r.ok, r.error], [false, "hamster_asleep"]);
-  assert.deepEqual(S.raidStatus(st, st.players[TA], T0), { open: false, raidsLeft: RA.PER_DAY, perDay: RA.PER_DAY, resetMs: 86_400_000 - (T0 % 86_400_000), ready: true, earned: RA.MIN_EARNED, needEarned: RA.MIN_EARNED });
+  assert.deepEqual(S.raidStatus(st, st.players[TA], T0), { open: false, raidsLeft: RA.PER_DAY, perDay: RA.PER_DAY, resetMs: 86_400_000 - (T0 % 86_400_000), ready: true, earned: RA.MIN_EARNED, needEarned: RA.MIN_EARNED, shielded: false });
   const body = { target: pidOf(TB), stake: 500, mult: 2 };
   assert.equal(S.applyRaid(st, TA, body, T0, { chainReadAt: T0 - 600_000 }).error, "chain_stale");
   st.lastAdvanceAt = T0 - 5000; // a block settles: the window opens (given a fresh chain read)
@@ -1047,9 +1048,9 @@ test("leaderboard: by balance, shape, per-viewer raidable/you flags, 10 s cache,
   const st = raidWorld({ atk: { lifetimeWatts: 9000, roomTier: 2 }, def: { watts: 20_000 }, poor: { watts: 8000 } });
   const lb = S.leaderboard(st, TA, T0);
   assert.deepEqual(lb.rows.map((r) => r.nick), ["def", "atk", "poor"]);
-  assert.deepEqual(lb.rows[1], { rank: 2, publicId: pidOf(TA), nick: "atk", name: "atk", verified: false, watts: 10_000, lifetimeWatts: 9000, roomTier: 2, fresh: false, raidable: false, revenge: false, you: true });
+  assert.deepEqual(lb.rows[1], { rank: 2, publicId: pidOf(TA), nick: "atk", name: "atk", verified: false, watts: 10_000, lifetimeWatts: 9000, roomTier: 2, fresh: false, shielded: false, raidable: false, revenge: false, you: true });
   assert.deepEqual(lb.rows.map((r) => r.raidable), [true, false, true]); // 8k >= 70% of 10k
-  assert.deepEqual(lb.raid, { open: true, raidsLeft: RA.PER_DAY, perDay: RA.PER_DAY, resetMs: 86_400_000 - (T0 % 86_400_000), ready: true, earned: 9000, needEarned: RA.MIN_EARNED });
+  assert.deepEqual(lb.raid, { open: true, raidsLeft: RA.PER_DAY, perDay: RA.PER_DAY, resetMs: 86_400_000 - (T0 % 86_400_000), ready: true, earned: 9000, needEarned: RA.MIN_EARNED, shielded: false });
   assert.equal(lb.total, 3);
   assert.ok(!JSON.stringify(lb).includes(TA), "leaderboard must not leak tokens");
   // the richest room has no targets; the poorest can hit everyone
@@ -1860,4 +1861,332 @@ test("replay nonstop: the real runs stretched over the whole cycle, same blocks 
     S.replayTick(st, x, ns, 5204);
     assert.equal(S.asleep(st, x), false);
   }
+});
+
+// ---------- v3 patch 2: Raid Shield, boosts, lucky crates, golden blocks ----------
+const SH = BALANCE.SHIELD, BO = BALANCE.BOOSTS, CR = BALANCE.CRATES, GO = BALANCE.GOLDEN;
+const H1 = 3_600_000;
+const okRaid = (st, a, d, now = T0) => raid(st, a, d, 1000, 2, now, seq(LOSE));
+
+test("v3 balance knobs: shield, boosts, crates, golden", () => {
+  assert.deepEqual(SH, { MS: 3 * H1, PER_DAY: 1, PRICE_MIN: 500, PRICE_PCT: 3, BRUISE_MS: 600_000 });
+  assert.deepEqual(BO, {
+    double_wheel: { PRICE: 2000, MS: H1, PCT: 200 },
+    deep_sleep: { PRICE: 3000, MS: 8 * H1, PCT: 150 },
+    lucky_whisker: { PRICE: 1500, ODDS_PTS: 10 },
+    wager_insurance: { PRICE: 1000, REFUND_PCT: 50 },
+  });
+  assert.deepEqual([CR.CHANCE_PCT, CR.PER_DAY, CR.MAX_UNOPENED, CR.WATTS_MIN, CR.WATTS_MAX, CR.DUP_WATTS], [1, 5, 3, 200, 800, 800]);
+  assert.deepEqual(CR.TABLE_PCT, { watts: 60, boost: 25, shield: 10, decor: 5 });
+  assert.ok(CR.ROLLS_MAX >= 1);
+  assert.deepEqual(GO, { ONE_IN: 150, MULT_PCT: 1000 });
+  assert.deepEqual(S.BOOST_KINDS, ["double_wheel", "deep_sleep", "lucky_whisker", "wager_insurance"]);
+  assert.deepEqual(S.configPayload().balance.SHIELD, SH); // shipped to the client with the rest of BALANCE
+});
+
+test("shield: price max(500, 3% of the balance), burned; 3 h; once per UTC day; tokens waive the price", () => {
+  assert.equal(S.shieldPrice(fresh({ watts: 0 })), 500);
+  assert.equal(S.shieldPrice(fresh({ watts: 16_666 })), 500); // 3% = 499.98
+  assert.equal(S.shieldPrice(fresh({ watts: 16_667 })), 500);
+  assert.equal(S.shieldPrice(fresh({ watts: 100_000 })), 3000);
+  assert.equal(S.shieldPrice(fresh({ watts: 1_234_567 })), 37_037);
+  const st = raidWorld({ def: { watts: 100_000 } });
+  const d = st.players[TB];
+  assert.deepEqual(S.raiseShield(st, TB, { from: "nope" }, T0).error, "bad_from");
+  const r = S.raiseShield(st, TB, { from: "watts" }, T0);
+  assert.equal(r.ok, true);
+  assert.deepEqual(d.shield, { until: T0 + 3 * H1, kind: "bought" });
+  assert.equal(d.watts, 97_000);
+  // once per UTC day, even after it ran out; a token doesn't get round the cap
+  d.items.shield_token = 1;
+  assert.equal(S.raiseShield(st, TB, { from: "token" }, T0 + H1).error, "shield_used_today");
+  const next = Date.UTC(2026, 9, 31, 0, 0, 0); // T0 is 30 Oct 22:00 UTC
+  assert.equal(S.raiseShield(st, TB, { from: "watts" }, next - 1).error, "shield_used_today");
+  // past midnight with the bought shield still up (it started 22:00): no stacking
+  assert.equal(S.raiseShield(st, TB, { from: "watts" }, next + 1000).error, "shield_active");
+  const t = S.raiseShield(st, TB, { from: "token" }, T0 + 5 * H1);
+  assert.equal(t.ok, true);
+  assert.deepEqual([d.items.shield_token, d.watts, d.shield.until], [0, 97_000, T0 + 8 * H1]); // free with a token
+  assert.equal(S.raiseShield(st, TB, { from: "token" }, Date.UTC(2026, 10, 1, 10)).error, "no_item");
+  const poor = raidWorld({ poor: { watts: 300 } });
+  assert.deepEqual([S.raiseShield(poor, TC, { from: "watts" }, T0).error, S.raiseShield(poor, TC, { from: "watts" }, T0).need], ["poor", 200]);
+});
+
+test("shield: blocks raids in (excluded from targets, no raid used) and out (turtle mode)", () => {
+  const st = raidWorld({ def: { watts: 50_000 } });
+  assert.ok(S.raiseShield(st, TB, { from: "watts" }, T0).ok);
+  const r = okRaid(st, TA, TB);
+  assert.deepEqual([r.ok, r.error, r.until], [false, "target_shielded", T0 + 3 * H1]);
+  assert.equal(st.players[TA].raidsToday, 0);
+  assert.equal(st.players[TA].watts, 10_000);
+  let row = S.leaderboard(st, TA, T0).rows.find((x) => x.publicId === pidOf(TB));
+  assert.deepEqual([row.shielded, row.raidable], [true, false]);
+  assert.equal("shieldUntil" in row, false);
+  // turtle mode: the shielded den can't raid out either
+  const out = okRaid(st, TB, TA);
+  assert.deepEqual([out.ok, out.error], [false, "shielded"]);
+  assert.equal(st.players[TB].raidsToday, 0);
+  assert.equal(S.raidStatus(st, st.players[TB], T0).shielded, true);
+  assert.ok(S.leaderboard(st, TB, T0).rows.every((x) => !x.raidable));
+  // it wears off on time, even through the leaderboard cache
+  const later = T0 + 3 * H1;
+  st.lastAdvanceAt = later - 1000;
+  row = S.leaderboard(st, TA, later).rows.find((x) => x.publicId === pidOf(TB));
+  assert.deepEqual([row.shielded, row.raidable], [false, true]);
+  assert.ok(okRaid(st, TA, TB, later).ok);
+});
+
+test("shield: a successful raid bruises the defender for 10 min (free, raids out still allowed); a failed one doesn't", () => {
+  const st = raidWorld({ def: { watts: 50_000 } });
+  assert.ok(okRaid(st, TA, TB).ok); // a loss
+  assert.deepEqual(st.players[TB].shield, { until: 0, kind: null });
+  const w = raid(st, TA, TB, 1000, 2, T0 + 1, seq(WIN, 0.5, 0.99));
+  assert.equal(w.result.win, true);
+  assert.deepEqual(st.players[TB].shield, { until: T0 + 1 + SH.BRUISE_MS, kind: "bruise" });
+  assert.equal(st.players[TB].shieldDay, null); // the daily activation is untouched
+  assert.equal(raid(st, TC, TB, 100, 2, T0 + 2).error, "target_shielded");
+  assert.equal(S.raidStatus(st, st.players[TB], T0 + 2).shielded, false);
+  assert.ok(raid(st, TB, TA, 2450, 1.5, T0 + 3, seq(LOSE)).ok); // the bruised den may still raid (revenge; 5% of 49k)
+  st.lastAdvanceAt = T0 + SH.BRUISE_MS; // still running 10 min later
+  assert.equal(raid(st, TC, TB, 100, 2, T0 + SH.BRUISE_MS, seq(LOSE)).error, "target_shielded");
+  assert.ok(raid(st, TC, TB, 100, 2, T0 + 1 + SH.BRUISE_MS, seq(LOSE)).ok); // over after 10 min
+  // buying a shield replaces a bruise
+  const st2 = raidWorld({ def: { watts: 50_000 } });
+  raid(st2, TA, TB, 1000, 2, T0, seq(WIN, 0.5, 0.99));
+  assert.ok(S.raiseShield(st2, TB, { from: "watts" }, T0 + 5).ok);
+  assert.deepEqual(st2.players[TB].shield, { until: T0 + 5 + 3 * H1, kind: "bought" });
+});
+
+test("shield: visible in the den's own snapshot (publicPlayer) and to everyone on the leaderboard", () => {
+  const p = Object.assign(S.newPlayer(1000, T0, TA), { watts: 40_000 });
+  let me = S.publicPlayer(p, T0);
+  assert.deepEqual(me.shield, { until: 0, kind: null, usedToday: false, price: 1200 });
+  const st = { lastAdvanceAt: T0, players: { [TA]: p } };
+  assert.ok(S.raiseShield(st, TA, { from: "watts" }, T0).ok);
+  me = S.publicPlayer(p, T0 + 1);
+  assert.deepEqual(me.shield, { until: T0 + 3 * H1, kind: "bought", usedToday: true, price: 1164 });
+  assert.equal(S.publicPlayer(p, T0 + 3 * H1).shield.kind, null);
+  assert.equal(S.leaderboard(st, null, T0 + 1).rows[0].shielded, true); // anonymous viewers see it too
+});
+
+test("boosts: buy (price burns) or use a crate copy; one active per kind, never stacked", () => {
+  const st = { lastAdvanceAt: T0, players: { [TA]: fresh({ watts: 20_000 }) } };
+  const p = st.players[TA];
+  assert.equal(S.useBoost(st, TA, { kind: "nope", from: "watts" }, T0).error, "bad_boost");
+  assert.equal(S.useBoost(st, TA, { kind: "double_wheel" }, T0).error, "bad_from");
+  assert.equal(S.useBoost(st, TA, { kind: "double_wheel", from: "item" }, T0).error, "no_item");
+  let r = S.useBoost(st, TA, { kind: "double_wheel", from: "watts" }, T0);
+  assert.equal(r.ok, true);
+  assert.deepEqual([p.watts, p.effects.double_wheel], [18_000, T0 + H1]);
+  r = S.useBoost(st, TA, { kind: "double_wheel", from: "watts" }, T0 + H1 - 1);
+  assert.deepEqual([r.ok, r.error, r.until, p.watts], [false, "boost_active", T0 + H1, 18_000]);
+  p.items.double_wheel = 1;
+  assert.equal(S.useBoost(st, TA, { kind: "double_wheel", from: "item" }, T0 + 10).error, "boost_active"); // a held copy waits too
+  assert.ok(S.useBoost(st, TA, { kind: "double_wheel", from: "item" }, T0 + H1).ok); // expired: a fresh hour, from the item
+  assert.deepEqual([p.items.double_wheel, p.watts, p.effects.double_wheel], [0, 18_000, T0 + 2 * H1]);
+  for (const k of ["deep_sleep", "lucky_whisker", "wager_insurance"]) assert.ok(S.useBoost(st, TA, { kind: k, from: "watts" }, T0).ok, k);
+  assert.equal(p.watts, 18_000 - 3000 - 1500 - 1000);
+  assert.deepEqual([p.effects.deep_sleep, p.effects.lucky_whisker, p.effects.wager_insurance], [T0 + 8 * H1, true, true]);
+  for (const k of ["lucky_whisker", "wager_insurance"]) assert.equal(S.useBoost(st, TA, { kind: k, from: "watts" }, T0 + 9 * H1).error, "boost_active", k); // armed until a raid uses it
+  const broke = { lastAdvanceAt: T0, players: { [TB]: fresh({ watts: 1999 }) } };
+  const pr = S.useBoost(broke, TB, { kind: "double_wheel", from: "watts" }, T0);
+  assert.deepEqual([pr.error, pr.need, broke.players[TB].watts], ["poor", 1, 1999]);
+});
+
+test("boosts: Double Wheel x2 wheel watts for an hour; Deep Sleep +50% bed for 8 h", () => {
+  const p = fresh({ wheelTier: 2 });
+  const base = S.accrue(fresh({ wheelTier: 2 }), 10, T0); // 10 x 10 x 1.6 = 160
+  assert.equal(base, 160);
+  p.effects.double_wheel = T0 + H1;
+  assert.equal(S.accrue(p, 10, T0), 320);
+  assert.equal(S.accrue(p, 10, T0 + H1 - 1), 320);
+  assert.equal(S.accrue(p, 10, T0 + H1), 160); // expired
+  assert.equal(S.wattsFor(10, 0, 120, 150, 200), 360); // stacks with watching and speed: 100 x 1.2 x 1.5 x 2
+  const q = fresh(), r = fresh();
+  q.effects.deep_sleep = T0 + 8 * H1;
+  assert.equal(S.bedCredit(r, 60_000, T0), 20); // live: 20 W/min at tier 0
+  assert.equal(S.bedCredit(q, 60_000, T0), 30);
+  assert.equal(S.bedCredit(q, 60_000, T0 + 8 * H1), 20);
+  assert.equal(S.accrue(q, 10, T0), 100); // Deep Sleep doesn't touch the wheel
+});
+
+test("boosts: Lucky Whisker +10 points on the next raid (capped at P_MAX), spent win or lose", () => {
+  const st = raidWorld({ def: { watts: 100_000 } });
+  const a = st.players[TA], d = st.players[TB];
+  const p0 = S.raidChance(a, d, 1000); // 0.1925 at 10x against a 10x-richer den
+  near(S.resolveRaid(a, d, 100, 1000, seq(LOSE), 10).p, p0 + 0.1);
+  near(S.resolveRaid(a, d, 100, 150, seq(LOSE), 10).p, Math.min(0.9, S.raidChance(a, d, 150) + 0.1));
+  near(S.resolveRaid(fresh({ watts: 100 }), fresh({ watts: 1e9 }), 100, 150, seq(LOSE), 10).p, 0.9); // already at P_MAX
+  a.effects.lucky_whisker = true;
+  // a roll between p0 and p0 + 0.10 wins only thanks to the whisker
+  const r = raid(st, TA, TB, 500, 10, T0, seq(p0 + 0.05, 0.5, 0.99));
+  assert.deepEqual([r.result.win, r.result.lucky, a.effects.lucky_whisker], [true, true, false]);
+  near(r.result.p, p0 + 0.1);
+  st.players[TB].shield.until = 0; // skip the bruise
+  const r2 = raid(st, TA, TB, 800, 10, T0 + 1, seq(p0 + 0.05));
+  assert.deepEqual([r2.result.win, r2.result.lucky], [false, undefined]); // spent: back to the plain odds
+  a.effects.lucky_whisker = true;
+  assert.equal(raid(st, TA, TB, 1000, 2, T0 + 2, seq(LOSE)).result.lucky, true);
+  assert.equal(a.effects.lucky_whisker, false); // a loss spends it too
+});
+
+test("boosts: Wager Insurance refunds half the next FAILED wager, survives wins", () => {
+  const st = raidWorld({ def: { watts: 100_000 } });
+  const a = st.players[TA];
+  a.effects.wager_insurance = true;
+  const w = raid(st, TA, TB, 1000, 2, T0, seq(WIN, 0.5, 0.99));
+  assert.deepEqual([w.result.win, w.result.refund, a.effects.wager_insurance], [true, undefined, true]);
+  st.players[TB].shield.until = 0;
+  const before = supply(st), atkW = a.watts;
+  const l = raid(st, TA, TB, 1001, 2, T0 + 1, seq(LOSE));
+  assert.deepEqual([l.result.win, l.result.refund, a.effects.wager_insurance], [false, 500, false]);
+  assert.equal(l.feed.amount, 501); // the feed shows what burned
+  assert.equal(a.watts, atkW - 501);
+  assert.equal(st.burned, 501);
+  assert.equal(supply(st), before);
+  const l2 = raid(st, TA, TB, 1000, 2, T0 + 2, seq(LOSE));
+  assert.equal(l2.result.refund, undefined); // spent
+});
+
+test("boosts + shield persist across a restart (JSON round trip + patchState) and old dens are backfilled", () => {
+  const p = fresh({ watts: 50_000, lastHeartbeat: T0 });
+  const st = { lastAdvanceAt: T0, players: { [TA]: p } };
+  S.useBoost(st, TA, { kind: "double_wheel", from: "watts" }, T0);
+  S.useBoost(st, TA, { kind: "wager_insurance", from: "watts" }, T0);
+  S.raiseShield(st, TA, { from: "watts" }, T0);
+  p.items.deep_sleep = 2;
+  S.rollCrates(p, 1, T0, seq(0, 0.1, 0.5, 0.5));
+  const back = S.patchState(JSON.parse(JSON.stringify({ height: 10, players: { [TA]: p } })), T0 + 1).players[TA];
+  assert.deepEqual(back.effects, { double_wheel: T0 + H1, deep_sleep: 0, lucky_whisker: false, wager_insurance: true });
+  assert.deepEqual(back.items, { double_wheel: 0, deep_sleep: 2, lucky_whisker: 0, wager_insurance: 0, shield_token: 0 });
+  assert.deepEqual(back.shield, { until: T0 + 3 * H1, kind: "bought" });
+  assert.equal(back.shieldDay, "2026-10-30");
+  assert.equal(back.crates.length, 1);
+  assert.equal(S.accrue(Object.assign(back, { lastHeartbeat: 0 }), 10, T0 + 2), 200); // still doubled after the "restart"
+  // a den saved before v3: every new field gets its default; junk is dropped
+  const old = fresh();
+  for (const k of ["items", "effects", "shield", "shieldDay", "crates", "crateDay", "cratesToday"]) delete old[k];
+  old.items = { double_wheel: 3, bogus: 9, deep_sleep: -1 };
+  old.effects = { lucky_whisker: "yes", deep_sleep: T0 };
+  S.patchPlayer(old, TA);
+  assert.deepEqual(old.items, { double_wheel: 3, deep_sleep: 0, lucky_whisker: 0, wager_insurance: 0, shield_token: 0 });
+  assert.deepEqual(old.effects, { double_wheel: 0, deep_sleep: T0, lucky_whisker: false, wager_insurance: false });
+  assert.deepEqual([old.shield, old.shieldDay, old.crates, old.crateDay, old.cratesToday], [{ until: 0, kind: null }, null, [], null, 0]);
+});
+
+test("crates: contents table 60/25/10/5 (rolled at drop time), watts 200..800", () => {
+  const p = fresh();
+  assert.deepEqual(S.rollCrateContents(p, seq(0, 0)), { kind: "watts", watts: 200 });
+  assert.deepEqual(S.rollCrateContents(p, seq(0.5999, 0.999999)), { kind: "watts", watts: 800 });
+  assert.deepEqual(S.rollCrateContents(p, seq(0.60, 0)), { kind: "boost", boost: "double_wheel" });
+  assert.deepEqual(S.rollCrateContents(p, seq(0.84, 0.99)), { kind: "boost", boost: "wager_insurance" });
+  assert.deepEqual(S.rollCrateContents(p, seq(0.85)), { kind: "shield" });
+  assert.deepEqual(S.rollCrateContents(p, seq(0.9499)), { kind: "shield" });
+  // the decor slot: a crate-only item, or 800 W when it's owned or already waiting in another crate
+  const fake = { id: "test_crate_decor", name: "Test", cat: "wall", price: 0, w: 1, h: 1, zone: "wall", sprite: "test_crate_decor", crate: true };
+  CATALOG.push(fake); S.CATALOG_BY_ID.set(fake.id, fake);
+  try {
+    const decorIds = CATALOG.filter((i) => i.crate).map((i) => i.id);
+    const roll = (q) => S.rollCrateContents(q, seq(0.95, (decorIds.indexOf(fake.id) + 0.5) / decorIds.length));
+    assert.deepEqual(roll(p), { kind: "decor", item: fake.id });
+    p.crates = [{ id: "x", c: { kind: "decor", item: fake.id } }];
+    assert.deepEqual(roll(p), { kind: "watts", watts: 800, dup: fake.id });
+    p.crates = [];
+    p.owned[fake.id] = 1;
+    assert.deepEqual(roll(p), { kind: "watts", watts: 800, dup: fake.id });
+  } finally {
+    CATALOG.pop(); S.CATALOG_BY_ID.delete(fake.id);
+  }
+  // seeded odds over many rolls (the decor slot is "decor" or its 800 W duplicate)
+  const rng = prng(7), n = 40_000, count = { watts: 0, boost: 0, shield: 0, decor: 0 };
+  for (let i = 0; i < n; i++) {
+    const c = S.rollCrateContents(fresh(), rng);
+    count[c.kind === "decor" || (c.kind === "watts" && c.watts === 800 && (c.dup || !CATALOG.some((x) => x.crate))) ? (c.kind === "decor" || c.dup ? "decor" : "watts") : c.kind]++;
+  }
+  const share = (k) => count[k] / n;
+  assert.ok(Math.abs(share("boost") - 0.25) < 0.01, JSON.stringify(count));
+  assert.ok(Math.abs(share("shield") - 0.10) < 0.01, JSON.stringify(count));
+  assert.ok(Math.abs(share("watts") + share("decor") - 0.65) < 0.01, JSON.stringify(count));
+});
+
+test("crates: only dens watching roll, 1% a settled block (seeded), 5 a UTC day, at most 3 unopened", () => {
+  const st = { lastAccruedHeight: 1000, lastAdvanceAt: T0, players: { [TA]: fresh({ lastHeartbeat: T0 }), [TB]: fresh() } };
+  S.accrueAll(st, 1001, T0, 100, () => 0); // every roll hits
+  assert.equal(st.players[TA].crates.length, 1);
+  assert.equal(st.players[TB].crates.length, 0); // not watching: no crate, ever
+  S.accrueAll(st, 1001 + 10, T0, 100, () => 0);
+  assert.equal(st.players[TA].crates.length, 3); // capped while unopened
+  assert.equal(st.players[TA].cratesToday, 3);
+  // seeded 1% odds
+  const p = fresh({ lastHeartbeat: T0 }), rng = prng(99);
+  let drops = 0;
+  for (let i = 0; i < 20_000; i++) { p.crates = []; p.cratesToday = 0; drops += S.rollCrates(p, 1, T0, rng); }
+  assert.ok(Math.abs(drops / 20_000 - 0.01) < 0.002, String(drops));
+  // the daily cap: open them as they come, still 5 a day, then a fresh count after 00:00 UTC
+  const q = fresh({ lastHeartbeat: T0 }), qs = { players: { [TC]: q } };
+  for (let i = 0; i < 20; i++) { S.rollCrates(q, 1, T0, () => 0); for (const c of [...q.crates]) S.openCrate(qs, TC, { id: c.id }, T0); }
+  assert.equal(q.cratesToday, 5);
+  assert.equal(S.rollCrates(q, 10, Date.UTC(2026, 9, 31, 0, 0, 1), () => 0), 3); // new day, but the 3-unopened cap still applies
+  assert.equal(S.publicPlayer(q, Date.UTC(2026, 9, 31, 1)).cratesToday, 3);
+});
+
+test("crates: dropped on a free floor tile; contents stay secret until opened; opening pays out", () => {
+  const p = fresh({ lastHeartbeat: T0 });
+  p.placed = [{ pid: "s1", item: "fur_sofa", x: 3, y: 3, flip: false }];
+  own(p, "fur_sofa");
+  for (let k = 0; k < 200; k++) {
+    const t = S.crateTile(p, prng(k));
+    assert.ok(t.i + t.j <= S.ROOM.FIX_MAX_SUM && t.i >= 0 && t.j >= 0 && t.i < S.ROOM.ISO_NI && t.j < S.ROOM.ISO_NJ);
+    assert.ok(!(t.j === 3 && t.i >= 3 && t.i <= 5), "not under the sofa");
+    for (const f of Object.values(p.fixtures)) assert.ok(!(f.i === t.i && f.j === t.j), "not on a fixture");
+  }
+  const st = { players: { [TA]: p } };
+  S.rollCrates(p, 1, T0, seq(0, 0.10, 0.5, 0.3)); // drop -> watts, 200 + floor(0.5 x 601) = 500
+  const crate = p.crates[0];
+  const pub = S.publicPlayer(p, T0).crates;
+  assert.deepEqual(pub, [{ id: crate.id, at: T0, i: crate.i, j: crate.j }]);
+  assert.ok(!JSON.stringify(S.publicPlayer(p, T0)).includes("\"c\":"), "contents never leave the server");
+  const w0 = p.watts, life0 = p.lifetimeWatts;
+  assert.equal(S.openCrate(st, TA, { id: "nope" }, T0).error, "unknown_crate");
+  const o = S.openCrate(st, TA, { id: crate.id }, T0);
+  assert.deepEqual(o, { ok: true, got: { kind: "watts", watts: 500 } });
+  assert.deepEqual([p.watts, p.lifetimeWatts, p.crates.length], [w0 + 500, life0, 0]); // balance only, not earnings
+  assert.equal(S.openCrate(st, TA, { id: crate.id }, T0).error, "unknown_crate"); // once
+  p.crates.push({ id: "kb", at: T0, i: 1, j: 1, c: { kind: "boost", boost: "deep_sleep" } });
+  assert.deepEqual(S.openCrate(st, TA, { id: "kb" }, T0).got, { kind: "boost", boost: "deep_sleep" });
+  assert.equal(p.items.deep_sleep, 1);
+  p.crates.push({ id: "ks", at: T0, i: 1, j: 1, c: { kind: "shield" } });
+  assert.deepEqual(S.openCrate(st, TA, { id: "ks" }, T0).got, { kind: "shield" });
+  assert.equal(p.items.shield_token, 1);
+  // decor that became owned while the crate waited turns into DUP_WATTS on opening
+  p.crates.push({ id: "kd", at: T0, i: 1, j: 1, c: { kind: "decor", item: "fur_sofa" } });
+  const w1 = p.watts;
+  assert.deepEqual(S.openCrate(st, TA, { id: "kd" }, T0).got, { kind: "watts", watts: 800, dup: "fur_sofa" });
+  assert.equal(p.watts, w1 + 800);
+});
+
+test("golden blocks: deterministic from the height (~1 in 150), 10x wheel watts only for dens watching", () => {
+  const golden = [];
+  for (let h = 1; h <= 150_000; h++) if (S.isGoldenBlock(h)) golden.push(h);
+  assert.ok(golden.length > 850 && golden.length < 1150, String(golden.length));
+  assert.ok(golden.slice(0, 20).every((h) => S.isGoldenBlock(h))); // same answer every call
+  assert.deepEqual(S.goldenBetween(0, 150_000), golden);
+  assert.equal(S.isGoldenBlock(0), false);
+  assert.equal(S.isGoldenBlock(-golden[0]), false);
+  const g = golden[0];
+  const st = { lastAccruedHeight: g - 1, players: { [TA]: fresh({ lastHeartbeat: T0, joinHeight: 0 }), [TB]: fresh({ joinHeight: 0 }), [TC]: fresh({ lastHeartbeat: T0, joinHeight: g }) } };
+  S.accrueAll(st, g, T0, 100, () => 1);
+  assert.equal(st.players[TA].lifetimeWatts, 120); // 10 x 10 x 1.2 (watching)
+  assert.equal(st.players[TB].lifetimeWatts, 10); // not watching: normal rate
+  assert.equal(st.players[TC].lifetimeWatts, 0); // joined at that block: never paid for it
+  assert.deepEqual(st.lastGolden, { height: g, at: T0 });
+  const plain = g + 1;
+  assert.equal(S.isGoldenBlock(plain), false);
+  S.accrueAll(st, plain, T0, 100, () => 1);
+  assert.equal(st.players[TA].lifetimeWatts, 132);
+  // a range with a golden block inside (a catch-up): only that block is 10x
+  const st2 = { lastAccruedHeight: g - 3, players: { [TA]: fresh({ lastHeartbeat: T0, joinHeight: 0 }) } };
+  S.accrueAll(st2, g + 2, T0, 100, () => 1); // 5 blocks, 1 golden: (5 + 9) x 12
+  assert.equal(st2.players[TA].lifetimeWatts, 168);
+  assert.ok("golden" in S.snapshot(null));
 });

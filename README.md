@@ -93,6 +93,15 @@ Raids only work while the hamster is RUNNING (the same chain signal that drives 
 - EV (never shown in the game): attacker EV is `S × (p×M×1.025 − 1)`, about `1.10×(1−d)×tilt − 1`. Punching up is never −EV (at the floor it is about +2.5% × (M−1)/M), so the top of the leaderboard is everyone's best target. Peer raids into strong rooms and revenge on poorer rooms can be −EV. Being raided is −EV at every tier. `test/economy.test.js` checks both across every tier, multiplier and stake shape.
 - Zero minting: every raid is a pure transfer plus burn. Unspent watts are raid bait — upgrades are the bank.
 
+## Boosts, the Raid Shield, lucky crates, golden blocks
+
+All numbers live in `BALANCE.BOOSTS`, `SHIELD`, `CRATES` and `GOLDEN` and reach the page through `/api/config`. Timers are server-side expiry timestamps saved with the den, so they survive restarts.
+
+- Boosts (shop tab "Boosts", `POST /api/boost {kind, from: "watts" | "item"}`): Double Wheel (2,000 W, 2× wheel watts for 1 h), Deep Sleep (3,000 W, +50% bed income for 8 h), Lucky Whisker (1,500 W, +10 points on the next raid, still capped at 90%), Wager Insurance (1,000 W, the next failed raid refunds half the wager). One of each kind at a time; buying burns the price. Active ones show as chips in the HUD.
+- Raid Shield (`POST /api/shield {from: "watts" | "token"}`): 3 h of immunity for `max(500, 3% of the balance)`, burned, once per UTC day. While it is up the den can't raid (turtle mode). Shielded dens show 🛡 on the leaderboard and can't be targeted; a raid on one is refused without using a raid. A successful raid against a den gives it a free 10-minute bruise shield that doesn't block its own raids; buying a shield replaces it.
+- Lucky crates (`POST /api/crate {id}`): on each settled block every den that is watching (the same heartbeat as the +20% bonus) has a 1% chance of a crate, at most 5 a UTC day and 3 unopened. The contents are rolled when it drops and stay on the server until it is opened: 60% 200–800 W (balance only, not lifetime), 25% a boost, 10% a shield token, 5% crate-only decor (one already owned or already waiting becomes 800 W). It keys off settled blocks and watching only, never off making him run.
+- Golden blocks: a height is golden when `sha256("squeekden-golden|" + height)` says so (about 1 in 150, the same on every boot). It pays 10× wheel watts to every den watching when it settles. `/api/state` carries the newest one as `golden`; the page shows a toast and sparks.
+
 ## Ideas for v3
 
 - WalletConnect QR (mobile wallets) via a Reown projectId.

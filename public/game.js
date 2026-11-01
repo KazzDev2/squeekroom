@@ -518,6 +518,7 @@ function applyState(j) {
   if (j.me) { applyMe(j.me, first, { at: j.serverTime, soft: S.idle }); if (!first) noteTrickle(); }
   else if (j.meError) toast(j.meError === "server_full" ? "The server is full." : j.meError === "too_many_dens" ? "Too many new dens from your network. Try again in an hour." : `Couldn't load your den (${j.meError}).`, "err");
   if (j.raid !== undefined) applyRaidStatus(j.raid);
+  noteGolden(j.golden, first);
   if (typeof j.burned === "number") S.burned = j.burned;
   if (Array.isArray(j.raidFeed)) applyFeed(j.raidFeed);
   if (RU.open) renderRaid();
@@ -537,6 +538,7 @@ function applyMe(me, first = false, opts = {}) {
   if (first || !prev) meter.shown = me.watts;
   else if (me.lifetimeWatts > prev.lifetimeWatts) onAccrual(me.lifetimeWatts - prev.lifetimeWatts, !!opts.soft);
   noteEarn(me, prev, first);
+  noteCrates(me, prev, first);
   meter.target = me.watts;
   afterMe();
 }
@@ -612,6 +614,7 @@ function renderHud() {
     const speedChip = speed > 0 && !S.idle ? `<span class="chip on" title="Blocks are coming fast: wheel watts +${speed}%">⚡ +${speed}%</span>` : "";
     $("watchLine").innerHTML = watching || speedChip ? `${watching ? `watching<span class="chip on">+${bonus}%</span>` : ""}${speedChip}` : "&nbsp;";
     renderBedLine(me, watching ? 100 + bonus : 100);
+    renderFxChips(me);
   }
   renderRaidChip();
   renderFeed();
@@ -1128,6 +1131,8 @@ function render(st) {
     g.fillStyle = grd; g.fillRect(gx - 50, gy - 50, 100, 100);
     g.globalCompositeOperation = "source-over";
   }
+  // 6a. the Raid Shield bubble (bought: bright, bruise: faint)
+  drawShieldBubble();
   // 6b. raid fx (embers, flashes) over the tint so they glow at night
   drawRaidFx();
   // 6c. "+N W" / "-N W" popups, untinted so they read at night
@@ -1194,6 +1199,7 @@ function drawStanding(me) {
     const G = floorGeom(it, p.x, p.y, p.flip);
     list.push({ d: G.d, x: G.x, draw: () => drawFloorItem(p, it) });
   }
+  for (const c of (me && me.crates) || []) { drawTileOverlay(g, c.i, c.j, SHADOW()); const G = crateGeom(c); list.push({ d: G.d, x: G.x, draw: () => drawCrate(c, G) }); }
   if (IBURROW) {
     const [ba, bb] = ROOM.RESERVED.burrow, ab = isoSpan("burrow", ba, bb - ba + 1, false);
     list.push({ d: ab ? ab.d : IBURROW.foot, x: IBURROW.x, draw: drawBurrow });
@@ -1668,6 +1674,8 @@ view.addEventListener("pointerdown", (e) => {
   const L = logical(e);
   try { view.setPointerCapture(e.pointerId); } catch {}
   if (P.mode) { P.down = true; updateGhost(L); return; }
+  const crate = crateAt(L);
+  if (crate) { openCrateUi(crate); return; }
   const hit = hitTest(L);
   if (hit) { select(hit.pid); press = { pid: hit.pid, cx: e.clientX, cy: e.clientY, L }; }
   else select(null);
@@ -1681,7 +1689,7 @@ view.addEventListener("pointermove", (e) => {
     press = null;
   }
   if (P.mode) { if (e.pointerType === "mouse" || P.down || P.drag) updateGhost(L); }
-  else view.classList.toggle("grab", !!hitTest(L));
+  else view.classList.toggle("grab", !!hitTest(L) || !!crateAt(L));
 });
 view.addEventListener("pointerup", (e) => {
   if (P.mode && (P.down || P.drag)) { updateGhost(logical(e)); P.down = false; commit(); }
@@ -1781,6 +1789,7 @@ function drawPlacement() {
 // ---------- thumbnails (drawn live from the sprite registry) ----------
 const thumbBuf = canvas(64, 64), tg = thumbBuf.getContext("2d");
 function thumbPaint(it) {
+  if (it.boost) return boostThumb(it.boost);
   if (it.cat === "wheel") return [48, 50, () => {
     if (sprite(tg, "wheel", 0, 0, 0, { angle: 0, tier: it.tier })) sprite(tg, it.sprite, 0, 0, 0, { angle: 0, tier: it.tier });
     else tg.drawImage(placeholderItem(it, 48, 48), 0, 1);
@@ -1823,6 +1832,7 @@ const TABS = [
   { id: "wheel", label: "Wheel", cats: ["wheel"] },
   { id: "bed", label: "Bed", cats: ["bed"] },
   { id: "room", label: "Den", cats: ["room"] },
+  { id: "boosts", label: "Boosts", cats: [], boosts: true },
   { id: "decor", label: "Decor", cats: ["furniture", "wall"] },
   { id: "rugs", label: "Rugs", cats: ["rug"] },
   { id: "styles", label: "Walls & Floors", cats: ["wallpaper", "floor"] },
@@ -1852,6 +1862,7 @@ function buildCards() {
   builtTab = shopTab;
   builtSize = S.catalog.size;
   if (!S.catalog.size) { box.innerHTML = "<p>Opening the shop…</p>"; return; }
+  if (tab.boosts) buildBoostCards(box);
   for (const cat of tab.cats) {
     const items = [...S.catalog.values()].filter((i) => i.cat === cat);
     if (!items.length) continue;
@@ -1909,6 +1920,7 @@ function updateCards() {
   const me = S.me;
   $("wallet").textContent = me ? `${fmt(me.watts)} W to spend` : "";
   for (const c of shopCards.values()) {
+    if (c.it.boost) { updateBoostCard(c, me); continue; }
     const st = cardState(c.it, me), buying = st.kind === "buy" || st.kind === "upgrade";
     c.state = st;
     c.price.textContent = st.kind === "owned" || st.kind === "equip" || st.kind === "equipped" ? "" : c.it.price ? `${fmt(c.it.price)} W` : "Free";
@@ -1932,6 +1944,7 @@ async function equip(it) {
   return r;
 }
 async function cardAction(c) {
+  if (c.it.boost) return boostAction(c);
   const it = c.it, st = c.state || cardState(it, S.me);
   if (c.busy || st.disabled) return;
   c.busy = true;
@@ -2011,6 +2024,256 @@ function renderInventory() {
     box.appendChild(b);
     invChips.push({ it, cv });
   }
+}
+
+// ---------- v3: boosts, the Raid Shield, lucky crates, golden blocks ----------
+// The server owns every timer and roll (BALANCE.BOOSTS / SHIELD / CRATES / GOLDEN); this side only
+// shows them. Times are server ms: compare against Date.now() + S.skew.
+const BOOST_INFO = {
+  double_wheel: { name: "Double Wheel", icon: "⚙", desc: "2× wheel watts for 1 hour. Best in the 22:00–02:00 UTC rush." },
+  deep_sleep: { name: "Deep Sleep", icon: "💤", desc: "+50% bed income for the next 8 hours." },
+  lucky_whisker: { name: "Lucky Whisker", icon: "🍀", desc: "+10 points win chance on your next raid." },
+  wager_insurance: { name: "Wager Insurance", icon: "☂", desc: "Your next failed raid refunds half the wager." },
+  shield: { name: "Raid Shield", icon: "🛡", desc: "3 hours of raid immunity, once a day. While it's up you can't raid either." },
+};
+const BOOST_ORDER = ["double_wheel", "deep_sleep", "lucky_whisker", "wager_insurance", "shield"];
+const nowS = () => Date.now() + S.skew;
+const boostCfg = (k) => ((S.balance && S.balance.BOOSTS) || {})[k] || {};
+const boostLeft = (k) => { const v = S.me && S.me.effects ? S.me.effects[k] : 0; return typeof v === "number" ? Math.max(0, v - nowS()) : 0; };
+const boostOn = (k) => { const v = S.me && S.me.effects ? S.me.effects[k] : null; return typeof v === "number" ? v > nowS() : v === true; };
+const held = (k) => (S.me && S.me.items ? S.me.items[k] | 0 : 0);
+function myShield() {
+  const sh = S.me && S.me.shield;
+  if (!sh || !(sh.until > nowS())) return { up: false, kind: null, left: 0 };
+  return { up: true, kind: sh.kind, left: sh.until - nowS() };
+}
+const shieldedWords = () => `Your Raid Shield is up for ${durText(myShield().left)}. You can't raid until it drops.`;
+function raidPLucky(m, tier, my, def) {
+  const p = raidP(m, tier, my, def), pts = boostCfg("lucky_whisker").ODDS_PTS || 10;
+  return boostOn("lucky_whisker") ? Math.min(RB().P_MAX_PCT / 100, p + pts / 100) : p;
+}
+
+// HUD chips: what's working right now, with time left
+function renderFxChips(me) {
+  const chips = [];
+  for (const k of ["double_wheel", "deep_sleep"]) if (boostOn(k)) chips.push(`<span class="chip on" title="${BOOST_INFO[k].name}: ${BOOST_INFO[k].desc}">${BOOST_INFO[k].icon} ${k === "double_wheel" ? "2×" : "+50%"} ${durText(boostLeft(k))}</span>`);
+  for (const k of ["lucky_whisker", "wager_insurance"]) if (boostOn(k)) chips.push(`<span class="chip on" title="${BOOST_INFO[k].name}: ${BOOST_INFO[k].desc}">${BOOST_INFO[k].icon} armed</span>`);
+  const sh = myShield();
+  if (sh.up) chips.push(`<span class="chip on shd" title="${sh.kind === "bruise" ? "A few minutes of peace after a raid on you" : "Raid Shield: nobody can raid you, and you can't raid"}">🛡 ${durText(sh.left)}</span>`);
+  const n = (me.crates || []).length;
+  if (n) chips.push(`<span class="chip on crate" title="Tap the parcel in your den to open it">📦 ${n}</span>`);
+  const html = chips.join("");
+  const el = $("fxLine");
+  if (el.dataset.html !== html) { el.dataset.html = html; el.innerHTML = html || "&nbsp;"; }
+  $("fxStat").hidden = !chips.length;
+}
+
+// shop cards for the Boosts tab: pseudo items keyed "boost:<kind>"
+function buildBoostCards(box) {
+  const h = document.createElement("div"); h.className = "sub"; h.textContent = "Single use · bought watts burn"; box.appendChild(h);
+  for (const k of BOOST_ORDER) {
+    const it = { id: `boost:${k}`, boost: k, name: BOOST_INFO[k].name, zone: null };
+    const el = document.createElement("div");
+    el.className = "card boost";
+    el.innerHTML = '<canvas class="thumb" width="64" height="64"></canvas><div class="cname"></div><div class="cdesc"></div><div class="cmeta"><span class="price"></span><span class="own"></span></div><div class="cnote"></div><button></button>';
+    el.querySelector(".cname").textContent = it.name;
+    el.querySelector(".cdesc").textContent = BOOST_INFO[k].desc;
+    const c = { el, it, thumb: el.querySelector("canvas"), btn: el.querySelector("button"), price: el.querySelector(".price"), own: el.querySelector(".own"), note: el.querySelector(".cnote"), state: null, busy: false, ticking: false };
+    c.thumb.setAttribute("aria-hidden", "true");
+    c.btn.onclick = () => cardAction(c);
+    drawThumb(c.thumb, it);
+    shopCards.set(it.id, c);
+    box.appendChild(el);
+  }
+}
+function boostCardState(k, me) {
+  const watts = me ? me.watts : 0;
+  if (k === "shield") {
+    const sh = myShield(), tok = held("shield_token"), price = me && me.shield ? me.shield.price : 500;
+    if (sh.up && sh.kind === "bought") return { label: `Up · ${durText(sh.left)}`, disabled: true, note: "nobody can raid you", price: "" };
+    if (me && me.shield && me.shield.usedToday) return { label: "Used today", disabled: true, note: `next one after 00:00 UTC`, price: "" };
+    if (tok) return { label: "Use token", from: "token", price: "free", own: `${tok} token${tok === 1 ? "" : "s"}`, note: sh.kind === "bruise" ? "replaces the bruise shield" : "" };
+    return { label: "Raise shield", from: "watts", price: `${fmt(price)} W`, poor: watts < price, need: price - watts, note: "max(500, 3% of your watts)" };
+  }
+  const cfg = boostCfg(k), n = held(k), price = cfg.PRICE || 0;
+  if (boostOn(k)) return { label: cfg.MS ? `Active · ${durText(boostLeft(k))}` : "Armed", disabled: true, note: cfg.MS ? "running now" : "used on your next raid", price: "", own: n ? `have ${n}` : "" };
+  if (n) return { label: `Use (${n})`, from: "item", price: "from a crate", own: `have ${n}` };
+  return { label: "Buy & use", from: "watts", price: `${fmt(price)} W`, poor: watts < price, need: price - watts };
+}
+function updateBoostCard(c, me) {
+  const st = boostCardState(c.it.boost, me);
+  c.state = st;
+  c.price.textContent = st.price || "";
+  c.price.classList.toggle("poor", !!st.poor);
+  c.own.textContent = st.own || "";
+  c.note.textContent = st.poor ? `need ${fmt(st.need)} more` : st.note || "";
+  c.note.className = "cnote" + (st.poor ? " poor" : "");
+  if (!c.busy && !c.ticking) { c.btn.textContent = st.label; c.btn.disabled = !!st.disabled; c.btn.className = st.from === "item" || st.from === "token" ? "alt" : ""; }
+  c.btn.setAttribute("aria-label", `${st.label}: ${c.it.name}`);
+}
+function boostErrorWords(j, k) {
+  switch (j && j.error) {
+    case "boost_active": return `${BOOST_INFO[k].name} is already working. One at a time.`;
+    case "shield_used_today": return "You've used today's shield. The next one is after 00:00 UTC.";
+    case "shield_active": return "Your shield is still up.";
+    case "no_item": return "You don't have one of those left.";
+    default: return errorWords(j);
+  }
+}
+async function boostAction(c) {
+  const k = c.it.boost, st = c.state || boostCardState(k, S.me);
+  if (c.busy || st.disabled) return;
+  c.busy = true;
+  c.btn.disabled = true;
+  try {
+    const r = k === "shield" ? await post("/api/shield", { from: st.from }) : await post("/api/boost", { kind: k, from: st.from });
+    if (!r.ok || !r.j.me) {
+      if (r.j.error === "poor") poorFeedback(c);
+      toast(boostErrorWords(r.j, k), "err");
+      refresh();
+      return;
+    }
+    const before = S.me ? S.me.watts : 0;
+    applyMe(r.j.me);
+    spendFeedback(c, Math.max(0, before - r.j.me.watts));
+    c.btn.textContent = "✓ On";
+    const words = { double_wheel: "Double Wheel is on for an hour.", deep_sleep: "Deep Sleep is on for 8 hours.", lucky_whisker: "Lucky Whisker is ready for your next raid.", wager_insurance: "Wager Insurance covers your next raid.", shield: "Your Raid Shield is up for 3 hours." };
+    toast(words[k], "ok");
+    if (k === "shield") { chipSig = ""; renderRaidChip(); if (LB.open) loadLb(); }
+  } finally {
+    c.busy = false;
+    updateCards();
+  }
+}
+// pixel icons for the boost cards (drawn into the shared thumbnail buffer)
+function boostThumb(k) {
+  const px = (x, y, w, h, col) => { tg.fillStyle = col; tg.fillRect(x, y, w, h); };
+  const sparkle = (x, y, col = "#ffd166") => { px(x, y - 2, 1, 5, col); px(x - 2, y, 5, 1, col); px(x, y, 1, 1, "#ffffff"); };
+  if (k === "double_wheel") return [48, 50, () => {
+    if (!sprite(tg, "wheel", 0, 0, 0, { angle: 0, tier: 0 })) tg.drawImage(placeholderItem({ id: k, name: k }, 48, 48), 0, 1);
+    px(28, 0, 19, 9, OUTLINE); drawText(tg, "2X", 31, 2, "#ffd166");
+  }];
+  if (k === "deep_sleep") return [32, 32, () => {
+    if (!sprite(tg, "hamster_sleep", 0, 4, 8, { skin: "skin_classic" })) tg.drawImage(hamsterFrame("sleep", 0, "skin_classic"), 4, 8);
+    drawText(tg, "Z", 22, 2, "#a78bfa"); drawText(tg, "Z", 26, 0, "#ffffff");
+  }];
+  if (k === "lucky_whisker") return [32, 32, () => {
+    if (!sprite(tg, "hamster_sit", 0, 4, 8, { skin: "skin_classic" })) tg.drawImage(hamsterFrame("sit", 0, "skin_classic"), 4, 8);
+    sparkle(25, 5); sparkle(5, 7, "#22c55e");
+  }];
+  if (k === "wager_insurance") return [32, 32, () => {
+    fillEllipse(tg, 16, 17, 11, 11, OUTLINE); fillEllipse(tg, 16, 16, 10, 10, "#f5a623"); fillEllipse(tg, 16, 16, 7, 7, "#ffd166");
+    drawText(tg, "1/2", 11, 14, "#7c3f1d");
+  }];
+  return [32, 32, () => { // the shield
+    for (let y = 0; y < 26; y++) {
+      const hw = y < 14 ? 11 : Math.max(0, 11 - Math.round((y - 13) * 0.9));
+      if (hw <= 0) continue;
+      px(16 - hw, 3 + y, hw * 2, 1, OUTLINE);
+      if (hw > 1 && y > 0 && y < 25) { px(17 - hw, 3 + y, hw * 2 - 2, 1, "#3b82f6"); px(17 - hw, 3 + y, Math.max(1, hw - 2), 1, "#93c5fd"); }
+    }
+    px(15, 7, 2, 16, "#ffd166"); px(9, 12, 14, 2, "#ffd166");
+  }];
+}
+
+// the shield bubble over my den
+function drawShieldBubble() {
+  const sh = myShield();
+  if (!sh.up) return;
+  const bruise = sh.kind === "bruise", t = performance.now() / 1000;
+  const cx = LW / 2, cy = ISO.Y0 + 74, rx = LW / 2 - 6, ry = 116;
+  const fade = clamp(sh.left / 20_000, 0.35, 1); // flickers out over its last seconds
+  g.save();
+  const pulse = 0.85 + 0.15 * Math.sin(t * 2.2);
+  g.beginPath(); g.ellipse(cx, cy, rx, ry, 0, Math.PI, 0); g.lineTo(cx + rx, LH); g.lineTo(cx - rx, LH); g.closePath();
+  const grd = g.createRadialGradient(cx, cy, ry * 0.3, cx, cy, ry * 1.15); // clear in the middle, bluer toward the rim
+  grd.addColorStop(0, "rgba(120,190,255,0)");
+  grd.addColorStop(1, `rgba(120,190,255,${((bruise ? 0.12 : 0.26) * fade * pulse).toFixed(3)})`);
+  g.fillStyle = grd; g.fill();
+  if (bruise) g.setLineDash([3, 4]);
+  g.lineWidth = 1;
+  g.beginPath(); g.ellipse(cx, cy, rx, ry, 0, Math.PI, 0);
+  g.strokeStyle = `rgba(200,230,255,${((bruise ? 0.45 : 0.95) * fade).toFixed(3)})`; g.stroke();
+  g.beginPath(); g.ellipse(cx, cy + 2, rx - 3, ry - 3, 0, Math.PI, 0);
+  g.strokeStyle = `rgba(90,160,255,${((bruise ? 0.2 : 0.45) * fade).toFixed(3)})`; g.stroke();
+  g.setLineDash([]);
+  // a glint that slides along the rim
+  const a = Math.PI + ((t * 0.35) % 1) * Math.PI, gx = Math.round(cx + Math.cos(a) * rx), gy = Math.round(cy + Math.sin(a) * ry);
+  g.fillStyle = `rgba(255,255,255,${(0.85 * fade).toFixed(3)})`; g.fillRect(gx - 1, gy, 3, 1); g.fillRect(gx, gy - 1, 1, 3);
+  g.restore();
+}
+
+// lucky crates on the floor: iso_crate on tile (i, j), a tap opens it
+function crateGeom(c) {
+  const s = isoArt("crate"), so = tileSouth(c.i, c.j), d = isoTileCenter(c.i, c.j).y + ISO.FOOT;
+  if (s) { const o = isoOrigin(s, so, false); return { x: o.x, y: o.y, w: s.w, h: s.h, d, art: true }; }
+  return { x: so.x - 8, y: so.y - 20, w: 16, h: 16, d, art: false };
+}
+function drawCrate(c, G) {
+  const t = performance.now(), bob = Math.floor((t + c.i * 397) / 1500) % 4 === 0 ? 1 : 0; // a little hop now and then
+  if (!(G.art && sprite(g, "iso_crate", 0, G.x, G.y - bob, {}))) {
+    if (!sprite(g, "crate", 0, G.x, G.y - bob, {})) { g.fillStyle = OUTLINE; g.fillRect(G.x, G.y - bob, 16, 16); g.fillStyle = "#c2410c"; g.fillRect(G.x + 1, G.y + 1 - bob, 14, 14); g.fillStyle = "#ffd166"; g.fillRect(G.x + 7, G.y + 1 - bob, 2, 14); }
+  }
+  const k = (t / 700 + c.j) % 3; // a sparkle that winks above it
+  if (k < 1) { const sx = G.x + G.w / 2 + 6, sy = G.y + 6 - Math.round(k * 4); g.fillStyle = "#fff8d0"; g.fillRect(sx, sy - 1, 1, 3); g.fillRect(sx - 1, sy, 3, 1); }
+}
+function crateAt(L) {
+  if (!S.me || !S.me.crates || !S.me.crates.length) return null;
+  for (const c of [...S.me.crates].sort((a, b) => b.i + b.j - (a.i + a.j))) { // front-most first
+    const G = crateGeom(c), pad = 3;
+    if (L.x >= G.x - pad && L.x < G.x + G.w + pad && L.y >= G.y + G.h * 0.35 - pad && L.y < G.y + G.h + pad) return c;
+  }
+  return null;
+}
+const crateBusy = new Set();
+async function openCrateUi(c) {
+  if (crateBusy.has(c.id)) return;
+  crateBusy.add(c.id);
+  const G = crateGeom(c);
+  try {
+    const r = await post("/api/crate", { id: c.id });
+    if (!r.ok || !r.j.me) { toast(r.j.error === "unknown_crate" ? "That crate was already opened." : errorWords(r.j), "err"); refresh(); return; }
+    applyMe(r.j.me);
+    const got = r.j.got || {}, name = (id) => (S.catalog.get(id) || {}).name || "something";
+    let words, label;
+    if (got.kind === "watts") { words = got.dup ? `Lucky crate: +${fmt(got.watts)} W. You already have the ${name(got.dup)}.` : `Lucky crate: +${fmt(got.watts)} W`; label = `+${popAmt(got.watts)} W`; gainFlash(got.watts); }
+    else if (got.kind === "boost") { words = `Lucky crate: ${BOOST_INFO[got.boost] ? BOOST_INFO[got.boost].name : "a boost"}. It's waiting in Boosts.`; label = "BOOST"; }
+    else if (got.kind === "shield") { words = "Lucky crate: a Raid Shield token. It's waiting in Boosts."; label = "SHIELD"; }
+    else if (got.kind === "decor") { words = `Lucky crate: ${name(got.item)}. A rare find. It's in your things.`; label = "RARE"; }
+    else words = "Lucky crate opened.";
+    toast(words, "ok");
+    if (label) crateReveal(G.x + G.w / 2, G.y + 4, label, got.kind === "decor" ? "#f472b6" : "#ffd166");
+    rflash = { rgb: "255,209,102", a: got.kind === "decor" ? 0.4 : 0.2, t: 0, life: 600 };
+  } finally { crateBusy.delete(c.id); }
+}
+// one-off floating label where the crate stood (shares the popup pool)
+function crateReveal(x, y, str, color) {
+  let p = null;
+  for (const q of pops) if (!q.on) { p = q; break; }
+  if (!p) p = pops[0];
+  Object.assign(p, { on: true, kind: "crate", n: 0, x, y, t: 0, rise: 18, life: 1500 });
+  rasterPop(p, str, color, 2);
+}
+const CRATES_SEEN = new Set();
+function noteCrates(me, prev, first) {
+  const ids = (me.crates || []).map((c) => c.id);
+  if (first || !prev) { for (const id of ids) CRATES_SEEN.add(id); return; }
+  const fresh = ids.filter((id) => !CRATES_SEEN.has(id));
+  for (const id of fresh) CRATES_SEEN.add(id);
+  if (fresh.length) toast(fresh.length > 1 ? `${fresh.length} lucky crates dropped in your den. Tap one to open it.` : "A lucky crate dropped in your den. Tap it to open.", "ok");
+}
+
+// golden blocks: a toast and a burst of sparks on the wheel when one settles
+const goldenSeen = { h: null };
+function noteGolden(gold, first) {
+  if (!gold || typeof gold.height !== "number") return;
+  if (first || goldenSeen.h == null) { goldenSeen.h = gold.height; return; }
+  if (gold.height === goldenSeen.h) return;
+  goldenSeen.h = gold.height;
+  if (nowS() - (gold.at || 0) > 120_000) return; // old news (a tab waking from sleep)
+  toast("Golden block — 10× for everyone watching.", "ok");
+  for (let i = 0; i < 18; i++) spawnSpark(i * 45);
+  rflash = { rgb: "255,209,102", a: 0.35, t: 0, life: 900 };
 }
 
 // ---------- first visit, nickname ----------
@@ -2465,7 +2728,7 @@ function applyRaidStatus(raid) {
   const per = Number(raid.perDay) || RB().PER_DAY;
   const need = Number(raid.needEarned) || RB().MIN_EARNED;
   S.raid = { open: !!raid.open, left: Number.isFinite(raid.raidsLeft) ? raid.raidsLeft : per, perDay: per, resetAt: Date.now() + Math.max(0, Number(raid.resetMs) || 0),
-    ready: raid.ready !== false, earned: Number(raid.earned) || 0, need };
+    ready: raid.ready !== false, earned: Number(raid.earned) || 0, need, shielded: !!raid.shielded };
 }
 const raidsLeftNow = () => (S.raid ? (Date.now() >= S.raid.resetAt ? S.raid.perDay : S.raid.left) : 0);
 const resetIn = () => (S.raid ? Math.max(0, S.raid.resetAt - Date.now()) : 0);
@@ -2473,9 +2736,10 @@ const resetIn = () => (S.raid ? Math.max(0, S.raid.resetAt - Date.now()) : 0);
 const earnedNow = () => Math.max(S.raid ? S.raid.earned : 0, (S.me && S.me.lifetimeWatts) || 0);
 const raidNeed = () => (S.raid && S.raid.need) || RB().MIN_EARNED;
 const freshWords = () => `Earn ${fmt(raidNeed())} W from the wheel or bed first. Fresh dens can't raid or be raided.`;
-function raidPhase() { // none | fresh | open | spent | locked
+function raidPhase() { // none | fresh | shielded | open | spent | locked
   if (!S.raid || !S.me) return "none";
   if (!S.raid.ready && earnedNow() < raidNeed()) return "fresh";
+  if (myShield().kind === "bought") return "shielded";
   if (!S.raid.open) return "locked";
   return raidsLeftNow() > 0 ? "open" : "spent";
 }
@@ -2485,13 +2749,13 @@ function renderRaidChip() {
   const el = $("raidChip"), ph = raidPhase();
   el.hidden = ph === "none";
   if (ph === "none") return;
-  const html = `⚔ Raid <span class="cd">${ph === "fresh" ? `${fmt(Math.min(earnedNow(), raidNeed()))}/${fmt(raidNeed())} W` : ph === "locked" ? lockedWhy() : `${raidsLeftNow()} left`}</span>`;
+  const html = `⚔ Raid <span class="cd">${ph === "fresh" ? `${fmt(Math.min(earnedNow(), raidNeed()))}/${fmt(raidNeed())} W` : ph === "shielded" ? "🛡 shield up" : ph === "locked" ? lockedWhy() : `${raidsLeftNow()} left`}</span>`;
   const sig = ph + html;
   if (sig === chipSig) return;
   chipSig = sig;
-  el.className = `raidchip ${ph === "fresh" ? "locked fresh" : ph}`;
+  el.className = `raidchip ${ph === "fresh" || ph === "shielded" ? "locked " + ph : ph}`;
   el.innerHTML = html;
-  el.title = ph === "fresh" ? freshWords() : ph === "locked" ? "Raids only work while Squeektoshi runs" : ph === "spent" ? `Out of raids. More in ${durText(resetIn())}` : "Leaderboard";
+  el.title = ph === "fresh" ? freshWords() : ph === "shielded" ? shieldedWords() : ph === "locked" ? "Raids only work while Squeektoshi runs" : ph === "spent" ? `Out of raids. More in ${durText(resetIn())}` : "Leaderboard";
   el.setAttribute("aria-expanded", String(LB.open));
 }
 
@@ -2515,7 +2779,7 @@ const rowMatLine = (r) => `${roomMaterial(r.roomTier | 0)} den${defensePct(r.roo
 // recomputed against my live watts (the server's flag uses the same rule; it re-checks on raid)
 function rowRaidable(r) {
   const me = S.me;
-  if (!me || r.you || r.publicId === myPid() || r.fresh || raidPhase() === "fresh") return false;
+  if (!me || r.you || r.publicId === myPid() || r.fresh || r.shielded || raidPhase() === "fresh" || raidPhase() === "shielded") return false;
   return r.watts * 100 >= me.watts * RB().ELIGIBLE_MIN_PCT || !!r.revenge;
 }
 const minTarget = () => (S.me ? Math.ceil((S.me.watts * RB().ELIGIBLE_MIN_PCT) / 100) : 0);
@@ -2566,6 +2830,7 @@ function raidStateWords() {
   if (ph === "spent") return ["", `Out of raids. More in <b>${durText(resetIn())}</b>`];
   if (ph === "locked") return ["", S.idle ? "Squeektoshi is asleep. Raids open when he runs." : "Waiting for a fresh block."];
   if (ph === "fresh") return ["", `${freshWords()} You're at <b>${fmt(Math.min(earnedNow(), raidNeed()))} W</b>.`];
+  if (ph === "shielded") return ["", shieldedWords()];
   return ["", "Loading…"];
 }
 function renderLb() {
@@ -2596,15 +2861,16 @@ function renderLb() {
     if (r.verified) nm.appendChild(verifiedBadge());
     if (you) nm.appendChild(elx("span", "tag you", "YOU"));
     if (r.revenge) nm.appendChild(elx("span", "tag rev", "REVENGE"));
+    if (r.shielded) { const sh = elx("span", "tag shd", "🛡"); sh.title = "Behind a Raid Shield"; nm.appendChild(sh); }
     who.appendChild(nm);
     who.appendChild(elx("span", "mt", rowMatLine(r)));
     row.appendChild(who);
     const wt = elx("span", "wt", `${fmt(r.watts)} W`);
     if (raidable && me) {
       wt.appendChild(elx("span", "go", "RAID"));
-    } else if (!you) wt.appendChild(elx("small", null, r.fresh ? "new den" : raidPhase() === "fresh" ? "" : "too small"));
+    } else if (!you) wt.appendChild(elx("small", null, r.fresh ? "new den" : r.shielded ? "shielded" : raidPhase() === "fresh" || raidPhase() === "shielded" ? "" : "too small"));
     row.title = raidable ? `Raid ${rowName(r)}${r.revenge ? " (revenge)" : ""}` : you ? "Your den"
-      : r.fresh ? `New den. It can't be raided until it earns ${fmt(raidNeed())} W.` : raidPhase() === "fresh" ? freshWords() : `Under 70% of your watts (${fmt(minTarget())} W). You can only raid up.`;
+      : r.fresh ? `New den. It can't be raided until it earns ${fmt(raidNeed())} W.` : r.shielded ? "Behind a Raid Shield for now." : raidPhase() === "fresh" ? freshWords() : raidPhase() === "shielded" ? shieldedWords() : `Under 70% of your watts (${fmt(minTarget())} W). You can only raid up.`;
     row.setAttribute("aria-label", `Rank ${r.rank}, ${rowName(r)}${r.verified ? " (wallet verified)" : ""}${you ? " (you)" : ""}, ${roomMaterial(r.roomTier | 0)} den, ${fmt(r.watts)} watts${raidable ? ", raidable" : ""}${r.revenge ? ", revenge" : ""}`);
     row.appendChild(wt);
     li.appendChild(row);
@@ -2678,6 +2944,8 @@ function raidBlock(t, sb) {
   if (ph === "locked") return { lock: true, msg: S.idle ? "Squeektoshi is asleep. Raids open when he runs." : "Waiting for a fresh block." };
   if (ph === "spent") return { lock: true, msg: `No raids left today. More in ${durText(resetIn())}.` };
   if (ph === "fresh") return { lock: true, msg: freshWords() };
+  if (ph === "shielded") return { lock: true, msg: shieldedWords() };
+  if (t.shielded) return { lock: true, msg: `${escapeHtml(rowName(t))} is behind a Raid Shield right now.` };
   if (t.fresh) return { lock: true, msg: `${escapeHtml(rowName(t))} is a new den. It can't be raided until it earns ${fmt(raidNeed())} W.` };
   if (!rowRaidable(t)) return { lock: true, msg: `${escapeHtml(rowName(t))} has under 70% of your watts now.` };
   if (sb.max < sb.min) return { lock: true, msg: stakeLockWords(sb) };
@@ -2710,7 +2978,7 @@ function renderRaid(force = false) {
   const sb = stakeNow(), S0 = sb.v, myW = me.watts;
   // multiplier choices: odds only; dimmed where the target's loot cap leaves no stake in range
   for (const b of $("raidMults").children) {
-    const m = Number(b.dataset.m), p = raidP(m, t.roomTier, myW, t.watts), mb = stakeNow(m), off = mb.max < mb.min;
+    const m = Number(b.dataset.m), p = raidPLucky(m, t.roomTier, myW, t.watts), mb = stakeNow(m), off = mb.max < mb.min;
     b.setAttribute("aria-checked", String(m === RU.mult));
     b.tabIndex = m === RU.mult ? 0 : -1;
     b.classList.toggle("off", off);
@@ -2736,7 +3004,8 @@ function renderRaid(force = false) {
   go.disabled = !!blk || RU.busy;
   go.classList.toggle("busy", RU.busy);
   go.textContent = RU.busy ? "Rolling…" : `${rev ? "Revenge" : "Raid"} · ${multLabel(m)}`;
-  $("raidLeft").textContent = S.raid ? `${raidsLeftNow()} of ${S.raid.perDay} raids left today` : "";
+  const armed = [boostOn("lucky_whisker") && "Lucky Whisker: +10 points on this raid", boostOn("wager_insurance") && "Wager Insurance: a loss refunds half"].filter(Boolean);
+  $("raidLeft").textContent = (S.raid ? `${raidsLeftNow()} of ${S.raid.perDay} raids left today` : "") + (armed.length ? ` · ${armed.join(" · ")}` : "");
 }
 function escapeHtml(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
 function setStake(v) { RU.stake = Math.round(Number(v)) || 0; RU.stake = stakeNow().v; ls.set("sr_stake", String(RU.stake)); renderRaid(); }
@@ -2776,6 +3045,8 @@ function raidErrorWords(j) {
       if (j.reason === "fresh_target") return `${t ? rowName(t) : "That den"} is a new den. It can't be raided until it earns ${fmt(j.needEarned || raidNeed())} W.`;
       return `${t ? rowName(t) : "They"} dropped under 70% of your watts.`;
     case "self_target": return "That's your own den.";
+    case "shielded": return shieldedWords();
+    case "target_shielded": return `${t ? rowName(t) : "That den"} is behind a Raid Shield right now.`;
     case "bad_mult": return "Pick a multiplier.";
     case "bad_stake": case "stake_out_of_range": return j.max < j.min ? stakeLockWords(j) : `Wager ${fmt(j.min)} to ${fmt(j.max)} W${j.limit === "target" ? ` against this den at ${multLabel(RU.mult)}` : ""}.`;
     default: return errorWords(j);
@@ -2796,7 +3067,8 @@ async function doRaid() {
   else if (e === "hamster_asleep" || e === "chain_unknown" || e === "chain_stale") { if (S.raid) S.raid.open = false; else applyRaidStatus({ open: false }); }
   else if (e === "stake_out_of_range" || e === "bad_stake") { if (Number.isFinite(j.max) && j.max >= j.min) RU.stake = clamp(sb.v, j.min, j.max); refresh(); }
   if (e === "not_eligible" && j.reason === "fresh_attacker" && S.raid) { S.raid.ready = false; if (Number.isFinite(j.earned)) S.raid.earned = j.earned; }
-  if (e === "not_eligible" || e === "bad_target") loadLb();
+  if (e === "not_eligible" || e === "bad_target" || e === "target_shielded" || e === "shielded") loadLb();
+  if (e === "shielded") refresh();
   chipSig = "";
   renderRaidChip();
   if (RU.open) {
@@ -2828,7 +3100,7 @@ function showRaidResult(res, t, before) {
   const m = res.multPct || RU.mult;
   if (win) {
     $("resBig").textContent = res.revenge ? "Revenge!" : "You won";
-    $("resDet").textContent = `from ${rowName(t)} at ${multLabel(m)}`;
+    $("resDet").textContent = `from ${rowName(t)} at ${multLabel(m)}${res.lucky ? ". The Lucky Whisker helped" : ""}`;
     countUp($("resAmt"), res.loot, res.crit ? 1700 : 1200);
     for (let i = 0; i < (res.crit ? 36 : 22); i++) {
       const a = Math.random() * Math.PI * 2, d = 60 + Math.random() * 110, p = elx("i", "fxp coin");
@@ -2840,9 +3112,10 @@ function showRaidResult(res, t, before) {
     gainFlash(res.loot);
     toast(`${res.crit ? "Crit! " : ""}+${fmt(res.loot)} W from ${rowName(t)}`, "ok");
   } else {
+    const back = res.refund || 0, lost = (res.stakeLost || res.stake) - back;
     $("resBig").textContent = "You lost";
-    $("resAmt").textContent = `−${fmt(res.stakeLost || res.stake)} W`;
-    $("resDet").textContent = `wager burned at ${multLabel(m)}`;
+    $("resAmt").textContent = `−${fmt(lost)} W`;
+    $("resDet").textContent = back > 0 ? `wager burned at ${multLabel(m)}. Insurance gave back ${fmt(back)} W` : `wager burned at ${multLabel(m)}`;
     for (let i = 0; i < 28; i++) {
       const p = elx("i", "fxp ember");
       p.style.left = `${5 + Math.random() * 90}%`;
@@ -2853,7 +3126,7 @@ function showRaidResult(res, t, before) {
     }
     const rb = $("raidBox"); rb.classList.remove("shake"); void rb.offsetWidth; rb.classList.add("shake");
     raidFx("burn");
-    const s = elx("span", "spend", `−${fmt(res.stakeLost || res.stake)} W burned`);
+    const s = elx("span", "spend", `−${fmt(lost)} W burned`);
     $("meter").appendChild(s); setTimeout(() => s.remove(), 1700);
   }
   $("resBack").focus({ preventScroll: true });
@@ -3255,7 +3528,8 @@ window.__squeekroom = { S, tut: { TUT, W: TUT_W, H: TUT_H }, ham, wheel, sparks,
   get iso() { return { ISO, LW, LH, SPOT, IWHEEL, IBURROW, fixture, checkFixture, fixtureRect, colTile, colLeft, footY, tileToCol, screenToTile, wallBase, toFlat, isoRect, bedGeom, laneAt, isoSpan, isoFloor }; },
   get selPid() { return selPid; }, get FX() { return FX; },
   renderNow() { const st = liveStatus(); tick10(); render(st); }, // paints one frame even when rAF is paused (hidden tab)
-  renderCert, openCert, closeCert, certLeftWords, get cert() { return certUi.cert; } };
+  renderCert, openCert, closeCert, certLeftWords, get cert() { return certUi.cert; },
+  v3: { crateGeom, crateAt, openCrateUi, myShield, boostOn, logical, LW } };
 // the narrow surface public/wallet.js builds on (it never touches game internals beyond this)
 window.__squeekroom.bridge = { S, post, applyMe, toast, errorWords, refreshLb() { if (LB.open) loadLb(); } };
 

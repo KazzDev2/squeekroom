@@ -54,6 +54,11 @@ h1 .logo{width:40px;height:40px;image-rendering:pixelated;flex:none}
 @keyframes gain{0%{opacity:0;transform:translateY(4px)}15%{opacity:1;transform:none}75%{opacity:1}100%{opacity:0;transform:translateY(-4px)}}
 .chip{display:inline-block;font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:0 5px;border-radius:3px;border:1px solid var(--line);color:var(--muted);margin-left:6px;vertical-align:1px}
 .chip.on{border-color:var(--ok);color:var(--ok)}
+.fxline{display:flex;flex-wrap:wrap;gap:3px;white-space:normal;max-width:220px}
+.fxline .chip{margin-left:0;text-transform:none;letter-spacing:.02em}
+.chip.on.shd{border-color:#3b82f6;color:#3b82f6}
+.chip.on.crate{border-color:#c2410c;color:#c2410c}
+.card .cdesc{font-size:11px;line-height:1.3;color:var(--muted)}
 .spacer{flex:1}
 .demobar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px max(16px,env(safe-area-inset-right,0px)) 6px max(16px,env(safe-area-inset-left,0px));border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--chain) 7%,var(--panel))}
 .demobar[hidden]{display:none}
@@ -446,6 +451,7 @@ body.modal-open{overflow:hidden}
   <div class="stat"><span class="lbl">Wheel</span><span class="val" id="tier">—</span><span class="sub" id="watchLine">&nbsp;</span>
     <span class="sub" id="bedLine" title="Your bed earns while he sleeps, online or not">&nbsp;</span>
   </div>
+  <div class="stat fxstat" id="fxStat" hidden><span class="lbl">Boosts</span><span class="sub fxline" id="fxLine">&nbsp;</span></div>
   <button type="button" class="helpbtn" id="helpBtn" aria-haspopup="dialog" aria-controls="tut">How to play</button>
   <button type="button" class="raidchip locked" id="raidChip" hidden aria-haspopup="dialog" aria-controls="lb">raids…</button>
   <button type="button" class="walletbtn" id="walletBtn" hidden aria-haspopup="dialog" aria-controls="walletModal">Connect Wallet</button>
@@ -626,6 +632,7 @@ body.modal-open{overflow:hidden}
 <script src="sprites.js"></script>
 <script src="sprites_iso_furniture.js"></script>
 <script src="sprites_iso_beds.js"></script>
+<script src="sprites_crate.js"></script>
 <script src="sprites_iso_wheel.js"></script>
 <script src="game.js"></script>
 <script src="wallet.js"></script>

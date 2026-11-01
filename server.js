@@ -5,6 +5,9 @@
 // While he runs, players may raid richer rooms (POST /api/raid): a won raid moves watts, a lost
 // stake burns entirely. Only dens that have earned RAID.MIN_EARNED watts can raid or be raided.
 // GET /api/leaderboard lists every room by balance.
+// Boosts (POST /api/boost), the Raid Shield (POST /api/shield) and lucky crates (POST /api/crate): single-use
+// consumables bought with watts (burned) or found in crates that drop, on settled blocks, for dens that are
+// watching. About 1 settled block in 150 is golden: it pays 10x wheel watts to every den watching.
 // Usernames (POST /api/username): every den picks a unique one when it starts; it's the name others see.
 // Optional wallet sign-in (POST /api/wallet/{nonce,verify}): a gasless personal_sign proof binds an EVM
 // address, which adds a verified badge next to the username.
@@ -108,6 +111,29 @@ const BALANCE = {
     LEADERBOARD_MAX: 200,
     LEADERBOARD_CACHE_MS: 10_000,
   },
+  // Raid Shield: MS of immunity, at most PER_DAY activations per UTC day (bought, or with a crate token
+  // that waives the price). Price max(PRICE_MIN, PRICE_PCT of the balance), burned. While a bought
+  // shield is up the den can't start raids (turtle mode). A successful raid against a den gives it
+  // BRUISE_MS of free immunity that doesn't block its own raids; buying a shield replaces it.
+  SHIELD: { MS: 3 * 3_600_000, PER_DAY: 1, PRICE_MIN: 500, PRICE_PCT: 3, BRUISE_MS: 600_000 },
+  // Boosts: single-use, bought (the price burns) or found in crates; one active per kind, never stacked.
+  // Priced against ~31k W/day of tier-0 income: worth it when timed well, a loss when wasted.
+  BOOSTS: {
+    double_wheel: { PRICE: 2_000, MS: 3_600_000, PCT: 200 }, // wheel watts x2 for an hour
+    deep_sleep: { PRICE: 3_000, MS: 8 * 3_600_000, PCT: 150 }, // bed income +50% for 8 hours
+    lucky_whisker: { PRICE: 1_500, ODDS_PTS: 10 }, // next raid: +10 points win chance, still <= P_MAX
+    wager_insurance: { PRICE: 1_000, REFUND_PCT: 50 }, // next FAILED raid refunds half the wager
+  },
+  // Lucky crates: on each settled block every den that is watching (the live-bonus heartbeat) rolls
+  // CHANCE_PCT for a crate, up to PER_DAY a UTC day and MAX_UNOPENED waiting (further drops wait).
+  // Contents are rolled at drop time: TABLE_PCT watts / a boost / a shield token / crate-only decor
+  // (decor already owned or already waiting in another crate becomes DUP_WATTS instead).
+  // Keyed off settled blocks and watching only: nothing here rewards making him run.
+  CRATES: { CHANCE_PCT: 1, PER_DAY: 5, MAX_UNOPENED: 3, ROLLS_MAX: 50, WATTS_MIN: 200, WATTS_MAX: 800, DUP_WATTS: 800,
+    TABLE_PCT: { watts: 60, boost: 25, shield: 10, decor: 5 } },
+  // Golden blocks: a settled height is golden when its hash says so (~1 in ONE_IN, the same answer on
+  // every boot). It pays MULT_PCT wheel watts to every den watching when it settles; others get the normal rate.
+  GOLDEN: { ONE_IN: 150, MULT_PCT: 1000 },
 };
 
 // ---------- room grid ----------
@@ -255,6 +281,13 @@ function moveFixture(player, body) {
   return { ok: true, fixture: f };
 }
 
+// ---------- consumables: boosts, shield tokens (the shapes newPlayer/patchPlayer use) ----------
+const BOOST_KINDS = Object.keys(BALANCE.BOOSTS);
+const TIMED_BOOSTS = new Set(BOOST_KINDS.filter((k) => BALANCE.BOOSTS[k].MS > 0));
+const ITEM_KINDS = [...BOOST_KINDS, "shield_token"];
+const emptyItems = () => Object.fromEntries(ITEM_KINDS.map((k) => [k, 0]));
+const emptyEffects = () => Object.fromEntries(BOOST_KINDS.map((k) => [k, TIMED_BOOSTS.has(k) ? 0 : false]));
+
 // ---------- players ----------
 const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
 // Public, non-secret handle for a player (safe to show others; the token never leaves its owner).
@@ -289,6 +322,13 @@ function newPlayer(height, now = Date.now(), token = null) {
     wallet: null, // lowercase 0x address once a personal_sign proof was verified
     username: null, // unique, shown on the leaderboard instead of the nick; picked when the den starts
     walletNonce: null, // pending sign-in {message, expiresAt}: single-use, 10 min
+    items: emptyItems(), // consumables held (from crates): one count per boost kind + shield_token
+    effects: emptyEffects(), // timed boosts: expiry ms (0 = off); next-raid boosts: true while armed
+    shield: { until: 0, kind: null }, // raid immunity until (ms); kind "bought" | "bruise"
+    shieldDay: null, // UTC day of the last shield activation (SHIELD.PER_DAY)
+    crates: [], // unopened lucky crates {id, at, i, j, c}; c (the contents) never leaves the server
+    crateDay: null, // UTC day that cratesToday counts
+    cratesToday: 0,
   };
 }
 // Bring an older player record up to the current shape (missing fields get their defaults).
@@ -307,6 +347,17 @@ function patchPlayer(p, token) {
   if (p.wallet === undefined) p.wallet = null;
   if (p.username === undefined) p.username = null;
   if (p.walletNonce === undefined) p.walletNonce = null;
+  const items = p.items && typeof p.items === "object" ? p.items : {};
+  p.items = emptyItems();
+  for (const k of ITEM_KINDS) if (Number.isInteger(items[k]) && items[k] > 0) p.items[k] = items[k];
+  const fx = p.effects && typeof p.effects === "object" ? p.effects : {};
+  p.effects = emptyEffects();
+  for (const k of BOOST_KINDS) if (TIMED_BOOSTS.has(k) ? Number.isFinite(fx[k]) && fx[k] > 0 : fx[k] === true) p.effects[k] = fx[k];
+  if (!p.shield || typeof p.shield !== "object" || !Number.isFinite(p.shield.until)) p.shield = { until: 0, kind: null };
+  if (p.shieldDay === undefined) p.shieldDay = null;
+  if (!Array.isArray(p.crates)) p.crates = [];
+  if (p.crateDay === undefined) p.crateDay = null;
+  if (!Number.isInteger(p.cratesToday)) p.cratesToday = 0;
   if (p.owned && typeof p.owned === "object") for (const id of FREE_IDS) if (!p.owned[id]) p.owned[id] = 1;
   for (const k of LEGACY_FIELDS) delete p[k];
   return p;
@@ -387,10 +438,17 @@ function setUsername(st, token, body) {
 function liveBonusPct(player, now = Date.now()) {
   return player.lastHeartbeat > 0 && now - player.lastHeartbeat <= BALANCE.HEARTBEAT_WINDOW_MS ? BALANCE.LIVE_BONUS_PCT : 100;
 }
-function wattsFor(delta, tier, bonusPct, speedPct = 100) {
+// boostPct: Double Wheel (100 = off). delta may count a golden block as GOLDEN.MULT_PCT / 100 blocks.
+function wattsFor(delta, tier, bonusPct, speedPct = 100, boostPct = 100) {
   const mult = BALANCE.WHEEL_MULT_PCT[tier] ?? BALANCE.WHEEL_MULT_PCT[0];
-  return Math.round((delta * BALANCE.BASE_WATTS_PER_BLOCK * mult * bonusPct * speedPct) / 1_000_000);
+  return Math.round((delta * BALANCE.BASE_WATTS_PER_BLOCK * mult * bonusPct * speedPct * boostPct) / 100_000_000);
 }
+// Is boost `kind` working for this player at `now`? Timed: before its expiry; next-raid: while armed.
+function boostActive(p, kind, now = Date.now()) {
+  const v = p && p.effects ? p.effects[kind] : undefined;
+  return TIMED_BOOSTS.has(kind) ? Number.isFinite(v) && v > now : v === true;
+}
+const boostPct = (p, kind, now) => (boostActive(p, kind, now) ? BALANCE.BOOSTS[kind].PCT : 100);
 const utcDay = (now) => new Date(now).toISOString().slice(0, 10);
 // Generated watts (wheel or bed): balance + lifetime, and one active day per UTC day.
 function creditWatts(player, earned, now) {
@@ -404,9 +462,12 @@ function creditWatts(player, earned, now) {
 }
 // Credit `delta` settled blocks to one player. Returns watts earned (integer).
 // speedPct: the speed bonus (100..BALANCE.SPEED.MAX_PCT) measured for this advance; wheel only.
-function accrue(player, delta, now = Date.now(), speedPct = 100) {
+// golden: how many of those blocks were golden; each pays GOLDEN.MULT_PCT, but only while watching.
+function accrue(player, delta, now = Date.now(), speedPct = 100, golden = 0) {
   if (!Number.isInteger(delta) || delta <= 0) return 0;
-  const earned = wattsFor(delta, player.wheelTier | 0, liveBonusPct(player, now), speedPct);
+  const bonus = liveBonusPct(player, now);
+  const gold = bonus > 100 && golden > 0 ? (Math.min(golden, delta) * (BALANCE.GOLDEN.MULT_PCT - 100)) / 100 : 0;
+  const earned = wattsFor(delta + gold, player.wheelTier | 0, bonus, speedPct, boostPct(player, "double_wheel", now));
   if (earned <= 0) return 0;
   creditWatts(player, earned, now);
   return earned;
@@ -449,13 +510,13 @@ function asleep(st, now = Date.now(), chainReadAt = null) {
 // the whole product is an exact integer; the remainder carries in player.bedFrac.
 // tier-0 rate in tenths of a watt per minute (SPEED_BASE_BPM is fixed at boot, below REPLAY_SCHEDULE)
 const bedRateTenths = () => Math.round((BALANCE.BASE_WATTS_PER_BLOCK * SPEED_BASE_BPM * BALANCE.BED_AWAKE_PCT) / 10);
-const BED_FRAC_DEN = 60_000 * 10 * 100 * 100; // ms/min x tenths x multPct x bonusPct
+const BED_FRAC_DEN = 60_000 * 10 * 100 * 100 * 100; // ms/min x tenths x multPct x bonusPct x Deep Sleep pct
 const bedMultPct = (player) => BALANCE.BED_MULT_PCT[player.bedTier | 0] ?? BALANCE.BED_MULT_PCT[0];
 const bedWattsPerMin = (player) => (bedRateTenths() * bedMultPct(player)) / 1000; // before the watching bonus
 // Credit one player `ms` of bed time. Returns whole watts credited.
 function bedCredit(player, ms, now = Date.now()) {
   if (!Number.isFinite(ms) || ms <= 0) return 0;
-  const total = (Number.isFinite(player.bedFrac) ? player.bedFrac : 0) + ms * bedRateTenths() * bedMultPct(player) * liveBonusPct(player, now);
+  const total = (Number.isFinite(player.bedFrac) ? player.bedFrac : 0) + ms * bedRateTenths() * bedMultPct(player) * liveBonusPct(player, now) * boostPct(player, "deep_sleep", now);
   const watts = Math.floor(total / BED_FRAC_DEN);
   player.bedFrac = total - watts * BED_FRAC_DEN;
   if (watts > 0) creditWatts(player, watts, now);
@@ -475,19 +536,140 @@ function accrueBed(st, idle, now = Date.now()) {
 }
 // Credit every player for blocks lastAccruedHeight..newHeight. Also catches up server downtime.
 // A player never earns for blocks settled before they joined. speedPct applies to the whole advance.
-function accrueAll(st, newHeight, now = Date.now(), speedPct = 100) {
+// Golden blocks in the range pay watchers extra (st.lastGolden remembers the newest for the client),
+// and every den watching rolls for lucky crates, once per new block (at most CRATES.ROLLS_MAX).
+function accrueAll(st, newHeight, now = Date.now(), speedPct = 100, rng = Math.random) {
   if (st.lastAccruedHeight == null) {
     st.lastAccruedHeight = newHeight;
     return 0;
   }
   if (newHeight <= st.lastAccruedHeight) return 0;
+  const golden = goldenBetween(st.lastAccruedHeight, newHeight);
+  if (golden.length) st.lastGolden = { height: golden[golden.length - 1], at: now };
   let total = 0;
   for (const p of Object.values(st.players)) {
     const since = p.joinHeight == null ? st.lastAccruedHeight : Math.max(st.lastAccruedHeight, p.joinHeight);
-    if (newHeight > since) total += accrue(p, newHeight - since, now, speedPct);
+    if (newHeight <= since) continue;
+    total += accrue(p, newHeight - since, now, speedPct, golden.filter((h) => h > since).length);
+    if (liveBonusPct(p, now) > 100) rollCrates(p, Math.min(newHeight - since, BALANCE.CRATES.ROLLS_MAX), now, rng);
   }
   st.lastAccruedHeight = newHeight;
   return total;
+}
+
+// ---------- golden blocks ----------
+// Deterministic from the height alone, so every boot (and replay) agrees which blocks are golden.
+const isGoldenBlock = (h) => Number.isSafeInteger(h) && h > 0 && parseInt(sha256(`squeekden-golden|${h}`).slice(0, 8), 16) % BALANCE.GOLDEN.ONE_IN === 0;
+// Golden heights in (from, to], ascending. A long catch-up checks every height once.
+function goldenBetween(from, to) {
+  const out = [];
+  for (let h = Math.max(0, from) + 1; h <= to; h++) if (isGoldenBlock(h)) out.push(h);
+  return out;
+}
+
+// ---------- lucky crates ----------
+const CRATE_DECOR = () => CATALOG.filter((i) => i.crate).map((i) => i.id); // crate-only decor (Patch 3 fills it)
+// What a crate holds, decided when it drops. Decor the den owns or already has waiting becomes DUP_WATTS.
+function rollCrateContents(p, rng = Math.random) {
+  const C = BALANCE.CRATES, T = C.TABLE_PCT, r = rng() * 100;
+  if (r < T.watts) return { kind: "watts", watts: C.WATTS_MIN + Math.floor(rng() * (C.WATTS_MAX - C.WATTS_MIN + 1)) };
+  if (r < T.watts + T.boost) return { kind: "boost", boost: BOOST_KINDS[Math.floor(rng() * BOOST_KINDS.length) % BOOST_KINDS.length] };
+  if (r < T.watts + T.boost + T.shield) return { kind: "shield" };
+  const decor = CRATE_DECOR();
+  if (!decor.length) return { kind: "watts", watts: C.DUP_WATTS };
+  const id = decor[Math.floor(rng() * decor.length) % decor.length];
+  const waiting = (p.crates || []).some((c) => c && c.c && c.c.kind === "decor" && c.c.item === id);
+  return (p.owned && p.owned[id]) || waiting ? { kind: "watts", watts: C.DUP_WATTS, dup: id } : { kind: "decor", item: id };
+}
+// A free floor tile for the parcel: on the visible floor, off the wheel, the bed, furniture and other crates.
+function crateTile(p, rng = Math.random) {
+  const taken = new Set();
+  for (const k of FIXTURES) { const f = p.fixtures && p.fixtures[k]; if (f) taken.add(tileKey([f.i, f.j])); }
+  for (const o of p.placed || []) {
+    const oi = CATALOG_BY_ID.get(o.item);
+    if (oi && oi.zone === "floor") for (const t of footprint(oi, o.x, o.y, !!o.flip)) taken.add(tileKey(t));
+  }
+  for (const c of p.crates || []) if (c) taken.add(tileKey([c.i, c.j]));
+  const free = [];
+  for (let i = 0; i < ROOM.ISO_NI; i++) for (let j = 0; j < ROOM.ISO_NJ; j++) if (tileOnFloor([i, j]) && !taken.has(tileKey([i, j]))) free.push({ i, j });
+  if (!free.length) return { i: 2, j: 2 };
+  return free[Math.floor(rng() * free.length) % free.length];
+}
+// `rolls` CHANCE_PCT rolls for one den; drops what the daily cap and the unopened cap allow. Returns drops.
+function rollCrates(p, rolls, now = Date.now(), rng = Math.random) {
+  const C = BALANCE.CRATES, day = utcDay(now);
+  if (p.crateDay !== day) { p.crateDay = day; p.cratesToday = 0; }
+  if (!Array.isArray(p.crates)) p.crates = [];
+  let dropped = 0;
+  for (let n = 0; n < rolls; n++) {
+    if (p.cratesToday >= C.PER_DAY || p.crates.length >= C.MAX_UNOPENED) break;
+    if (!(rng() < C.CHANCE_PCT / 100)) continue;
+    const c = rollCrateContents(p, rng), t = crateTile(p, rng);
+    p.crates.push({ id: crypto.randomBytes(4).toString("hex"), at: now, i: t.i, j: t.j, c });
+    p.cratesToday += 1;
+    dropped++;
+  }
+  return dropped;
+}
+// Open one waiting crate: its contents land in the den (watts on the balance only: not earnings).
+function openCrate(st, token, body, now = Date.now()) {
+  const p = getPlayer(st, token);
+  if (!p) return fail("unknown_player");
+  const id = body && typeof body === "object" ? body.id : undefined;
+  const k = typeof id === "string" && Array.isArray(p.crates) ? p.crates.findIndex((c) => c && c.id === id) : -1;
+  if (k < 0) return fail("unknown_crate");
+  const [crate] = p.crates.splice(k, 1);
+  let got = crate.c || { kind: "watts", watts: BALANCE.CRATES.WATTS_MIN };
+  if (got.kind === "decor" && (!CATALOG_BY_ID.has(got.item) || (p.owned && p.owned[got.item]))) got = { kind: "watts", watts: BALANCE.CRATES.DUP_WATTS, dup: got.item };
+  if (got.kind === "watts") p.watts += got.watts;
+  else if (got.kind === "boost" && ITEM_KINDS.includes(got.boost)) p.items[got.boost] = (p.items[got.boost] | 0) + 1;
+  else if (got.kind === "shield") p.items.shield_token = (p.items.shield_token | 0) + 1;
+  else if (got.kind === "decor") p.owned[got.item] = 1;
+  return { ok: true, got };
+}
+
+// ---------- boosts + the Raid Shield ----------
+// body {kind, from: "item" (one held from a crate) | "watts" (buy it now; the price burns)}.
+function useBoost(st, token, body, now = Date.now()) {
+  const p = getPlayer(st, token);
+  if (!p) return fail("unknown_player");
+  const b = body && typeof body === "object" ? body : {};
+  if (!BOOST_KINDS.includes(b.kind)) return fail("bad_boost");
+  const B = BALANCE.BOOSTS[b.kind];
+  if (boostActive(p, b.kind, now)) return { ok: false, error: "boost_active", until: TIMED_BOOSTS.has(b.kind) ? p.effects[b.kind] : null };
+  if (b.from === "item") {
+    if (!((p.items[b.kind] | 0) > 0)) return fail("no_item");
+    p.items[b.kind] -= 1;
+  } else if (b.from === "watts") {
+    if (p.watts < B.PRICE) return { ok: false, error: "poor", need: B.PRICE - p.watts };
+    p.watts -= B.PRICE;
+  } else return fail("bad_from");
+  p.effects[b.kind] = TIMED_BOOSTS.has(b.kind) ? now + B.MS : true;
+  return { ok: true, kind: b.kind, effect: p.effects[b.kind] };
+}
+const shieldUp = (p, now = Date.now()) => !!p && !!p.shield && p.shield.until > now;
+const boughtShieldUp = (p, now = Date.now()) => shieldUp(p, now) && p.shield.kind === "bought";
+const shieldPrice = (p) => Math.max(BALANCE.SHIELD.PRICE_MIN, Math.floor((Math.max(0, p.watts) * BALANCE.SHIELD.PRICE_PCT) / 100));
+const shieldUsedToday = (p, now = Date.now()) => p.shieldDay === utcDay(now);
+// body {from: "token" | "watts"}: SHIELD.MS of immunity; once a UTC day; replaces a bruise shield.
+function raiseShield(st, token, body, now = Date.now()) {
+  const p = getPlayer(st, token);
+  if (!p) return fail("unknown_player");
+  const b = body && typeof body === "object" ? body : {};
+  if (shieldUsedToday(p, now)) return { ok: false, error: "shield_used_today", resetMs: msToUtcMidnight(now) };
+  if (boughtShieldUp(p, now)) return { ok: false, error: "shield_active", until: p.shield.until };
+  if (b.from === "token") {
+    if (!((p.items.shield_token | 0) > 0)) return fail("no_item");
+    p.items.shield_token -= 1;
+  } else if (b.from === "watts") {
+    const price = shieldPrice(p);
+    if (p.watts < price) return { ok: false, error: "poor", need: price - p.watts };
+    p.watts -= price;
+  } else return fail("bad_from");
+  p.shield = { until: now + BALANCE.SHIELD.MS, kind: "bought" };
+  p.shieldDay = utcDay(now);
+  invalidateLeaderboard(st);
+  return { ok: true, shield: p.shield };
 }
 
 // ---------- speed bonus (judged by the chain's own cadence) ----------
@@ -673,10 +855,12 @@ function raidChance(attacker, defender, multPct) {
 // One resolution, rolls in a fixed order: win, then loot U, then crit (a loss uses one roll).
 // Loot is capped at LOOT_MAX_DEF_PCT of the defender's balance, crit included, so no single roll can
 // empty a room however big the stake. A loss loses the whole stake, and it all burns.
+// oddsPts (Lucky Whisker) adds percentage points after all other maths, still capped at P_MAX.
 // Pure: returns the outcome, mutates nothing.
-function resolveRaid(attacker, defender, stake, multPct, rng = Math.random) {
+function resolveRaid(attacker, defender, stake, multPct, rng = Math.random, oddsPts = 0) {
   const R = BALANCE.RAID;
-  const p = raidChance(attacker, defender, multPct);
+  let p = raidChance(attacker, defender, multPct);
+  if (oddsPts > 0 && p > 0) p = Math.min(R.P_MAX_PCT / 100, p + oddsPts / 100);
   if (!(rng() < p)) return { win: false, p, stakeLost: stake };
   const uPct = R.LOOT_U_MIN_PCT + (R.LOOT_U_MAX_PCT - R.LOOT_U_MIN_PCT) * rng();
   const cap = lootCap(defender.watts);
@@ -733,7 +917,7 @@ function raidWindow(lastAdvanceAt, now = Date.now(), chainReadAt = null, st = nu
 }
 function raidStatus(st, player, now = Date.now(), chainReadAt = null) {
   return { open: raidWindow(st.lastAdvanceAt, now, chainReadAt, st).open, raidsLeft: raidsLeft(player, now), perDay: BALANCE.RAID.PER_DAY, resetMs: msToUtcMidnight(now),
-    ready: raidReady(player), earned: Math.max(0, player.lifetimeWatts | 0), needEarned: BALANCE.RAID.MIN_EARNED };
+    ready: raidReady(player), earned: Math.max(0, player.lifetimeWatts | 0), needEarned: BALANCE.RAID.MIN_EARNED, shielded: boughtShieldUp(player, now) };
 }
 
 // publicId -> token index per state object (built lazily, extended on player creation; a miss
@@ -765,8 +949,10 @@ const pushRing = (arr, entry, max) => {
 };
 
 // Validate and resolve one raid by the player behind `token` on body {target (publicId), stake, mult}.
-// Order: window -> attacker earned enough -> daily allowance -> target -> target earned enough ->
-// eligibility/revenge -> multiplier -> stake. Mutates st only
+// Order: window -> attacker earned enough -> attacker not behind a bought shield -> daily allowance ->
+// target -> target earned enough -> target not shielded -> eligibility/revenge -> multiplier -> stake.
+// Refusals use no raid. Lucky Whisker is spent on any resolved raid; Wager Insurance only on a loss.
+// Mutates st only
 // on success. opts.chainReadAt: live-mode freshness (null in demo); opts.rng: injectable for tests.
 function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng = Math.random } = {}) {
   const R = BALANCE.RAID;
@@ -775,12 +961,14 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
   const w = raidWindow(st.lastAdvanceAt, now, chainReadAt, st);
   if (!w.open) return fail(w.reason);
   if (!raidReady(atk)) return { ok: false, error: "not_eligible", reason: "fresh_attacker", needEarned: R.MIN_EARNED, earned: Math.max(0, atk.lifetimeWatts | 0) };
+  if (boughtShieldUp(atk, now)) return { ok: false, error: "shielded", until: atk.shield.until };
   if (raidsLeft(atk, now) <= 0) return { ok: false, error: "no_raids_left", resetMs: msToUtcMidnight(now) };
   const b = body && typeof body === "object" ? body : {};
   const defToken = tokenForPublicId(st, b.target);
   if (!defToken) return fail("bad_target");
   const def = st.players[defToken];
   if (def !== atk && !raidReady(def)) return { ok: false, error: "not_eligible", reason: "fresh_target", needEarned: R.MIN_EARNED };
+  if (def !== atk && shieldUp(def, now)) return { ok: false, error: "target_shielded", until: def.shield.until };
   const el = raidEligibility(atk, def, now);
   if (!el.ok) return fail(el.error);
   const multPct = parseMultPct(b.mult);
@@ -790,13 +978,19 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
   if (b.stake < min || b.stake > max) return { ok: false, error: "stake_out_of_range", min, max, limit };
   const stake = b.stake;
 
-  const r = resolveRaid(atk, def, stake, multPct, rng);
+  const lucky = boostActive(atk, "lucky_whisker", now);
+  const r = resolveRaid(atk, def, stake, multPct, rng, lucky ? BALANCE.BOOSTS.lucky_whisker.ODDS_PTS : 0);
+  if (lucky) { atk.effects.lucky_whisker = false; r.lucky = true; }
   if (r.win) {
     def.watts -= r.loot;
     atk.watts += r.loot;
+    def.shield = { until: now + BALANCE.SHIELD.BRUISE_MS, kind: "bruise" }; // a bruise: a few minutes of peace
   } else {
-    atk.watts -= stake;
-    st.burned = (Number.isFinite(st.burned) ? st.burned : 0) + stake;
+    const insured = boostActive(atk, "wager_insurance", now);
+    const refund = insured ? Math.floor((stake * BALANCE.BOOSTS.wager_insurance.REFUND_PCT) / 100) : 0;
+    if (insured) { atk.effects.wager_insurance = false; r.refund = refund; }
+    atk.watts -= stake - refund;
+    st.burned = (Number.isFinite(st.burned) ? st.burned : 0) + stake - refund;
   }
   atk.lastRaidAt = now;
   const day = utcDay(now);
@@ -806,7 +1000,7 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
   if (!Array.isArray(def.raidedBy)) def.raidedBy = [];
   def.raidedBy = def.raidedBy.filter((e) => e && now - e.at < R.REVENGE_WINDOW_MS);
   pushRing(def.raidedBy, { pid: atk.publicId, at: now, avenged: false }, R.RAIDED_BY_MAX);
-  const feed = { at: now, atk: displayName(atk), atkId: atk.publicId, def: displayName(def), defId: def.publicId, win: r.win, amount: r.win ? r.loot : stake, crit: r.win ? r.crit : false };
+  const feed = { at: now, atk: displayName(atk), atkId: atk.publicId, def: displayName(def), defId: def.publicId, win: r.win, amount: r.win ? r.loot : stake - (r.refund || 0), crit: r.win ? r.crit : false }; // a loss: what actually burned
   if (!Array.isArray(st.raidFeed)) st.raidFeed = [];
   pushRing(st.raidFeed, feed, R.FEED_MAX);
   invalidateLeaderboard(st);
@@ -821,7 +1015,8 @@ function leaderboardRows(st, now) {
   if (c && now >= c.at && now - c.at < R.LEADERBOARD_CACHE_MS) return c;
   const all = Object.values(st.players).filter((p) => p && p.publicId);
   all.sort((a, b) => b.watts - a.watts || b.lifetimeWatts - a.lifetimeWatts || (a.publicId < b.publicId ? -1 : a.publicId > b.publicId ? 1 : 0));
-  const rows = all.slice(0, R.LEADERBOARD_MAX).map((p, i) => ({ rank: i + 1, publicId: p.publicId, nick: p.nick, name: displayName(p), verified: !!p.wallet, watts: p.watts, lifetimeWatts: p.lifetimeWatts, roomTier: p.roomTier | 0, fresh: !raidReady(p) }));
+  const rows = all.slice(0, R.LEADERBOARD_MAX).map((p, i) => ({ rank: i + 1, publicId: p.publicId, nick: p.nick, name: displayName(p), verified: !!p.wallet, watts: p.watts, lifetimeWatts: p.lifetimeWatts, roomTier: p.roomTier | 0, fresh: !raidReady(p),
+    shieldUntil: p.shield && p.shield.until > now ? p.shield.until : 0 }));
   const out = { at: now, rows, total: all.length };
   LB_CACHE.set(st, out);
   return out;
@@ -829,11 +1024,12 @@ function leaderboardRows(st, now) {
 function leaderboard(st, token, now = Date.now(), { chainReadAt = null } = {}) {
   const viewer = getPlayer(st, token);
   const c = leaderboardRows(st, now);
-  const rows = c.rows.map((r) => {
+  const rows = c.rows.map(({ shieldUntil, ...r }) => {
     const you = !!viewer && r.publicId === viewer.publicId;
+    const shielded = shieldUntil > now; // cached rows hold the expiry, so a shield ends on time
     const revenge = !!viewer && !you && pendingRevenge(viewer, r.publicId, now) != null;
-    const raidable = !!viewer && !you && raidReady(viewer) && !r.fresh && (r.watts * 100 >= viewer.watts * BALANCE.RAID.ELIGIBLE_MIN_PCT || revenge);
-    return { ...r, raidable, revenge, you };
+    const raidable = !!viewer && !you && raidReady(viewer) && !boughtShieldUp(viewer, now) && !r.fresh && !shielded && (r.watts * 100 >= viewer.watts * BALANCE.RAID.ELIGIBLE_MIN_PCT || revenge);
+    return { ...r, shielded, raidable, revenge, you };
   });
   return { rows, total: c.total, cachedAt: c.at, raid: viewer ? raidStatus(st, viewer, now, chainReadAt) : null };
 }
@@ -852,6 +1048,7 @@ let state = {
   born: null,
   certSerial: 0,
   burned: 0, // watts destroyed by lost raid stakes (supply accounting)
+  lastGolden: null, // newest golden block {height, at}
   raidFeed: [], // last BALANCE.RAID.FEED_MAX raids, oldest first
   players: {},
 };
@@ -1469,6 +1666,11 @@ function publicPlayer(p, now = Date.now()) {
     wallet: p.wallet || null,
     username: p.username || null,
     verified: !!p.wallet,
+    items: p.items,
+    effects: p.effects, // timed: expiry ms (server clock); next-raid: true while armed
+    shield: { until: shieldUp(p, now) ? p.shield.until : 0, kind: shieldUp(p, now) ? p.shield.kind : null, usedToday: shieldUsedToday(p, now), price: shieldPrice(p) },
+    crates: (p.crates || []).map(({ id, at, i, j }) => ({ id, at, i, j })), // never the contents
+    cratesToday: p.crateDay === utcDay(now) ? p.cratesToday | 0 : 0,
   };
 }
 let playerCount = 0;
@@ -1506,6 +1708,7 @@ function snapshot(token, ip = null) {
     hamster: state.hamster,
     idle: asleep(state, now, readAt), // asleep (live reading, else the chain): bed income flows, raids are closed
     speedPct: currentSpeedPct(now), // speed bonus on wheel income (100 = none), from the chain's cadence
+    golden: state.lastGolden || null, // newest golden block {height, at}: 10x wheel watts for everyone watching
     raid: viewer ? raidStatus(state, viewer, now, readAt) : null, // this viewer's raid window + cooldown
     raidFeed: (Array.isArray(state.raidFeed) ? state.raidFeed : []).slice(-BALANCE.RAID.FEED_SNAPSHOT), // oldest first
     burned: state.burned || 0,
@@ -1612,6 +1815,24 @@ const POST_ROUTES = {
     }
     return okMe(p, { result: r.result, feed: r.feed });
   },
+  // {kind: double_wheel|deep_sleep|lucky_whisker|wager_insurance, from: "item"|"watts"}
+  "/api/boost": (b, p, token) => {
+    const r = useBoost(state, token, b);
+    if (!r.ok) { const { ok, error, ...extra } = r; return err(SHOP_ERR_STATUS[error] || 400, error, extra); }
+    return okMe(p, { kind: r.kind });
+  },
+  // {from: "token"|"watts"}: three hours of raid immunity, once a UTC day
+  "/api/shield": (b, p, token) => {
+    const r = raiseShield(state, token, b);
+    if (!r.ok) { const { ok, error, ...extra } = r; return err(SHOP_ERR_STATUS[error] || 400, error, extra); }
+    return okMe(p, { shield: r.shield });
+  },
+  // {id}: open a lucky crate
+  "/api/crate": (b, p, token) => {
+    const r = openCrate(state, token, b);
+    if (!r.ok) return err(SHOP_ERR_STATUS[r.error] || 400, r.error);
+    return okMe(p, { got: r.got });
+  },
   // Wallet sign-in: nonce -> personal_sign in the wallet -> verify {address, signature} -> username.
   "/api/wallet/nonce": (b, p, token) => {
     const r = issueWalletNonce(state, token);
@@ -1631,7 +1852,8 @@ POST_ROUTES["/api/username"] = POST_ROUTES["/api/wallet/username"] = (b, p, toke
   if (!r.ok) return err(WALLET_ERR_STATUS[r.error] || 400, r.error);
   return okMe(p, { username: r.username });
 };
-const RAID_ERR_STATUS = { hamster_asleep: 409, chain_unknown: 409, chain_stale: 409, no_raids_left: 429, bad_target: 404, unknown_player: 404, not_eligible: 403, self_target: 400 };
+const RAID_ERR_STATUS = { hamster_asleep: 409, chain_unknown: 409, chain_stale: 409, no_raids_left: 429, bad_target: 404, unknown_player: 404, not_eligible: 403, self_target: 400, shielded: 409, target_shielded: 409 };
+const SHOP_ERR_STATUS = { unknown_player: 404, boost_active: 409, shield_active: 409, shield_used_today: 429, unknown_crate: 404 };
 const WALLET_ERR_STATUS = { unknown_player: 404, no_nonce: 409, nonce_expired: 410, wallet_taken: 409, username_taken: 409 };
 const DEV_ROUTES = {
   "/api/dev/advance": (b) => {
@@ -1741,7 +1963,9 @@ Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, apply
   WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername,
   REPLAY_NIGHT, REPLAY_NONSTOP_NIGHT, REPLAY_API_SINK, REPLAY_MIN_SLEEP_MS, replaySchedule, replayLocate, replayCumulativeBlocks, cumulativeBlocks: replayCumulativeBlocks,
   replayReading, replayTick, leaveReplay, advanceTo,
-  wattsFor, speedPctFrom, speedOpts, replayRunMeanBpm, recordSpeedSample });
+  wattsFor, speedPctFrom, speedOpts, replayRunMeanBpm, recordSpeedSample,
+  BOOST_KINDS, ITEM_KINDS, boostActive, useBoost, raiseShield, shieldUp, boughtShieldUp, shieldPrice, isGoldenBlock, goldenBetween,
+  rollCrateContents, rollCrates, crateTile, openCrate });
 
 if (require.main === module) {
   if (DEMO && REPLAY_REQUESTED) {
