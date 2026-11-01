@@ -1807,7 +1807,8 @@ function staticFile(full) {
   let f = STATIC_CACHE.get(full);
   if (!f) {
     const data = fs.readFileSync(full);
-    f = { data, gz: zlib.gzipSync(data, { level: 9 }), etag: `"${sha256(data).slice(0, 16)}"`, type: MIME[path.extname(full)] || "application/octet-stream" };
+    const media = (MIME[path.extname(full)] || "").startsWith("audio/"); // already compressed: never gzipped
+    f = { data, gz: media ? null : zlib.gzipSync(data, { level: 9 }), media, etag: `"${sha256(data).slice(0, 16)}"`, type: MIME[path.extname(full)] || "application/octet-stream" };
     STATIC_CACHE.set(full, f);
   }
   return f;
@@ -1823,6 +1824,18 @@ function serveStatic(req, res, full) {
   if (req.headers["if-none-match"] === f.etag) {
     res.writeHead(304, headers);
     return res.end();
+  }
+  if (f.media) { // audio streams: byte ranges, so a player can seek and loop
+    headers["accept-ranges"] = "bytes";
+    const m = /^bytes=([0-9]*)-([0-9]*)$/.exec(req.headers.range || ""), size = f.data.length;
+    if (m && (m[1] || m[2])) {
+      const a = m[1] ? Number(m[1]) : Math.max(0, size - Number(m[2])), b = m[1] && m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+      if (a >= size || a > b) { res.writeHead(416, { ...headers, "content-range": `bytes */${size}` }); return res.end(); }
+      res.writeHead(206, { ...headers, "content-range": `bytes ${a}-${b}/${size}`, "content-length": b - a + 1 });
+      return res.end(f.data.subarray(a, b + 1));
+    }
+    res.writeHead(200, { ...headers, "content-length": size });
+    return res.end(f.data);
   }
   const gz = acceptsGzip(req) && f.gz.length < f.data.length;
   if (gz) headers["content-encoding"] = "gzip";
@@ -2127,7 +2140,7 @@ const DEV_ROUTES = {
   },
 };
 
-const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".json": "application/json" };
+const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".json": "application/json", ".ogg": "audio/ogg" };
 
 async function handle(req, res) {
   const url = new URL(req.url, "http://x");

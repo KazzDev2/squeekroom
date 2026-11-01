@@ -118,6 +118,10 @@ All numbers live in `BALANCE.BOOSTS`, `SHIELD`, `CRATES` and `GOLDEN` and reach 
 - The wheel covers 3 floor tiles and the bed 2, along their facing (`fixtureTiles`); old saves are repaired on load (`repairFixtures`), furniture never moves.
 - `public/guide.html` explains the game in a few short sections; every number on it comes from `/api/config`.
 
+## Sound
+
+`public/sound.js`: effects are synthesized live with WebAudio; the music is two CC0 (public domain) tracks by Zane Little Music from OpenGameArt, in `public/music/`: "Apple Cider" in the den and "Pixel Sprinter" (loop) in Burrow Drop. Sound starts on the first click; the speaker button cycles music + effects, effects only, off. Browsers without Ogg Vorbis get effects only.
+
 ## Ideas for v3
 
 - WalletConnect QR (mobile wallets) via a Reown projectId.
