@@ -118,6 +118,14 @@ h1 .logo{width:40px;height:40px;image-rendering:pixelated;flex:none}
 .chip2 .n{position:absolute;right:-4px;top:-5px;background:var(--ink);color:var(--bg);font-size:10px;line-height:1;padding:2px 4px;border-radius:8px;font-weight:600}
 /* shop */
 .shophead{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.dropcard{display:flex;align-items:center;gap:10px;padding:8px 10px;text-decoration:none;color:#fff8d0;background:#4a2410;border:2px solid #1d1a14;box-shadow:inset -2px -2px 0 #2a1408,inset 2px 2px 0 #8a4b26,2px 2px 0 #1d1a14;flex-shrink:0}
+.dropcard:hover{background:#5a2d14}
+.dropcard:active{transform:translate(1px,1px);box-shadow:inset -2px -2px 0 #2a1408,inset 2px 2px 0 #8a4b26,1px 1px 0 #1d1a14}
+.dropcard canvas{width:48px;height:48px;image-rendering:pixelated;border:2px solid #1d1a14;background:#3d1e0d;flex-shrink:0}
+.dctext{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
+.dctext b{font-family:var(--display);font-size:13px;letter-spacing:.4px}
+.dctext small{font-family:var(--display);font-size:10px;color:#ffd166;letter-spacing:.2px}
+.dcgo{font-size:14px;color:#ffd166}
 .wallet{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
 .tabs{display:flex;flex-wrap:wrap;gap:4px}
 .tabs button{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:5px 8px;font-size:12px;cursor:pointer;white-space:nowrap}
@@ -493,7 +501,6 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
   <div class="stat fxstat" id="fxStat" hidden><span class="lbl">Boosts</span><span class="sub fxline" id="fxLine">&nbsp;</span></div>
   <button type="button" class="helpbtn" id="helpBtn" aria-haspopup="dialog" aria-controls="tut">How to play</button>
   <a class="helpbtn" id="guideLink" href="guide.html" target="_blank" rel="noopener">Guide</a>
-  <a class="helpbtn" id="dropLink" href="drop.html">Burrow Drop</a>
   <button type="button" class="helpbtn sndbtn" id="soundBtn"></button>
   <button type="button" class="raidchip locked" id="raidChip" hidden aria-haspopup="dialog" aria-controls="lb">raids…</button>
   <button type="button" class="walletbtn" id="walletBtn" hidden aria-haspopup="dialog" aria-controls="walletModal">Connect Wallet</button>
@@ -545,6 +552,11 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
   </div>
 
   <aside class="panel" id="shop">
+    <a class="dropcard" id="dropCard" href="drop.html">
+      <canvas id="dropIcon" width="32" height="32" aria-hidden="true"></canvas>
+      <span class="dctext"><b>BURROW DROP</b><small id="dropPot">&nbsp;</small></span>
+      <span class="dcgo" aria-hidden="true">▶</span>
+    </a>
     <div class="shophead"><h2>SHOP</h2><span class="wallet" id="wallet"></span></div>
     <div class="tabs" id="tabs" role="tablist" aria-label="Shop categories"></div>
     <div class="cards" id="cards"></div>
