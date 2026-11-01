@@ -435,9 +435,14 @@ const S = {
 const params = new URLSearchParams(location.search);
 const UTC_OVERRIDE = params.has("utc") ? Number(params.get("utc")) : null; // ?utc=22 previews the tint at that hour
 
-// The reading that drives the room: browser-fetched live status first, the server's copy as
-// fallback. Demo mode uses the server's fake hamster only.
-function reading() { return (!S.demo && S.live) || S.hamster || null; }
+// The reading that drives the room: the server's copy (it polls the status API once for everyone).
+// The browser fetches the API itself only while that copy is missing or over a minute old.
+// Demo and replay use the server's hamster only.
+function serverReadingFresh() {
+  const h = S.hamster;
+  return !!h && !!h.updatedAt && Date.now() + S.skew - Date.parse(h.updatedAt) <= 60_000;
+}
+function reading() { return S.demo || S.replay || serverReadingFresh() ? S.hamster || null : S.live || S.hamster || null; }
 function liveStatus() {
   const h = reading();
   if (!h) return { key: S.offline ? "offline" : S.loaded ? "none" : "connecting", active: false, speed: 0, rpm: 0, h: null };
@@ -539,6 +544,7 @@ function applyMe(me, first = false, opts = {}) {
 // where a hosting provider's IP may not, so this is the primary source outside demo mode.
 async function liveFetch() {
   if (!S.loaded || S.demo || S.replay) return; // demo and replay use the server's own reading
+  if (serverReadingFresh()) { S.live = null; return; } // fallback only: the server's copy is current
   try {
     const r = await fetch(`${S.api}/status`, { headers: { accept: "application/json" } });
     if (!r.ok) throw 0;
@@ -587,7 +593,7 @@ function renderHud() {
   const h = st.h;
   $("status").textContent = { active: "ACTIVE", stale: "STALE", offline: "offline", connecting: "connecting…", none: "no reading" }[st.key]
     || (h && h.coreStatus && h.coreStatus !== "IDLE" && h.coreStatus !== "UNKNOWN" ? h.coreStatus.replace(/_/g, " ") : "IDLE");
-  $("source").textContent = st.key === "offline" ? "server unreachable" : !h ? " " : S.demo ? "demo hamster" : h.source === "live" ? "live from api.squeekchain.com" : S.nonstop ? "simulated · always running" : "via game server";
+  $("source").textContent = st.key === "offline" ? "server unreachable" : !h ? " " : S.demo ? "demo hamster" : !S.replay ? "live from api.squeekchain.com" : S.nonstop ? "simulated · always running" : "via game server";
   $("speed").textContent = st.active && st.speed > 0 ? `${(st.speed / 1000).toFixed(2)} m/s` : "—";
   $("block").textContent = S.height != null ? S.height.toLocaleString("en-US") : "—";
   if (S.chain && typeof S.chain.blockProgress === "number") $("prog").style.width = clamp((S.chain.blockProgress / 1e9) * 100, 0, 100).toFixed(1) + "%";

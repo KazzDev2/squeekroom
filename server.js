@@ -41,7 +41,8 @@ const STATE_SELECTOR = "0xc19d93fb"; // state()
 const DATA_FILE = path.join(process.env.DATA_DIR || path.join(__dirname, "data"), "state.json");
 const PUBLIC = path.join(__dirname, "public");
 const POLL_MS = 10_000;
-const SAVE_DEBOUNCE_MS = 1000;
+const SAVE_DEBOUNCE_MS = 10_000; // a crash (not a deploy: SIGTERM saves first) loses at most this much
+const SAVE_CHUNK = 1000; // players serialized per event-loop turn by the regular save
 const MAX_PLAYERS = 50_000;
 const DEMO_BASE_HEIGHT = 4135; // used when demo mode has no chain reading yet
 const DEMO_MAX_ADVANCE = 2000;
@@ -886,23 +887,52 @@ function load() {
 }
 // Coalesced, atomic save: at most one write per SAVE_DEBOUNCE_MS (a steady stream of changes
 // cannot starve it), written to a tmp file then renamed over state.json.
+// The regular save serializes SAVE_CHUNK players per event-loop turn, so a big state never freezes
+// the server (50k dens = ~68 MB of JSON). A raid landing between two chunks can leave that one file
+// a raid out of step; the next save fixes it, and shutdown (writeNow) is always one consistent write.
 let saveTimer = null;
+let saving = false; // a chunked save is in flight
+let saveAgain = false; // something changed while it ran
+let writeGen = 0; // bumped by writeNow: an older chunked save must not rename over it
 function writeNow() {
   clearTimeout(saveTimer);
   saveTimer = null;
+  writeGen++;
   fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
   const tmp = DATA_FILE + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(state));
   fs.renameSync(tmp, DATA_FILE);
 }
+async function writeChunked() {
+  const gen = writeGen;
+  const st = state;
+  const { players, ...rest } = st;
+  const parts = [];
+  const tokens = Object.keys(players);
+  for (let i = 0; i < tokens.length; i += SAVE_CHUNK) {
+    if (i) await new Promise((r) => setImmediate(r));
+    for (const t of tokens.slice(i, i + SAVE_CHUNK)) if (st.players[t] !== undefined) parts.push(`${JSON.stringify(t)}:${JSON.stringify(st.players[t])}`);
+  }
+  const head = JSON.stringify(rest);
+  const text = `${head.slice(0, -1)}${head.length > 2 ? "," : ""}"players":{${parts.join(",")}}}`;
+  await fs.promises.mkdir(path.dirname(DATA_FILE), { recursive: true });
+  const tmp = DATA_FILE + ".chunked.tmp";
+  await fs.promises.writeFile(tmp, text);
+  if (gen === writeGen) await fs.promises.rename(tmp, DATA_FILE);
+}
 function save() {
+  if (saving) { saveAgain = true; return; }
   if (saveTimer) return;
-  saveTimer = setTimeout(() => {
+  saveTimer = setTimeout(async () => {
+    saveTimer = null;
+    saving = true;
     try {
-      writeNow();
+      await writeChunked();
     } catch (e) {
       console.error("save failed:", e.message || e);
     }
+    saving = false;
+    if (saveAgain) { saveAgain = false; save(); }
   }, SAVE_DEBOUNCE_MS);
 }
 
