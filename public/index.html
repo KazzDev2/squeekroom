@@ -65,14 +65,8 @@ h1 .logo{width:40px;height:40px;image-rendering:pixelated;flex:none}
 .demobar button{background:var(--chain);color:#fff;border:0;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:12px}
 .demobar button:disabled{opacity:.5;cursor:default}
 .hint{font-size:11px;color:var(--muted)}
-.main{flex:1;display:grid;grid-template-columns:auto 1fr 320px;min-height:0}
+.main{flex:1;display:grid;grid-template-columns:1fr 320px;min-height:0}
 @media (max-width:860px){body{height:auto}.main{grid-template-columns:1fr;flex:none}}
-.rail{display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px 8px;border-right:1px solid var(--line);background:var(--panel)}
-.railbtn{display:block;width:48px;height:48px;border:2px solid #1d1a14;background:#3d1e0d;box-shadow:2px 2px 0 #1d1a14;transition:transform .08s}
-.railbtn canvas{display:block;width:44px;height:44px;image-rendering:pixelated}
-.railbtn:hover{transform:translate(-1px,-1px);box-shadow:3px 3px 0 #1d1a14}
-.railbtn:active{transform:translate(1px,1px);box-shadow:1px 1px 0 #1d1a14}
-@media (max-width:860px){.rail{flex-direction:row;padding:8px max(16px,env(safe-area-inset-left,0px));border-right:0;border-bottom:1px solid var(--line)}}
 .main>*{min-width:0}
 .stage{position:relative;min-height:380px;background:var(--stage);overflow:hidden;user-select:none}
 .stage canvas{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:block;image-rendering:pixelated;image-rendering:crisp-edges;box-shadow:0 0 0 1px var(--line),0 12px 32px rgba(0,0,0,.35)}
@@ -375,7 +369,14 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
 .racts2{display:flex;gap:8px;justify-content:center;margin-top:8px}
 /* raid feed: overlays the stage's dark corner on desktop, a collapsible bar under the room on phones */
 .roomcol{position:relative}
-.feed{position:absolute;left:10px;top:10px;z-index:4;width:min(280px,calc(100% - 20px));background:rgba(17,19,25,.86);color:var(--dk-ink);border:1px solid var(--dk-line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.35);font-size:11px;overflow:hidden}
+.tlcol{position:absolute;left:10px;top:10px;z-index:4;width:min(280px,calc(100% - 20px));display:flex;flex-direction:column;align-items:flex-start;gap:6px;pointer-events:none}
+.tlcol>*{pointer-events:auto}
+.droplogo{display:block;width:64px;height:64px;filter:drop-shadow(0 3px 0 rgba(0,0,0,.35));transition:transform .1s}
+.droplogo canvas{display:block;width:64px;height:64px;image-rendering:pixelated}
+.droplogo:hover{transform:translateY(-2px) scale(1.06)}
+.droplogo:active{transform:scale(.96)}
+.droplogo:focus-visible{outline:2px solid var(--squeek);outline-offset:2px}
+.feed{position:relative;width:100%;background:rgba(17,19,25,.86);color:var(--dk-ink);border:1px solid var(--dk-line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.35);font-size:11px;overflow:hidden}
 .feed[hidden]{display:none}
 .feedhead{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:6px;width:100%;padding:6px 9px;cursor:pointer;font-family:var(--display);font-size:10px;letter-spacing:.3px;color:var(--dk-ink)}
 .feedhead .n{font-family:var(--mono);color:var(--dk-mute);font-size:10px}
@@ -401,7 +402,9 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
 @keyframes hitflash{0%,40%{border-color:var(--raid);box-shadow:0 0 0 3px var(--raid),0 0 30px color-mix(in srgb,var(--raid) 60%,transparent)}}
 .stage.hit{animation:shake .45s}
 @media (max-width:860px){
-  .feed{position:static;width:auto;border-radius:0;border-left:0;border-right:0;box-shadow:none;background:var(--dk-in)}
+  .tlcol{position:static;width:auto;gap:0;pointer-events:auto}
+  .feed{position:static;width:100%;border-radius:0;border-left:0;border-right:0;box-shadow:none;background:var(--dk-in)}
+  .droplogo{margin:8px 0 4px max(16px,env(safe-area-inset-left,0px))}
   .feedlist{max-height:180px}
   .lb{width:100vw;border-left:0}
   .mult .mx{font-size:12px}
@@ -515,9 +518,6 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
 </div>
 
 <main class="main">
-  <nav class="rail" aria-label="Games">
-    <a class="railbtn" id="dropGame" href="drop.html" title="Burrow Drop" aria-label="Burrow Drop"><canvas id="dropIcon" width="32" height="32" aria-hidden="true"></canvas></a>
-  </nav>
   <div class="roomcol">
     <section class="stage" id="stage">
       <div class="visitbar" id="visitBar" hidden><span class="vname" id="visitName"></span><button type="button" class="pxbtn" id="visitRaid" hidden>Raid</button><button type="button" class="pxbtn alt" id="visitHome">Back home</button></div>
@@ -537,10 +537,13 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
       </div>
       <div class="note" id="note"></div>
     </section>
+    <div class="tlcol">
     <section class="feed" id="feed" hidden aria-label="Raid feed">
       <button type="button" class="feedhead" id="feedHead" aria-expanded="true" aria-controls="feedList">RAIDS <span class="n" id="feedCount"></span><span class="car" id="feedCar">▾</span></button>
       <ol class="feedlist" id="feedList" aria-live="polite"></ol>
     </section>
+    <a class="droplogo" id="dropGame" href="drop.html" title="Burrow Drop" aria-label="Burrow Drop"><canvas id="dropIcon" width="32" height="32" aria-hidden="true"></canvas></a>
+    </div>
     <div class="invbar" id="invbar">
       <div class="invhead" id="invHead"><b>YOUR THINGS</b></div>
       <div class="placing" id="placing" hidden>
