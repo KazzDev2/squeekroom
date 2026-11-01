@@ -8,7 +8,8 @@
 // Boosts (POST /api/boost), the Raid Shield (POST /api/shield) and lucky crates (POST /api/crate): single-use
 // consumables bought with watts (burned) or found in crates that drop, on settled blocks, for dens that are
 // watching. About 1 settled block in 150 is golden: it pays 10x wheel watts to every den watching.
-// Usernames (POST /api/username): every den picks a unique one when it starts; it's the name others see.
+// Usernames (POST /api/username): a den only exists once it has one. The onboarding name step creates it;
+// until then the page shows a preview that earns nothing. The username is the name others see.
 // Optional wallet sign-in (POST /api/wallet/{nonce,verify}): a gasless personal_sign proof binds an EVM
 // address, which adds a verified badge next to the username.
 // Zero dependencies. Node 18+ (uses global fetch).
@@ -475,19 +476,64 @@ function verifyWallet(st, token, body, now = Date.now()) {
   invalidateLeaderboard(st);
   return { ok: true, wallet: address };
 }
-// body {username}: 3-16 of [A-Za-z0-9_], unique case-insensitively; may change. No wallet needed.
+// What's wrong with username `u` for den `p` (null: a den not created yet), or null if it's fine:
+// 3-16 of [A-Za-z0-9_], unique case-insensitively.
+function usernameProblem(st, p, u) {
+  if (typeof u !== "string" || !WALLET.USERNAME_RE.test(u)) return "bad_username";
+  const key = u.toLowerCase();
+  for (const q of Object.values(st.players)) {
+    if (q && q !== p && typeof q.username === "string" && q.username.toLowerCase() === key) return "username_taken";
+  }
+  return null;
+}
+// body {username}: set or change an existing den's username. No wallet needed.
 function setUsername(st, token, body) {
   const p = getPlayer(st, token);
   if (!p) return fail("unknown_player");
   const u = body && typeof body === "object" ? body.username : undefined;
-  if (typeof u !== "string" || !WALLET.USERNAME_RE.test(u)) return fail("bad_username");
-  const key = u.toLowerCase();
-  for (const q of Object.values(st.players)) {
-    if (q && q !== p && typeof q.username === "string" && q.username.toLowerCase() === key) return fail("username_taken");
-  }
+  const bad = usernameProblem(st, p, u);
+  if (bad) return fail(bad);
   p.username = u;
   invalidateLeaderboard(st);
   return { ok: true, username: u };
+}
+// A den is created only here, with its username (the onboarding name step). Order: name valid -> name
+// free -> room on the server -> the new-den rate limit -> create. A refused name never leaves a den behind.
+// count: dens on the server (the live server passes its running count).
+function createDen(st, token, body, now = Date.now(), { ip = null, count = Object.keys(st.players).length } = {}) {
+  if (typeof token !== "string" || !TOKEN_RE.test(token)) return fail("bad_token");
+  if (getPlayer(st, token)) return fail("den_exists");
+  const u = body && typeof body === "object" ? body.username : undefined;
+  const bad = usernameProblem(st, null, u);
+  if (bad) return fail(bad);
+  if (count >= MAX_PLAYERS) return fail("server_full");
+  if (!allowNewDen(ip, now)) return fail("too_many_dens");
+  const p = (st.players[token] = newPlayer(st.height, now, token));
+  indexPlayer(st, token, p);
+  p.username = u;
+  p.lastSeen = now;
+  invalidateLeaderboard(st);
+  return { ok: true, player: p, username: u };
+}
+// One-time cleanup (v4): delete every den that never picked a username (they were created on page load,
+// before onboarding, and kept earning while idle). Returns the removed dens by token. Also drops them
+// from the raid feed and from every revenge list, and resets the publicId index. Pure on `st`.
+function purgeNameless(st) {
+  const removed = {};
+  for (const [token, p] of Object.entries(st.players || {})) {
+    if (!p || typeof p !== "object" || typeof p.username !== "string" || !p.username) {
+      removed[token] = p;
+      delete st.players[token];
+    }
+  }
+  const gone = new Set(Object.values(removed).map((p) => p && p.publicId).filter(Boolean));
+  if (gone.size) {
+    for (const p of Object.values(st.players)) if (Array.isArray(p.raidedBy)) p.raidedBy = p.raidedBy.filter((e) => e && !gone.has(e.pid));
+    if (Array.isArray(st.raidFeed)) st.raidFeed = st.raidFeed.filter((e) => e && !gone.has(e.atkId) && !gone.has(e.defId));
+  }
+  PID_INDEX.delete(st);
+  invalidateLeaderboard(st);
+  return removed;
 }
 
 // ---------- economy (pure-ish: explicit args, no globals) ----------
@@ -1147,7 +1193,28 @@ function load() {
   const fresh = state.resetId !== STATE_RESET;
   state.resetId = STATE_RESET;
   patchState(state);
-  if (fresh) writeNow(); // persist the wipe at once, so a crash before the first save can't bring the old rooms back
+  const purged = runMigrations(state);
+  if (fresh || purged) writeNow(); // persist a wipe or a purge at once, so a crash can't bring the old dens back
+}
+// One-time migrations, each gated by a flag in state.migrations. Returns true when something changed.
+// anonPurge1 (v4): dens without a username are deleted; they're kept in state.anon-purge.bak.json.
+function runMigrations(st, now = Date.now(), { backupFile = DATA_FILE.replace(/\.json$/, ".anon-purge.bak.json"), log = console.log } = {}) {
+  if (!st.migrations || typeof st.migrations !== "object") st.migrations = {};
+  if (st.migrations.anonPurge1) return false;
+  const removed = purgeNameless(st);
+  const list = Object.values(removed).filter(Boolean);
+  if (list.length && backupFile) {
+    try {
+      fs.mkdirSync(path.dirname(backupFile), { recursive: true });
+      fs.writeFileSync(backupFile, JSON.stringify({ at: new Date(now).toISOString(), players: removed }));
+    } catch (e) {
+      console.error("anon purge: backup failed:", e.message || e);
+    }
+  }
+  st.migrations.anonPurge1 = new Date(now).toISOString();
+  const spent = list.filter((p) => Number.isFinite(p.watts) && Number.isFinite(p.lifetimeWatts) && p.watts < p.lifetimeWatts + BALANCE.WELCOME_WATTS).length;
+  log(`anon purge: ${list.length} nameless dens deleted (${spent} had spent watts, ${list.filter((p) => p.wallet).length} had a wallet, ${list.filter((p) => p.nick && p.nick !== "anon").length} had a nick); backup: ${list.length ? backupFile : "none"}`);
+  return true;
 }
 // Coalesced, atomic save: at most one write per SAVE_DEBOUNCE_MS (a steady stream of changes
 // cannot starve it), written to a tmp file then renamed over state.json.
@@ -1745,22 +1812,14 @@ function snapshot(token, ip = null) {
   const now = Date.now();
   let me = null;
   let meError = null;
+  let needsName = false; // a fresh token: no den until the name step (POST /api/username) creates one
   if (typeof token === "string" && TOKEN_RE.test(token)) {
-    let p = getPlayer(state, token);
-    if (!p) {
-      if (playerCount >= MAX_PLAYERS) meError = "server_full";
-      else if (!allowNewDen(ip, now)) meError = "too_many_dens";
-      else {
-        p = state.players[token] = newPlayer(state.height, now, token);
-        indexPlayer(state, token, p);
-        playerCount++;
-      }
-    }
+    const p = getPlayer(state, token);
     if (p) {
       p.lastSeen = now;
       me = publicPlayer(p, now);
       save();
-    }
+    } else needsName = true;
   } else if (token) meError = "bad_token";
   const readAt = chainReadAt();
   const viewer = me ? getPlayer(state, token) : null;
@@ -1786,6 +1845,7 @@ function snapshot(token, ip = null) {
     serverTime: now,
     me,
     meError,
+    needsName,
   };
 }
 // Static rules and catalog: fetched once per page load (GET /api/config), never polled.
@@ -1914,6 +1974,7 @@ const POST_ROUTES = {
 };
 // {username}: set or change the den's username (the onboarding step and the side panel; the wallet
 // panel still uses its old path)
+const USERNAME_PATHS = new Set(["/api/username", "/api/wallet/username"]);
 POST_ROUTES["/api/username"] = POST_ROUTES["/api/wallet/username"] = (b, p, token) => {
   const r = setUsername(state, token, b);
   if (!r.ok) return err(WALLET_ERR_STATUS[r.error] || 400, r.error);
@@ -1921,7 +1982,7 @@ POST_ROUTES["/api/username"] = POST_ROUTES["/api/wallet/username"] = (b, p, toke
 };
 const RAID_ERR_STATUS = { hamster_asleep: 409, chain_unknown: 409, chain_stale: 409, no_raids_left: 429, bad_target: 404, unknown_player: 404, not_eligible: 403, self_target: 400, shielded: 409, target_shielded: 409 };
 const SHOP_ERR_STATUS = { unknown_player: 404, not_for_sale: 403, boost_active: 409, shield_active: 409, shield_used_today: 429, unknown_crate: 404 };
-const WALLET_ERR_STATUS = { unknown_player: 404, no_nonce: 409, nonce_expired: 410, wallet_taken: 409, username_taken: 409 };
+const WALLET_ERR_STATUS = { unknown_player: 404, no_nonce: 409, nonce_expired: 410, wallet_taken: 409, username_taken: 409, server_full: 503, too_many_dens: 429, den_exists: 409 };
 const DEV_ROUTES = {
   "/api/dev/advance": (b) => {
     const n = b.n == null ? 1 : b.n;
@@ -1985,8 +2046,13 @@ async function handle(req, res) {
         const token = clean(b.token, 64);
         if (!TOKEN_RE.test(token)) return json(res, 400, { error: "bad_token" });
         const p = getPlayer(state, token);
-        if (!p) return json(res, 404, { error: "unknown_player" });
-        out = route(b, p, token);
+        if (!p && USERNAME_PATHS.has(url.pathname)) { // the name step creates the den
+          const r = createDen(state, token, b, Date.now(), { ip: clientIp(req), count: playerCount });
+          if (!r.ok) return json(res, WALLET_ERR_STATUS[r.error] || 400, { error: r.error });
+          playerCount++;
+          out = okMe(r.player, { username: r.username, created: true });
+        } else if (!p) return json(res, 404, { error: "unknown_player" });
+        else out = route(b, p, token);
       }
       save();
       return json(res, out[0], out[1]);
@@ -2032,7 +2098,7 @@ Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, apply
   accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
   raidChance, resolveRaid, raidOdds, raidReady, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS,
-  WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername,
+  WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername, usernameProblem, createDen, purgeNameless, runMigrations,
   REPLAY_NIGHT, REPLAY_NONSTOP_NIGHT, REPLAY_API_SINK, REPLAY_MIN_SLEEP_MS, replaySchedule, replayLocate, replayCumulativeBlocks, cumulativeBlocks: replayCumulativeBlocks,
   replayReading, replayTick, leaveReplay, advanceTo,
   wattsFor, speedPctFrom, speedOpts, replayRunMeanBpm, recordSpeedSample,

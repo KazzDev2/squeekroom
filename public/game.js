@@ -516,6 +516,7 @@ function applyState(j) {
   S.speedPct = typeof j.speedPct === "number" ? j.speedPct : 100; // speed bonus on wheel income (100 = none)
   if (typeof j.serverTime === "number") S.skew = j.serverTime - Date.now();
   if (j.me) { applyMe(j.me, first, { at: j.serverTime, soft: S.idle }); if (!first) noteTrickle(); }
+  else if (j.needsName) { if (!S.me) applyMe(previewDen(), true); } // no den yet: a preview until the name step
   else if (j.meError) toast(j.meError === "server_full" ? "The server is full." : j.meError === "too_many_dens" ? "Too many new dens from your network. Try again in an hour." : `Couldn't load your den (${j.meError}).`, "err");
   if (j.raid !== undefined) applyRaidStatus(j.raid);
   noteGolden(j.golden, first);
@@ -530,7 +531,10 @@ function applyState(j) {
 function applyMe(me, first = false, opts = {}) {
   if (!me) return;
   if (typeof opts.at === "number") { if (opts.at < S.meAt) return; S.meAt = opts.at; }
-  const prev = S.me;
+  const wasPreview = S.preview;
+  S.preview = !!me.preview;
+  if (wasPreview && !S.preview) first = true; // the real den just arrived: start the meters from it
+  const prev = wasPreview && !S.preview ? null : S.me;
   S.me = me;
   myFixtures = me.fixtures || null;
   placeFixtures();
@@ -541,6 +545,20 @@ function applyMe(me, first = false, opts = {}) {
   noteCrates(me, prev, first);
   meter.target = me.watts;
   afterMe();
+}
+// The den a new visitor sees before the name step: the starting den, drawn from config, earning nothing.
+// Nothing about it reaches the server; the name step (POST /api/username) creates the real one.
+function previewDen() {
+  const B = S.balance || {}, owned = {};
+  for (const it of S.catalog.values()) if (it.price === 0 && !it.crate) owned[it.id] = 1;
+  return {
+    preview: true, publicId: null, nick: "anon", username: null, createdAt: null, joinHeight: null,
+    watts: B.WELCOME_WATTS || 10_000, lifetimeWatts: 0, wheelTier: 0, multPct: 100, bedTier: 0, bedMultPct: 100, bedWattsPerMin: 0, roomTier: 0,
+    skin: "skin_classic", wallpaper: "wp_plain", floor: "fl_straw", owned, placed: [],
+    fixtures: JSON.parse(JSON.stringify(ROOM.FIXTURE_DEFAULTS || { wheel: { i: 1, j: 5, flip: true }, bed: { i: 7, j: 2, flip: false } })),
+    activeDays: 0, watching: false, bonusPct: 100, nextHeartbeatMs: 0, certEligible: false, commemorative: null, wallet: null, verified: false,
+    items: {}, effects: {}, shield: { until: 0, kind: null, usedToday: false, price: 500 }, crates: [], cratesToday: 0,
+  };
 }
 // Live wheel reading straight from the public API (CORS is open). Browsers pass its edge checks
 // where a hosting provider's IP may not, so this is the primary source outside demo mode.
@@ -565,7 +583,7 @@ async function post(path, body) {
 }
 // Heartbeat only while the page is visible: the bonus rewards watching, never running.
 async function beat() {
-  if (document.visibilityState !== "visible" || !S.me) return;
+  if (document.visibilityState !== "visible" || !S.me || S.preview) return;
   const r = await post("/api/heartbeat", {});
   if (r.ok) S.watching = !!r.j.watching;
   renderHud();
@@ -1563,7 +1581,7 @@ function revalidate() {
   P.valid = P.it.zone === "fixture" ? checkFixture(P.it.fixture, c.x, c.y) : checkSpot(P.it, c.x, c.y, P.mode === "move" ? P.pid : null, P.flip);
 }
 function hitTest(L) {
-  if (!S.me) return null;
+  if (!S.me || S.preview) return null;
   const order = { floor: 0, rug: 1, wall: 2 }; // topmost layer first; floor billboards front-most first
   const depth = (p, it) => (it.zone === "floor" ? floorGeom(it, p.x, p.y, p.flip).d : 0);
   const list = S.me.placed.map((p) => [p, S.catalog.get(p.item)]).filter(([, it]) => it && it.zone)
@@ -1912,6 +1930,7 @@ function tierCardState(it, me, poor, need) {
   return { kind: "locked", label: `After T${it.tier - 1}`, disabled: true, note: `→ ${to}` };
 }
 function cardState(it, me) {
+  if (me && me.preview) return { kind: "locked", label: "Pick a name first", disabled: true };
   const watts = me ? me.watts : 0, owned = me ? me.owned[it.id] || 0 : 0;
   const poor = watts < it.price, need = it.price - watts;
   if (Object.hasOwn(TIERED, it.cat)) return tierCardState(it, me, poor, need);
@@ -2280,7 +2299,8 @@ function nameProblem(v) {
 }
 function nameErrorWords(j, want) {
   const e = j && j.error;
-  return e === "username_taken" ? `“${want}” is already taken. Try another.` : e === "bad_username" ? "Not allowed: 3–16 letters, numbers or _." : errorWords(j);
+  return e === "username_taken" ? `“${want}” is already taken. Try another.` : e === "bad_username" ? "Not allowed: 3–16 letters, numbers or _."
+    : e === "too_many_dens" ? "Too many new dens from your network. Try again in an hour." : e === "server_full" ? "The server is full right now." : errorWords(j);
 }
 async function saveUsername(want) {
   const r = await post("/api/username", { username: want });
@@ -2313,6 +2333,10 @@ function afterMe() {
   renderFirstHint();
   syncNick();
   maybeAskName();
+  if (!$("tut").hidden) { // the den arrived mid-tutorial: unlock it (or keep it locked), without restarting the slide
+    $("tutX").hidden = tutLocked();
+    if (tut.i === TUT.length - 1) $("tutNext").textContent = tutLocked() ? "Pick your name" : "Let's go";
+  }
   renderPlacing();
   positionTool();
   renderHud();
@@ -3235,7 +3259,7 @@ async function revengeOn(pid) {
 }
 function renderFeed() {
   const box = $("feed");
-  if (!S.me) { box.hidden = true; return; }
+  if (!S.me || S.preview) { box.hidden = true; return; }
   box.hidden = false;
   const list = S.raidFeed || [], mine = myPid();
   const sig = list.map(feedKey).join(",") + `|${mine}|${FEED.collapsed}|${Math.floor(Date.now() / 20_000)}`;
@@ -3412,6 +3436,8 @@ function tutFrame(now) {
   TUT[tut.i].draw(tutCtx, t);
   if (!tut.still && !$("tut").hidden) tut.raf = requestAnimationFrame(tutFrame);
 }
+// A visitor without a den (no name yet) goes through every step; the last one leads to the name.
+const tutLocked = () => !S.me || !!S.preview;
 function tutGo(i) {
   tut.i = clamp(i, 0, TUT.length - 1);
   const s = TUT[tut.i], last = tut.i === TUT.length - 1;
@@ -3419,7 +3445,8 @@ function tutGo(i) {
   $("tutTitle").textContent = s.title;
   $("tutText").textContent = s.text;
   $("tutBack").disabled = tut.i === 0;
-  $("tutNext").textContent = last ? "Let's go" : "Next";
+  $("tutX").hidden = tutLocked();
+  $("tutNext").textContent = last ? (tutLocked() ? "Pick your name" : "Let's go") : "Next";
   tutDots.forEach((b, k) => (k === tut.i ? b.setAttribute("aria-current", "step") : b.removeAttribute("aria-current")));
   cancelAnimationFrame(tut.raf);
   tut.t0 = performance.now();
@@ -3431,7 +3458,8 @@ function openTut(i = 0) {
   tutGo(i);
   $("tutNext").focus();
 }
-function closeTut() {
+function closeTut(done = false) {
+  if (tutLocked() && !done) return; // no skipping before the den exists
   $("tut").hidden = true;
   cancelAnimationFrame(tut.raf);
   ls.set(TUT_SEEN, "1");
@@ -3439,9 +3467,9 @@ function closeTut() {
   maybeAskName();
 }
 $("helpBtn").addEventListener("click", () => openTut(0));
-$("tutX").addEventListener("click", closeTut);
+$("tutX").addEventListener("click", () => closeTut());
 $("tutBack").addEventListener("click", () => tutGo(tut.i - 1));
-$("tutNext").addEventListener("click", () => (tut.i === TUT.length - 1 ? closeTut() : tutGo(tut.i + 1)));
+$("tutNext").addEventListener("click", () => (tut.i === TUT.length - 1 ? closeTut(true) : tutGo(tut.i + 1)));
 $("tut").addEventListener("click", (e) => { if (e.target === $("tut")) closeTut(); });
 addEventListener("keydown", (e) => { // capture phase: while it's open, the room's own keys (Esc, F) stay out of it
   if ($("tut").hidden) return;
@@ -3460,7 +3488,7 @@ tutCv.addEventListener("pointerup", (e) => { // swipe either way; a plain tap mo
   tutSwipe = null;
   tutGo(tut.i + (Math.abs(dx) > 30 && dx > 0 ? -1 : 1));
 });
-if (!ls.get(TUT_SEEN)) setTimeout(() => openTut(0), 300); // first visit
+if (!ls.get(TUT_SEEN)) setTimeout(() => openTut(0), 300); // first visit (a returning visitor who has seen it goes straight to the name)
 
 // ---------- onboarding: a den without a username must pick one (after the tutorial) ----------
 const nameUi = { open: false, busy: false, err: "" };
@@ -3492,7 +3520,8 @@ async function nameSubmit() {
   if (r.ok) {
     nameUi.open = false;
     $("nameModal").hidden = true;
-    toast(`Welcome, ${r.j.me.username}!`, "ok");
+    toast(r.j.created ? `Welcome to your den, ${r.j.me.username}.` : `You're ${r.j.me.username} now.`, "ok");
+    if (r.j.created) refresh(); // the raid status, feed and the rest arrive with the next snapshot
     return;
   }
   nameUi.err = nameErrorWords(r.j, want);

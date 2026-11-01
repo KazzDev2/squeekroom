@@ -2348,3 +2348,84 @@ test("crate-only decor can't be bought, but drops from crates and places like an
   const w = S.validatePlacement(q, "wall_lucky_lantern", 4, 3);
   assert.equal(w.error, "unowned");
 });
+
+// ---------- v4 feature 1: no den until a username; nameless dens purged ----------
+test("names first: the snapshot never creates a den; a fresh token gets needsName", () => {
+  const tok = "fresh_token_" + "z".repeat(20);
+  const snap = S.snapshot(tok, "203.0.113.9");
+  assert.deepEqual([snap.me, snap.meError, snap.needsName], [null, null, true]);
+  assert.equal(S.snapshot(tok).needsName, true); // still nothing, however often it polls
+  const bad = S.snapshot("x", null);
+  assert.deepEqual([bad.me, bad.meError, bad.needsName], [null, "bad_token", false]);
+  assert.equal(S.snapshot(null).needsName, false);
+});
+
+test("names first: createDen makes the den only with a valid, free username", () => {
+  const st = { height: 1000, players: {} };
+  const ip = "198.51.100.77";
+  assert.equal(S.createDen(st, "short", { username: "Alice" }, T0, { ip }).error, "bad_token");
+  assert.equal(S.createDen(st, TA, { username: "a" }, T0, { ip }).error, "bad_username");
+  assert.equal(S.createDen(st, TA, {}, T0, { ip }).error, "bad_username");
+  assert.deepEqual(Object.keys(st.players), []); // a refused name leaves nothing behind
+  const r = S.createDen(st, TA, { username: "Alice" }, T0, { ip });
+  assert.equal(r.ok, true);
+  const p = st.players[TA];
+  assert.deepEqual([p.username, p.watts, p.lifetimeWatts, p.joinHeight, p.publicId], ["Alice", BALANCE.WELCOME_WATTS, 0, 1000, pidOf(TA)]);
+  assert.equal(S.tokenForPublicId(st, pidOf(TA)), TA);
+  assert.equal(S.createDen(st, TA, { username: "Alice2" }, T0, { ip }).error, "den_exists");
+  assert.equal(S.createDen(st, TB, { username: "alice" }, T0, { ip }).error, "username_taken"); // case-insensitive
+  assert.deepEqual(Object.keys(st.players), [TA]);
+  assert.equal(S.createDen(st, TB, { username: "Bob" }, T0, { ip, count: S.MAX_PLAYERS }).error, "server_full");
+  assert.ok(S.createDen(st, TB, { username: "Bob" }, T0, { ip }).ok);
+  // renaming an existing den still goes through setUsername
+  assert.ok(S.setUsername(st, TB, { username: "Bobby" }).ok);
+  assert.equal(S.setUsername(st, TB, { username: "ALICE" }).error, "username_taken");
+});
+
+test("names first: the new-den rate limit applies when a den is created", () => {
+  const st = { height: 1, players: {} };
+  const ip = "192.0.2.123";
+  let made = 0, limited = 0;
+  for (let i = 0; i < 70; i++) {
+    const t = `ratelimit_${String(i).padStart(3, "0")}`.padEnd(20, "q");
+    const r = S.createDen(st, t, { username: `rl_user_${i}` }, T0, { ip });
+    if (r.ok) made++;
+    else if (r.error === "too_many_dens") limited++;
+  }
+  assert.deepEqual([made, limited], [60, 10]);
+});
+
+test("purge: nameless dens go (with their feed lines and revenge entries); named dens stay; runs once", () => {
+  const st = raidWorld();
+  st.players[TA].username = "Keeper";
+  st.players[TB].username = null; // nameless, even with a nick and a wallet
+  st.players[TB].nick = "bob";
+  st.players[TB].wallet = "0x" + "1".repeat(40);
+  st.players[TC].username = "";
+  st.players[TA].raidedBy = [{ pid: pidOf(TB), at: T0, avenged: false }, { pid: "someone", at: T0, avenged: false }];
+  st.raidFeed = [{ at: 1, atkId: pidOf(TB), defId: pidOf(TA) }, { at: 2, atkId: "x", defId: "y" }, { at: 3, atkId: pidOf(TA), defId: pidOf(TC) }];
+  S.tokenForPublicId(st, pidOf(TB)); // build the index first
+  const removed = S.purgeNameless(st);
+  assert.deepEqual(Object.keys(removed).sort(), [TB, TC].sort());
+  assert.deepEqual(Object.keys(st.players), [TA]);
+  assert.deepEqual(st.players[TA].raidedBy.map((e) => e.pid), ["someone"]);
+  assert.deepEqual(st.raidFeed.map((e) => e.at), [2]);
+  assert.equal(S.tokenForPublicId(st, pidOf(TB)), null);
+  assert.equal(S.leaderboard(st, null, T0).total, 1);
+  // the migration wrapper: flagged, logged, backed up, idempotent
+  const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sd-purge-"));
+  const bak = path.join(dir, "state.anon-purge.bak.json");
+  const st2 = raidWorld();
+  st2.players[TA].username = "Keeper";
+  const lines = [];
+  assert.equal(S.runMigrations(st2, T0, { backupFile: bak, log: (m) => lines.push(m) }), true);
+  assert.deepEqual(Object.keys(st2.players), [TA]);
+  assert.equal(st2.migrations.anonPurge1, new Date(T0).toISOString());
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(bak, "utf8")).players).sort(), [TB, TC].sort());
+  assert.match(lines[0], /2 nameless dens deleted/);
+  st2.players[TB] = Object.assign(S.newPlayer(1, T0, TB), { username: null }); // a later nameless den is NOT purged again
+  assert.equal(S.runMigrations(st2, T0 + 1, { backupFile: bak, log: () => {} }), false);
+  assert.ok(st2.players[TB]);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
