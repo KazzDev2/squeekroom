@@ -2455,6 +2455,20 @@ test("purge: nameless dens go (with their feed lines and revenge entries); named
   st2.players[TB] = Object.assign(S.newPlayer(1, T0, TB), { username: null }); // a later nameless den is NOT purged again
   assert.equal(S.runMigrations(st2, T0 + 1, { backupFile: bak, log: () => {} }), false);
   assert.ok(st2.players[TB]);
+  // the backup comes first: if it can't be written, nothing is deleted and the next boot retries
+  const st3 = raidWorld();
+  st3.players[TA].username = "Keeper";
+  const blocker = path.join(dir, "a-file");
+  fs.writeFileSync(blocker, "x");
+  const errs = console.error;
+  console.error = () => {};
+  try {
+    assert.equal(S.runMigrations(st3, T0, { backupFile: path.join(blocker, "sub", "bak.json"), log: () => {} }), false);
+  } finally { console.error = errs; }
+  assert.deepEqual(Object.keys(st3.players).sort(), [TA, TB, TC].sort());
+  assert.equal(st3.migrations.anonPurge1, undefined);
+  assert.equal(S.runMigrations(st3, T0, { backupFile: path.join(dir, "ok.bak.json"), log: () => {} }), true); // retried, now it works
+  assert.deepEqual(Object.keys(st3.players), [TA]);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
