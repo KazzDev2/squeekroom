@@ -24,6 +24,9 @@ header{width:100%;display:flex;align-items:center;justify-content:space-between;
 h1{font-family:var(--display);font-weight:700;font-size:18px;letter-spacing:.5px;margin:0;display:flex;align-items:center;gap:8px}
 h1 img{width:30px;height:30px}
 .tag{font-family:var(--display);font-size:10px;letter-spacing:.4px;border:1.5px solid var(--ink);border-radius:4px;padding:2px 6px;background:var(--panel)}
+.snd{width:34px;height:32px;display:inline-grid;place-items:center;color:var(--ink);background:var(--panel);border:2px solid var(--ink);border-radius:6px;box-shadow:2px 2px 0 var(--ink);cursor:pointer;padding:0}
+.snd[data-mode="off"]{opacity:.6}
+.hdr-r{display:flex;gap:8px;align-items:center}
 .back{font-family:var(--display);font-size:11px;color:var(--ink);text-decoration:none;background:var(--squeek);border:2px solid var(--ink);border-radius:6px;padding:6px 10px;box-shadow:2px 2px 0 var(--ink)}
 .stats{width:100%;display:flex;justify-content:space-between;gap:10px;margin:2px 0 8px;font-family:var(--display);font-size:12px;letter-spacing:.3px}
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 10px;display:flex;flex-direction:column;min-width:0}
@@ -42,7 +45,7 @@ canvas#board{display:block;width:min(100%, calc((100vh - 190px) * 240 / 360));mi
 <main>
 <header>
   <h1><img src="logo.svg" alt="" width="30" height="30">BURROW DROP <span class="tag">PREVIEW</span></h1>
-  <a class="back" href="/">Back to your den</a>
+  <span class="hdr-r"><button type="button" class="snd" id="soundBtn"></button><a class="back" href="/">Back to your den</a></span>
 </header>
 <div class="stats">
   <div class="stat"><small>WATTS</small><b id="watts">10,000</b></div>
@@ -55,6 +58,7 @@ canvas#board{display:block;width:min(100%, calc((100vh - 190px) * 240 / 360));mi
 <script src="sprites.js"></script>
 <script src="sprites_crate.js"></script>
 <script src="scenes.js"></script>
+<script src="sound.js"></script>
 <script src="drop_sim.js"></script>
 <script src="drop.js"></script>
 </body>
