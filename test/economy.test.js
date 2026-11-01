@@ -2028,6 +2028,13 @@ test("boosts: Lucky Whisker +10 points on the next raid (capped at P_MAX), spent
   a.effects.lucky_whisker = true;
   assert.equal(raid(st, TA, TB, 1000, 2, T0 + 2, seq(LOSE)).result.lucky, true);
   assert.equal(a.effects.lucky_whisker, false); // a loss spends it too
+  // already at the 90% cap: the whisker can't help, so it isn't spent
+  const st2 = raidWorld({ atk: { watts: 1000 }, def: { watts: 1e9 } });
+  const b = st2.players[TA];
+  b.effects.lucky_whisker = true;
+  assert.equal(S.raidChance(b, st2.players[TB], 150), 0.9);
+  const r3 = raid(st2, TA, TB, 50, 1.5, T0, seq(LOSE));
+  assert.deepEqual([r3.ok, r3.result.lucky, b.effects.lucky_whisker], [true, undefined, true]);
 });
 
 test("boosts: Wager Insurance refunds half the next FAILED wager, survives wins", () => {

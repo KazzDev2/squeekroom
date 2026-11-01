@@ -978,7 +978,8 @@ function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng 
   if (b.stake < min || b.stake > max) return { ok: false, error: "stake_out_of_range", min, max, limit };
   const stake = b.stake;
 
-  const lucky = boostActive(atk, "lucky_whisker", now);
+  // the whisker is only spent when it can help: odds already at P_MAX leave it armed for the next raid
+  const lucky = boostActive(atk, "lucky_whisker", now) && raidChance(atk, def, multPct) < R.P_MAX_PCT / 100;
   const r = resolveRaid(atk, def, stake, multPct, rng, lucky ? BALANCE.BOOSTS.lucky_whisker.ODDS_PTS : 0);
   if (lucky) { atk.effects.lucky_whisker = false; r.lucky = true; }
   if (r.win) {

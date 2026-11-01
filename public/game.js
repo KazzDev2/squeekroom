@@ -634,7 +634,8 @@ function renderBedLine(me, bonusPct) {
   const el = $("bedLine");
   const mult = (me.bedMultPct || 100) / 100;
   let html = `bed T${me.bedTier | 0} · ${mult.toFixed(2)}×`;
-  if (S.idle) html += `<span class="chip on">${+((me.bedWattsPerMin || 0) * bonusPct / 100).toFixed(2)} W/min</span>`;
+  const deep = boostOn("deep_sleep") ? (boostCfg("deep_sleep").PCT || 100) / 100 : 1; // Deep Sleep
+  if (S.idle) html += `<span class="chip on">${+((me.bedWattsPerMin || 0) * bonusPct / 100 * deep).toFixed(2)} W/min</span>`;
   el.innerHTML = html;
   el.title = S.idle ? "He's asleep, so your bed is earning" : "Your bed earns while he sleeps, online or not";
 }
@@ -2266,9 +2267,9 @@ function noteCrates(me, prev, first) {
 // golden blocks: a toast and a burst of sparks on the wheel when one settles
 const goldenSeen = { h: null };
 function noteGolden(gold, first) {
-  if (!gold || typeof gold.height !== "number") return;
-  if (first || goldenSeen.h == null) { goldenSeen.h = gold.height; return; }
-  if (gold.height === goldenSeen.h) return;
+  const h = gold && typeof gold.height === "number" ? gold.height : null;
+  if (first) { goldenSeen.h = h; return; } // the baseline: only blocks after page load get a toast
+  if (h == null || h === goldenSeen.h) return;
   goldenSeen.h = gold.height;
   if (nowS() - (gold.at || 0) > 120_000) return; // old news (a tab waking from sleep)
   toast("Golden block — 10× for everyone watching.", "ok");
@@ -3004,7 +3005,8 @@ function renderRaid(force = false) {
   go.disabled = !!blk || RU.busy;
   go.classList.toggle("busy", RU.busy);
   go.textContent = RU.busy ? "Rolling…" : `${rev ? "Revenge" : "Raid"} · ${multLabel(m)}`;
-  const armed = [boostOn("lucky_whisker") && "Lucky Whisker: +10 points on this raid", boostOn("wager_insurance") && "Wager Insurance: a loss refunds half"].filter(Boolean);
+  const capped = raidP(m, t.roomTier, myW, t.watts) >= RB().P_MAX_PCT / 100; // the whisker can't help: it stays armed
+  const armed = [boostOn("lucky_whisker") && (capped ? "Lucky Whisker stays armed: these odds are already at the cap" : "Lucky Whisker: +10 points on this raid"), boostOn("wager_insurance") && "Wager Insurance: a loss refunds half"].filter(Boolean);
   $("raidLeft").textContent = (S.raid ? `${raidsLeftNow()} of ${S.raid.perDay} raids left today` : "") + (armed.length ? ` · ${armed.join(" · ")}` : "");
 }
 function escapeHtml(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
