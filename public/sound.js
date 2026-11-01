@@ -122,17 +122,18 @@ function sfx(name, o = {}) {
 }
 
 // ---------- music ----------
-// Two CC0 (public domain) tracks by Zane Little Music, from opengameart.org: streamed by an <audio>
-// element and routed through the music bus, so the speaker button and fades work the same.
+// Two CC0 (public domain) tracks from opengameart.org, streamed by an <audio> element and routed
+// through the music bus, so the speaker button and fades work the same.
 const TRACKS = {
-  den: { src: "music/apple_cider.ogg", vol: 0.5 }, // "Apple Cider"
-  drop: { src: "music/pixel_sprinter_loop.ogg", vol: 0.42 }, // "Pixel Sprinter" (loop)
+  den: { src: "music/chill_lofi.mp3", type: "audio/mpeg", vol: 0.5 }, // "Chill lofi inspired" by omfgdude
+  drop: { src: "music/pixel_sprinter_loop.ogg", type: 'audio/ogg; codecs="vorbis"', vol: 0.42 }, // "Pixel Sprinter" (loop) by Zane Little Music
 };
-const canOgg = (() => { try { return !!new Audio().canPlayType('audio/ogg; codecs="vorbis"'); } catch { return false; } })();
+const canPlay = (type) => { try { return !!new Audio().canPlayType(type); } catch { return false; } };
 let el = null, elNode = null;
 function startMusic() {
-  if (!ctx || mode !== "all" || !song || !canOgg) return;
+  if (!ctx || mode !== "all" || !song) return;
   const tr = TRACKS[song];
+  if (!canPlay(tr.type)) return; // e.g. no Ogg Vorbis on older Safari: effects only
   if (!el) {
     el = new Audio();
     el.loop = true;
@@ -184,5 +185,5 @@ function music(name) {
   if (ctx && mode === "all") startMusic();
 }
 
-return { sfx, music, button, setMode, get mode() { return mode; }, get state() { return { ctx: ctx ? ctx.state : null, song, playing: !!playing, canOgg, el: el ? { src: el.src, paused: el.paused, t: el.currentTime } : null } } };
+return { sfx, music, button, setMode, get mode() { return mode; }, get state() { return { ctx: ctx ? ctx.state : null, song, playing: !!playing, el: el ? { src: el.src, paused: el.paused, t: el.currentTime } : null } } };
 })();
