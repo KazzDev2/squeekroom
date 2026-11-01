@@ -4,6 +4,7 @@
 (() => {
 "use strict";
 const $ = (id) => document.getElementById(id);
+const sfx = (name, o) => { if (window.SqueekSound) window.SqueekSound.sfx(name, o); }; // sound.js: a no-op until the first click
 
 // ---------- room geometry (server ROOM is the source of truth; these are the defaults) ----------
 // The server's model is the flat side view: 20 x 12 cells of 16 px (320 x 192). Floor items take
@@ -1397,6 +1398,7 @@ function noteEarn(me, prev, first) {
   earnMark.hw = lw;
   earnMark.poll = true;
   spawnPop("earn", d); // whole watts from the server, so a 1 W bed trickle still shows "+1 W"
+  sfx("earn");
 }
 // a poll that saw no new watts while the bed is paying (it carries fractions server-side): a bare "+"
 function noteTrickle() {
@@ -1652,6 +1654,7 @@ async function commit() {
     Object.assign(P, { mode: null, it: null, pid: null, cell: null, valid: null, drag: null, from: null });
     selPid = (r.j.placed && r.j.placed.pid) || pid;
     applyMe(r.j.me);
+    sfx("place");
     afterMode();
     return;
   }
@@ -2006,6 +2009,7 @@ async function cardAction(c) {
     }
     applyMe(r.j.me);
     spendFeedback(c, it.price);
+    sfx("buy");
     if (it.cat === "wheel") toast(`${it.name}: ${(it.multPct / 100).toFixed(2)}× watts per block`, "ok");
     else if (it.cat === "bed") toast(`${it.name}: ${(it.multPct / 100).toFixed(2)}× bed watts`, "ok");
     else if (it.cat === "room") toast(`Your den is now ${it.material || it.name}`, "ok");
@@ -2259,6 +2263,7 @@ async function openCrateUi(c) {
     const r = await post("/api/crate", { id: c.id });
     if (!r.ok || !r.j.me) { toast(r.j.error === "unknown_crate" ? "That crate was already opened." : errorWords(r.j), "err"); refresh(); return; }
     applyMe(r.j.me);
+    sfx("crateOpen");
     const got = r.j.got || {}, name = (id) => (S.catalog.get(id) || {}).name || "something";
     let words, label;
     if (got.kind === "watts") { words = got.dup ? `Lucky crate: +${fmt(got.watts)} W. You already have the ${name(got.dup)}.` : `Lucky crate: +${fmt(got.watts)} W`; label = `+${popAmt(got.watts)} W`; gainFlash(got.watts); }
@@ -2285,6 +2290,7 @@ function noteCrates(me, prev, first) {
   if (first || !prev) { for (const id of ids) CRATES_SEEN.add(id); return; }
   const fresh = ids.filter((id) => !CRATES_SEEN.has(id));
   for (const id of fresh) CRATES_SEEN.add(id);
+  if (fresh.length) sfx("crateDrop");
   if (fresh.length) toast(fresh.length > 1 ? `${fresh.length} lucky crates dropped in your den. Tap one to open it.` : "A lucky crate dropped in your den. Tap it to open.", "ok");
 }
 
@@ -2297,6 +2303,7 @@ function noteGolden(gold, first) {
   goldenSeen.h = gold.height;
   if (nowS() - (gold.at || 0) > 120_000) return; // old news (a tab waking from sleep)
   toast("Golden block — 10× for everyone watching.", "ok");
+  sfx("golden");
   for (let i = 0; i < 18; i++) spawnSpark(i * 45);
   rflash = { rgb: "255,209,102", a: 0.35, t: 0, life: 900 };
 }
@@ -3236,6 +3243,7 @@ async function whack(i) {
   grid.classList.add("busy");
   for (const h of grid.children) h.disabled = h !== hole;
   hole.classList.add("hit");
+  sfx("whack");
   const t0 = performance.now();
   const r = await post("/api/raid", { target: t.publicId, stake: sb.v, mult });
   await wait(Math.max(0, 380 - (performance.now() - t0))); // let the whack land
@@ -3300,11 +3308,13 @@ function showRaidResult(res, t, before) {
       box.appendChild(p);
     }
     raidFx(res.crit ? "crit" : "win");
+    sfx("raidWin", { crit: !!res.crit });
     gainFlash(wonFor(res));
     toast(`${res.crit ? "Crit! " : ""}+${fmt(wonFor(res))} W from ${rowName(t)}`, "ok");
   } else {
     const back = res.refund || 0, lost = (res.stakeLost || res.stake) - back;
     $("resBig").textContent = "You lost";
+    sfx("raidLose");
     $("resAmt").textContent = `−${fmt(lost)} W`;
     $("resDet").textContent = back > 0 ? `wager burned at ${multLabel(m)}. Insurance gave back ${fmt(back)} W` : `wager burned at ${multLabel(m)}`;
     for (let i = 0; i < 28; i++) {
@@ -3400,6 +3410,7 @@ function raidedMe(e) {
   for (const id of ["feed", "stage"]) { const n = $(id); n.classList.remove("hit"); void n.offsetWidth; n.classList.add("hit"); setTimeout(() => n.classList.remove("hit"), 1600); }
   if (w) { const m = $("meter"); m.classList.remove("poor"); void m.offsetWidth; m.classList.add("poor"); setTimeout(() => m.classList.remove("poor"), 900); }
   raidFx("hit");
+  if (w) sfx("raided");
   if (w && e.amount > 0) spawnPop("hit", e.amount); // the flash and embers carry no number: say what it cost
   if (FEED.collapsed) { FEED.collapsed = false; FEED.sig = ""; } // open it for this one (not remembered)
   if (LB.open) loadLb();
@@ -3589,6 +3600,7 @@ addEventListener("keydown", (e) => { // capture phase: it can't be dismissed, an
 }, true);
 
 // debug handle for the browser console / verification
+if (window.SqueekSound) { window.SqueekSound.music("den"); window.SqueekSound.button($("soundBtn")); }
 window.__squeekroom = { S, tut: { TUT, W: TUT_W, H: TUT_H }, ham, wheel, sparks, meter, pops, spawnPop, liveStatus, tintAt, P, checkSpot, enterPlace, select,
   raid: { LB, RU, FEED, raidP, raidStakeBounds, lootFor, openLb, closeLb, openRaid, closeRaid, loadLb, raidFx, applyFeed, doRaid, whack },
   get iso() { return { ISO, LW, LH, SPOT, IWHEEL, IBURROW, fixture, checkFixture, fixtureRect, colTile, colLeft, footY, tileToCol, screenToTile, wallBase, toFlat, isoRect, bedGeom, laneAt, isoSpan, isoFloor }; },

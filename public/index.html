@@ -199,6 +199,9 @@ body.modal-open{overflow:hidden}
 .helpbtn{font-family:var(--display);font-size:10px;letter-spacing:.2px;line-height:1.2;border:2px solid #1d1a14;border-radius:0;padding:5px 8px;cursor:pointer;white-space:nowrap;background:var(--squeek);color:#1d1a14;box-shadow:inset -2px -2px 0 #c2410c,inset 2px 2px 0 #ffe8a8}
 .helpbtn:focus-visible{outline:2px solid var(--chain);outline-offset:2px}
 a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
+.sndbtn{padding:3px 6px;display:inline-grid;place-items:center}
+.sndbtn svg{display:block}
+.sndbtn[data-mode="off"]{opacity:.7}
 .tutguide{display:block;margin-top:-4px;font-size:12px;color:var(--muted);text-decoration:underline;text-underline-offset:2px}
 .tutmodal{position:fixed;inset:0;z-index:50;background:rgba(8,10,14,.82);display:flex;align-items:center;justify-content:center;padding:12px}
 .tutmodal[hidden]{display:none}
@@ -490,6 +493,7 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
   <div class="stat fxstat" id="fxStat" hidden><span class="lbl">Boosts</span><span class="sub fxline" id="fxLine">&nbsp;</span></div>
   <button type="button" class="helpbtn" id="helpBtn" aria-haspopup="dialog" aria-controls="tut">How to play</button>
   <a class="helpbtn" id="guideLink" href="guide.html" target="_blank" rel="noopener">Guide</a>
+  <button type="button" class="helpbtn sndbtn" id="soundBtn"></button>
   <button type="button" class="raidchip locked" id="raidChip" hidden aria-haspopup="dialog" aria-controls="lb">raids…</button>
   <button type="button" class="walletbtn" id="walletBtn" hidden aria-haspopup="dialog" aria-controls="walletModal">Connect Wallet</button>
 </header>
@@ -684,6 +688,7 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
 <script src="sprites_v3_floor_b.js"></script>
 <script src="sprites_iso_wheel.js"></script>
 <script src="scenes.js"></script>
+<script src="sound.js"></script>
 <script src="game.js"></script>
 <script src="wallet.js"></script>
 </body>

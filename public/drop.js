@@ -14,6 +14,7 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const AIM_MIN = LEFT + BALL_R + 1, AIM_MAX = RIGHT - BALL_R - 1;
+const SND = window.SqueekSound, sfx = (name, o) => { if (SND) SND.sfx(name, o); };
 
 const st = {
   watts: START_WATTS, shownWatts: START_WATTS, stash: COST * PAY.STASH_START, shownStash: COST * PAY.STASH_START,
@@ -238,21 +239,23 @@ function newBoard() {
 }
 function drop() {
   if (st.mode !== "aim") return;
-  if (st.watts < COST) { st.watts += START_WATTS; renderHud(); return; } // preview: a top-up
+  if (st.watts < COST) { st.watts += START_WATTS; renderHud(); sfx("coin"); return; } // preview: a top-up
   st.watts -= COST;
   st.stash += Math.round((COST * PAY.STASH_FEED_PCT) / 100);
   const seed = (Math.random() * 4294967296) >>> 0;
   st.sim = D.simulate(st.aim, seed, { crate: st.crate });
+  st.found = null; st.fly = null; st.reveal = null;
+  sfx("drop");
   st.mode = "fall"; st.i = 0; st.ev = 0; st.chain = 0; st.lastSeedF = -999; st.won = 0; st.trail = []; st.banner = null; st.slotFlash = -1;
   renderHud();
 }
 function seedPay(chain) { return Math.round((COST * PAY.SEED_PCT * Math.min(chain, PAY.COMBO_MAX) * (st.golden ? 2 : 1)) / 100); }
 function onEvent(e) {
   const F = st.sim.frames, bx = F[e.f * 3], by = F[e.f * 3 + 1];
-  if (e.kind === "peb") st.flash.set("peb" + e.i, 0.14);
-  else if (e.kind === "root") st.rootWob[e.i] = 1.4;
-  else if (e.kind === "acorn") { st.squash[e.i] = 1; st.shake = Math.max(st.shake, 0.12); burst(D.ACORNS[e.i].x, D.ACORNS[e.i].y, 6, ["#e3b27a", "#ffffff"]); }
-  else if (e.kind === "wheel") st.wheelFlash = 0.12;
+  if (e.kind === "peb") { st.flash.set("peb" + e.i, 0.14); sfx("peg", { pitch: 1 - by / H }); }
+  else if (e.kind === "root") { st.rootWob[e.i] = 1.4; sfx("root"); }
+  else if (e.kind === "acorn") { st.squash[e.i] = 1; st.shake = Math.max(st.shake, 0.12); burst(D.ACORNS[e.i].x, D.ACORNS[e.i].y, 6, ["#e3b27a", "#ffffff"]); sfx("acorn"); }
+  else if (e.kind === "wheel") { st.wheelFlash = 0.12; sfx("wheel"); }
   else if (e.kind === "seed") {
     st.seedOn[e.i] = false;
     st.chain = e.f - st.lastSeedF < PAY.COMBO_FRAMES ? st.chain + 1 : 1;
@@ -263,31 +266,35 @@ function onEvent(e) {
     pop(s.x, s.y - 6, `+${w}W`, "#ffd166");
     if (st.chain > 1) pop(s.x, s.y - 16, `COMBO X${Math.min(st.chain, PAY.COMBO_MAX)}`, "#4ade80");
     burst(s.x, s.y, 7, ["#ffd166", "#fff8d0"]);
+    sfx("seed", { chain: st.chain });
   } else if (e.kind === "crate") {
     const c = D.crateSpots[e.i];
     st.crate = -1;
     const finds = [["+400W", "#ffd166", 400], ["BOOST", "#ffd166", 0], ["SHIELD", "#ffd166", 0], ["RARE!", "#f472b6", 0]];
     const [str, col, w] = finds[Math.floor(Math.random() * finds.length)];
     st.won += w;
-    pop(c.x, c.y - 14, "CRATE", "#eef0f5", true);
-    pop(c.x, c.y - 4, str, col);
-    burst(c.x, c.y, 14, ["#ffd166", "#f5a623", "#fff8d0"], 2.2);
-    st.shake = Math.max(st.shake, 0.15);
+    st.found = { str, col };
+    st.fly = { x: c.x, y: c.y, vx: bx < c.x ? 1.1 : -1.1, vy: -2.4, t: 0 }; // knocked loose: it hops up, then pops open
+    burst(c.x, c.y, 8, ["#c2410c", "#ffd166"], 1.4);
+    st.shake = Math.max(st.shake, 0.12);
+    sfx("crateHit");
   } else if (e.kind === "slot") {
     st.slotFlash = e.i; st.slotT = 0;
+    if (st.sim.slotId !== "stash") sfx("land", { slot: st.sim.slotId }); // the stash gets its fanfare at the end
     burst(bx, by, 10, st.sim.slotId === "stash" ? ["#ffd166", "#fff8d0"] : st.sim.slotId === "dead" ? ["#9ca3af"] : ["#ffd166", "#eef0f5"]);
   }
 }
 function finish() {
   const id = st.sim.slotId;
   let land = 0;
-  if (id === "stash") { land = st.stash; st.stash = COST * PAY.STASH_START; coinShower(40); st.shake = 0.5; }
+  if (id === "stash") { land = st.stash; st.stash = COST * PAY.STASH_START; coinShower(40); st.shake = 0.5; sfx("jackpot"); }
   else land = Math.round(COST * PAY[id]);
   st.watts += land + st.won;
   const total = land + st.won;
-  st.banner = id === "stash" ? { a: "JACKPOT", b: `+${fmt(total)} W`, col: "#ffd166", t: 0 }
+  const cr = st.found ? { c: `CRATE ${st.found.str}`, ccol: st.found.col } : {};
+  st.banner = Object.assign(id === "stash" ? { a: "JACKPOT", b: `+${fmt(total)} W`, col: "#ffd166", t: 0 }
     : id === "dead" ? { a: "DEAD END", b: total ? `+${fmt(total)} W` : "", col: "#9ca3af", t: 0 }
-    : { a: id === "pantry" ? "PANTRY" : "NEST", b: `+${fmt(total)} W`, col: id === "pantry" ? "#ffd166" : "#eef0f5", t: 0 };
+    : { a: id === "pantry" ? "PANTRY" : "NEST", b: `+${fmt(total)} W`, col: id === "pantry" ? "#ffd166" : "#eef0f5", t: 0 }, cr);
   st.mode = "done"; st.done = id === "stash" ? 3.2 : 1.7;
   renderHud();
 }
@@ -397,13 +404,40 @@ function draw(t) {
     if (p.big) bigText(g, p.str, p.x, y - 6, p.col, 2); else PX.text(g, p.str, p.x, Math.round(y), p.col);
     g.globalAlpha = 1;
   }
+  if (st.fly) {
+    const c = st.fly; c.t += 1 / 60; c.x += c.vx; c.y += c.vy; c.vy += 0.12;
+    const s = (window.SPRITES || {}).crate, x = Math.round(c.x - 8), y = Math.round(c.y - 8 + Math.sin(c.t * 30));
+    if (s && typeof window.drawSprite === "function") window.drawSprite(g, s, 0, x, y, {}); else { g.fillStyle = "#c2410c"; g.fillRect(x, y, 16, 16); }
+    if (c.t > 0.42) {
+      burst(c.x, c.y, 22, ["#ffd166", "#f5a623", "#fff8d0", st.found.col], 2.6);
+      st.reveal = { x: clamp(c.x, 50, W - 50), y: clamp(c.y - 30, 24, DIV_TOP - 90), t: 0 };
+      st.fly = null; st.shake = Math.max(st.shake, 0.18);
+      sfx("crateOpen");
+    }
+  }
+  if (st.reveal && st.found) { // what was inside, big, for a moment
+    const r = st.reveal; r.t += 1 / 60;
+    if (r.t > 1.8) st.reveal = null;
+    else {
+      const k = Math.min(1, r.t * 8), y = Math.round(r.y - r.t * 6);
+      g.globalAlpha = Math.min(1, (1.8 - r.t) * 3);
+      strip(g, r.x, y - 3, 96 * k, 24);
+      if (k >= 1) {
+        const s = (window.SPRITES || {}).crate;
+        if (s && typeof window.drawSprite === "function") window.drawSprite(g, s, 0, Math.round(r.x - 44), y, {});
+        bigText(g, st.found.str, r.x + 8, y + 2, st.found.col, 2);
+      }
+      g.globalAlpha = 1;
+    }
+  }
   if (st.banner) {
     const b = st.banner; b.t += 1 / 60;
     const s = Math.min(1, b.t * 6), jack = b.a === "JACKPOT";
     if (!jack || Math.floor(b.t * 6) % 2 === 0 || b.t > 1.2) {
-      strip(g, W / 2, DIV_TOP - 46, 150, 34);
+      strip(g, W / 2, DIV_TOP - 46, 150, b.c ? 44 : 34);
       bigText(g, b.a, W / 2, DIV_TOP - 44, b.col, s >= 1 ? 3 : 2);
       if (b.b) bigText(g, b.b, W / 2, DIV_TOP - 23, b.col === "#9ca3af" ? "#eef0f5" : b.col, 2);
+      if (b.c) PX.text(g, b.c, W / 2, DIV_TOP - 9, b.ccol);
     }
   }
   g.restore();
@@ -429,6 +463,7 @@ addEventListener("keydown", (e) => {
 $("watts").textContent = fmt(st.watts);
 $("stash").textContent = fmt(st.stash);
 newBoard();
+if (SND) { SND.music("drop"); SND.button($("soundBtn")); }
 requestAnimationFrame(frame);
 window.__drop = { st, D, drop, step };
 })();
