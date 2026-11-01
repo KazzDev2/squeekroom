@@ -515,11 +515,11 @@ function applyState(j) {
   S.idle = j.idle === true;
   S.speedPct = typeof j.speedPct === "number" ? j.speedPct : 100; // speed bonus on wheel income (100 = none)
   if (typeof j.serverTime === "number") S.skew = j.serverTime - Date.now();
+  applyDaily(j.daily); // before applyMe, so the first render already shows today's prices
   if (j.me) { applyMe(j.me, first, { at: j.serverTime, soft: S.idle }); if (!first) noteTrickle(); }
   else if (j.meError) toast(j.meError === "server_full" ? "The server is full." : j.meError === "too_many_dens" ? "Too many new dens from your network. Try again in an hour." : `Couldn't load your den (${j.meError}).`, "err");
   if (j.raid !== undefined) applyRaidStatus(j.raid);
   noteGolden(j.golden, first);
-  applyDaily(j.daily);
   if (typeof j.burned === "number") S.burned = j.burned;
   if (Array.isArray(j.raidFeed)) applyFeed(j.raidFeed);
   if (RU.open) renderRaid();
@@ -2018,7 +2018,7 @@ function applyDaily(d) {
   if (!d || !Array.isArray(d.items)) return;
   const was = S.daily && S.daily.day;
   S.daily = { day: d.day, items: d.items, offPct: Number(d.offPct) || 0, resetAt: Date.now() + Math.max(0, Number(d.resetMs) || 0) };
-  if (was && was !== d.day) { todaySig = ""; updateCards(); } // new picks at midnight
+  if (was !== d.day) { todaySig = ""; if (was) updateCards(); else renderToday(); } // new picks at midnight; the first load shows the strip at once
 }
 const priceOf = (it) => (it && S.daily && S.daily.items.includes(it.id) && Date.now() < S.daily.resetAt ? Math.floor((it.price * (100 - S.daily.offPct)) / 100) : it ? it.price : 0);
 const todayCards = new Map(); // itemId -> card (same shape as the shop's)
