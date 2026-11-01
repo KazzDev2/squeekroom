@@ -93,22 +93,22 @@ test("drop: a crate knocked loose gives the usual crate contents", () => {
   assert.equal(p.watts, 100_000 - B.COST + r.result.total);
 });
 
-test("drop: the stash grows with every drop, stops at its cap, and pays out on a stash landing", () => {
+test("drop: the stash grows with every drop (no cap) and pays out everything in it on a stash landing", () => {
   const board = { golden: false, crate: -1, prize: null };
   const miss = findSeed(120, { crate: -1, prize: -1 }, (r) => r.slotId !== "stash");
   const { st, p } = dropWorld(1e7, board);
   S.playDrop(st, TK, { aim: 120 }, T0, { seed: miss });
   assert.equal(st.drop.stash, B.COST * B.STASH_START + (B.COST * B.STASH_FEED_PCT) / 100);
-  st.drop.stash = B.COST * B.STASH_MAX;
+  st.drop.stash = 123_456;
   p.drop.board = board;
   S.playDrop(st, TK, { aim: 120 }, T0 + 2000, { seed: miss });
-  assert.equal(st.drop.stash, B.COST * B.STASH_MAX, "capped");
+  assert.equal(st.drop.stash, 123_456 + (B.COST * B.STASH_FEED_PCT) / 100, "keeps growing");
   let aim = 0, hit = 0;
   for (const a of [140, 100, 120, 160, 80]) { try { hit = findSeed(a, { crate: -1, prize: -1 }, (r) => r.slotId === "stash"); aim = a; break; } catch {} }
   p.drop.board = board;
   const r = S.playDrop(st, TK, { aim }, T0 + 4000, { seed: hit });
   assert.equal(r.result.slotId, "stash");
-  assert.equal(r.result.stashWon, B.COST * B.STASH_MAX);
+  assert.equal(r.result.stashWon, 123_456 + (2 * B.COST * B.STASH_FEED_PCT) / 100, "the whole pot");
   assert.equal(st.drop.stash, B.COST * B.STASH_START);
 });
 

@@ -140,14 +140,16 @@ const BALANCE = {
     TABLE_PCT: { watts: 60, boost: 25, shield: 10, decor: 5 } },
   // Burrow Drop (public/drop.html): pay COST, aim, and the server rolls the drop (public/drop_sim.js:
   // the same deterministic physics the browser replays from the seed). Chambers and seeds pay per
-  // DropSim.PAY; the shared stash starts at STASH_START x COST, grows STASH_FEED_PCT of every drop and
-  // stops at STASH_MAX x COST. Every board shows one drop-only prize (PRIZE_PCT by rarity; rarer ones
+  // DropSim.PAY; the shared stash starts at STASH_START x COST and grows STASH_FEED_PCT of every drop
+  // with no cap (the owner's call: a big pot draws everyone in). Every board shows one drop-only prize (PRIZE_PCT by rarity; rarer ones
   // sit in harder spots); hitting it wins it, or DUP_WATTS if the den already has one. Some boards are
   // golden (seeds x2) or have a lucky crate wedged on a root (the usual crate table).
-  // Tuned on simulated drops with every prize already owned and the stash at its cap: about 0.89 back
-  // per drop on average, 0.955 at the best aim, so the game always takes in more watts than it pays out.
+  // Tuned on simulated drops (watts only, no items): about 0.86 back per drop on average; the stash is
+  // about 0.06 of that at its usual size. Past roughly 18x COST in the stash a well-aimed drop pays back
+  // more than it costs until someone wins it: that's the pull. The pot is player-funded (only the
+  // STASH_START seed is new watts), so overall the game still takes in more than it pays out.
   DROP: {
-    COST: 500, STASH_START: 6, STASH_MAX: 14, STASH_FEED_PCT: 5, GOLDEN_ONE_IN: 8, CRATE_ONE_IN: 10, MIN_GAP_MS: 1500,
+    COST: 500, STASH_START: 6, STASH_FEED_PCT: 5, GOLDEN_ONE_IN: 8, CRATE_ONE_IN: 10, MIN_GAP_MS: 1500,
     PRIZE_PCT: { common: 55, uncommon: 26, rare: 12, epic: 5, legendary: 2 },
     DUP_WATTS: { common: 10, uncommon: 40, rare: 150, epic: 500, legendary: 1500 },
   },
@@ -860,7 +862,7 @@ function playDrop(st, token, body, now = Date.now(), { rng = Math.random, seed =
   const P = DropSim.PAY;
   p.watts -= B.COST;
   dropStash(st);
-  st.drop.stash = Math.min(B.COST * B.STASH_MAX, st.drop.stash + Math.round((B.COST * B.STASH_FEED_PCT) / 100));
+  st.drop.stash += Math.round((B.COST * B.STASH_FEED_PCT) / 100);
   let land = 0, stashWon = 0;
   if (r.slotId === "stash") { land = stashWon = st.drop.stash; st.drop.stash = B.COST * B.STASH_START; }
   else land = Math.round(B.COST * P[r.slotId]);
