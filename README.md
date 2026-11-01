@@ -120,7 +120,7 @@ All numbers live in `BALANCE.BOOSTS`, `SHIELD`, `CRATES` and `GOLDEN` and reach 
 
 ## Sound
 
-`public/sound.js`: effects are synthesized live with WebAudio; the music is two CC0 (public domain) tracks by Zane Little Music from OpenGameArt, in `public/music/`: "Apple Cider" in the den and "Pixel Sprinter" (loop) in Burrow Drop. Sound starts on the first click; the speaker button cycles music + effects, effects only, off. Browsers without Ogg Vorbis get effects only.
+`public/sound.js`: effects are synthesized live with WebAudio; the music is two CC0 (public domain) tracks from OpenGameArt, in `public/music/`: "Chill lofi inspired" by omfgdude in the den and "Pixel Sprinter" (loop) by Zane Little Music in Burrow Drop. Sound starts on the first click; the speaker button cycles music + effects, effects only, off. A browser that can't play a track's format gets effects only.
 
 ## Ideas for v3
 
