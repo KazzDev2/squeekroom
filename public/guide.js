@@ -56,4 +56,34 @@ fetch("/api/config", { cache: "no-store" })
     }
   })
   .catch(() => {}); // offline: the written defaults stay
+
+// The tutorial's live scenes (scenes.js), each drawn only while it's on screen. Reduced motion: one still frame.
+const SC = window.SqueekScenes;
+if (SC) {
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const items = [...document.querySelectorAll("canvas[data-scene]")].map((cv) => {
+    const s = SC.scenes[+cv.dataset.scene], c = cv.getContext("2d");
+    c.imageSmoothingEnabled = false;
+    const cap = document.querySelector(`figcaption[data-title="${cv.dataset.scene}"]`);
+    if (cap && s) cap.textContent = s.title;
+    return { cv, c, s, on: false };
+  }).filter((x) => x.s);
+  const draw = (x, t) => { x.c.clearRect(0, 0, SC.W, SC.H); try { x.s.draw(x.c, t); } catch {} };
+  if (still) items.forEach((x) => draw(x, 1.2));
+  else {
+    const t0 = performance.now();
+    let raf = 0;
+    const frame = (now) => {
+      raf = 0;
+      const live = items.filter((x) => x.on);
+      for (const x of live) draw(x, (now - t0) / 1000);
+      if (live.length) raf = requestAnimationFrame(frame);
+    };
+    const io = new IntersectionObserver((es) => {
+      for (const e of es) { const x = items.find((y) => y.cv === e.target); if (x) x.on = e.isIntersecting; }
+      if (!raf) raf = requestAnimationFrame(frame);
+    });
+    items.forEach((x) => { draw(x, 0); io.observe(x.cv); });
+  }
+}
 })();

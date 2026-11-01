@@ -34,6 +34,10 @@ li ul{margin-top:4px}
 p{margin:4px 0}
 b[data-g]{font-weight:600}
 footer{color:var(--muted);font-size:12px;text-align:center;margin-top:20px}
+.scenes{display:flex;flex-wrap:wrap;justify-content:center;gap:12px;margin:4px 0 12px}
+.scenes figure{flex:1 1 240px;max-width:300px;margin:0}
+.scene{display:block;width:100%;height:auto;aspect-ratio:192/108;image-rendering:pixelated;border:2px solid var(--ink);border-radius:6px;background:#2a2620}
+.scenes figcaption{font-family:var(--display);font-size:11px;letter-spacing:.3px;color:var(--muted);text-align:center;margin-top:4px}
 </style>
 </head>
 <body>
@@ -46,6 +50,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:20px}
 
 <section>
   <h2>Earning watts</h2>
+  <div class="scenes"><figure><canvas class="scene" data-scene="0" width="192" height="108" role="img" aria-label="Squeektoshi running in his wheel while watts pop up"></canvas><figcaption data-title="0"></figcaption></figure><figure><canvas class="scene" data-scene="1" width="192" height="108" role="img" aria-label="Squeektoshi asleep in his bed at night, still earning"></canvas><figcaption data-title="1"></figcaption></figure></div>
   <ul>
     <li>Every block pays <b data-g="perBlock">10 W</b> on a basic wheel. Wheel upgrades raise that, up to <b data-g="wheelMax">3.5×</b>.</li>
     <li>When he sleeps, your bed earns instead, about <b data-g="bedHalf">half</b> as fast. Bed upgrades go up to <b data-g="bedMax">3.5×</b> too.</li>
@@ -57,16 +62,16 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:20px}
 
 <section>
   <h2>Your den</h2>
+  <div class="scenes"><figure><canvas class="scene" data-scene="2" width="192" height="108" role="img" aria-label="The wheel and bed upgrading tier by tier"></canvas><figcaption data-title="2"></figcaption></figure></div>
   <ul>
     <li>Spend watts on furniture, rugs, wall decor, wallpaper, floors and skins. Drag things to move them; <b>F</b> turns them around.</li>
-    <li>Some pieces come in a few colours.</li>
-    <li>The wheel takes 3 floor tiles and the bed 2. You can move them like furniture.</li>
     <li>Den material (stone, iron, silver, gold, diamond) makes raids on you fail more often, up to <b data-g="defense">25%</b> less likely to land.</li>
   </ul>
 </section>
 
 <section>
   <h2>Raids</h2>
+  <div class="scenes"><figure><canvas class="scene" data-scene="3" width="192" height="108" role="img" aria-label="Squeektoshi carrying watts home from a richer den"></canvas><figcaption data-title="3"></figcaption></figure><figure><canvas class="scene" data-scene="4" width="192" height="108" role="img" aria-label="The top den's walls turning raids away"></canvas><figcaption data-title="4"></figcaption></figure></div>
   <ul>
     <li>Raids only open while Squeektoshi runs. You get <b data-g="perDay">10</b> a day; they come back at 00:00 UTC.</li>
     <li>Your den can raid, and be raided, once it has earned <b data-g="minEarned">5,000 W</b> from the wheel or bed.</li>
@@ -114,6 +119,8 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:20px}
 
 <footer>Numbers on this page come straight from the game.</footer>
 </main>
+<script src="sprites.js"></script>
+<script src="scenes.js"></script>
 <script src="guide.js"></script>
 </body>
 </html>
