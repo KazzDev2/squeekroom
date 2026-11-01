@@ -16,6 +16,12 @@
 }
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15130f; --panel:#1e1b16; --ink:#f1ece2; --muted:#a39b8d; --line:#3a352c; --gold:#ffd166; color-scheme:dark}}
 :root[data-theme="dark"]{--bg:#15130f; --panel:#1e1b16; --ink:#f1ece2; --muted:#a39b8d; --line:#3a352c; --gold:#ffd166; color-scheme:dark}
+/* the page follows the board's look (drop.js sets data-look on <html>) */
+:root[data-look="garden"]{--bg:#e0f2fe;--panel:#ffffff;--ink:#1d1a14;--muted:#52606d;--line:#bae6fd;--gold:#b45309;color-scheme:light}
+:root[data-look="moonlit"]{--bg:#120f24;--panel:#1e1a3a;--ink:#ede9fe;--muted:#a5a0c8;--line:#2e2a52;--gold:#fde68a;color-scheme:dark}
+:root[data-look="cozy"]{--bg:#f3efe6;--panel:#fffdf8;--ink:#1d1a14;--muted:#6b645a;--line:#d9d2c3;--gold:#c2410c;color-scheme:light}
+:root[data-look="crystal"]{--bg:#0b1120;--panel:#1e293b;--ink:#e2e8f0;--muted:#94a3b8;--line:#334155;--gold:#fde047;color-scheme:dark}
+body{transition:background-color .8s}
 *{box-sizing:border-box}
 html,body{margin:0}
 body{background:var(--bg);color:var(--ink);font:14px/1.5 var(--mono);padding:0 16px 24px;min-height:100vh}
