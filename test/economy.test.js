@@ -23,7 +23,7 @@ test("catalog: unique ids, schema, defaults free, wheel tiers 1..5", () => {
     assert.ok(Number.isInteger(i.price) && i.price >= 0);
     assert.ok(["wheel", "bed", "room", "wallpaper", "floor", "rug", "furniture", "wall", "skin"].includes(i.cat));
   }
-  const free = CATALOG.filter((i) => i.price === 0).map((i) => i.id).sort();
+  const free = CATALOG.filter((i) => i.price === 0 && !i.crate).map((i) => i.id).sort();
   assert.deepEqual(free, ["fl_pine", "fl_straw", "skin_classic", "wp_dirt", "wp_plain"]);
   const wheels = CATALOG.filter((i) => i.cat === "wheel");
   assert.deepEqual(wheels.map((w) => w.tier), [1, 2, 3, 4, 5]);
@@ -42,8 +42,8 @@ test("new player: 10,000 W welcome grant (a first purchase right away), tier 0, 
   assert.equal(W0, 10_000);
   assert.equal(p.watts, W0);
   const cheapest = Math.min(...CATALOG.filter((i) => i.price > 0).map((i) => i.price));
-  assert.equal(cheapest, 1200);
-  assert.ok(canBuy(p, "fur_seed_bowl").ok, "the 1,200 W seed bowl is affordable on arrival");
+  assert.equal(cheapest, 300); // v3: several small things on day one
+  assert.ok(canBuy(p, "fur_seed_bowl", T0).ok, "the 1,200 W seed bowl is affordable on arrival");
   assert.equal(p.wheelTier, 0);
   assert.equal(p.skin, "skin_classic");
   assert.equal(p.wallpaper, "wp_plain");
@@ -125,7 +125,7 @@ test("balance: tier-1 wheel affordable within 1.5 simulated days at tier 0", () 
   const blocksPerDay = 1034; // low end of the observed rhythm
   let blocks = 0;
   // credit one block at a time (worst case for rounding), no heartbeat
-  while (!canBuy(p, "wheel_t1").ok) {
+  while (!canBuy(p, "wheel_t1", T0).ok) {
     accrue(p, 1, T0);
     blocks++;
   }
@@ -134,13 +134,13 @@ test("balance: tier-1 wheel affordable within 1.5 simulated days at tier 0", () 
 
 // ---------- buy rules ----------
 test("buy: unknown item", () => {
-  assert.deepEqual(canBuy(fresh(), "nope"), { ok: false, error: "unknown_item" });
-  assert.equal(canBuy(fresh(), "__proto__").error, "unknown_item");
-  assert.equal(canBuy(fresh(), 42).error, "unknown_item");
+  assert.deepEqual(canBuy(fresh(), "nope", T0), { ok: false, error: "unknown_item" });
+  assert.equal(canBuy(fresh(), "__proto__", T0).error, "unknown_item");
+  assert.equal(canBuy(fresh(), 42, T0).error, "unknown_item");
 });
 
 test("buy: poor returns need", () => {
-  const r = canBuy(fresh(), "fur_golden_statue"); // 150,000 > 10,000
+  const r = canBuy(fresh(), "fur_golden_statue", T0); // 150,000 > 10,000
   assert.equal(r.ok, false);
   assert.equal(r.error, "poor");
   assert.equal(r.need, 140_000);
@@ -148,34 +148,34 @@ test("buy: poor returns need", () => {
 
 test("buy: deducts server-side price, placeables stack", () => {
   const p = fresh({ watts: 4000 });
-  assert.ok(S.applyBuy(p, "fur_seed_bowl").ok);
-  assert.ok(S.applyBuy(p, "fur_seed_bowl").ok);
+  assert.ok(S.applyBuy(p, "fur_seed_bowl", T0).ok);
+  assert.ok(S.applyBuy(p, "fur_seed_bowl", T0).ok);
   assert.equal(p.watts, 1600);
   assert.equal(p.owned.fur_seed_bowl, 2);
 });
 
 test("buy: wheel tiers strictly in order", () => {
   const p = fresh({ watts: 1_000_000 });
-  assert.equal(canBuy(p, "wheel_t2").error, "wrong_tier");
-  assert.equal(canBuy(p, "wheel_t5").error, "wrong_tier");
-  assert.ok(S.applyBuy(p, "wheel_t1").ok);
+  assert.equal(canBuy(p, "wheel_t2", T0).error, "wrong_tier");
+  assert.equal(canBuy(p, "wheel_t5", T0).error, "wrong_tier");
+  assert.ok(S.applyBuy(p, "wheel_t1", T0).ok);
   assert.equal(p.wheelTier, 1);
-  assert.equal(canBuy(p, "wheel_t1").error, "already_owned");
-  assert.ok(S.applyBuy(p, "wheel_t2").ok);
+  assert.equal(canBuy(p, "wheel_t1", T0).error, "already_owned");
+  assert.ok(S.applyBuy(p, "wheel_t2", T0).ok);
   assert.equal(p.wheelTier, 2);
   assert.equal(p.watts, 1_000_000 - 10_000 - 36_000);
-  assert.equal(canBuy(p, "wheel_t4").error, "wrong_tier");
+  assert.equal(canBuy(p, "wheel_t4", T0).error, "wrong_tier");
 });
 
 test("buy: skins, wallpapers, floors are single-copy; defaults already owned", () => {
   const p = fresh({ watts: 100_000 });
-  assert.ok(S.applyBuy(p, "skin_albino").ok);
-  assert.equal(canBuy(p, "skin_albino").error, "already_owned");
-  assert.ok(S.applyBuy(p, "wp_polka").ok);
-  assert.equal(canBuy(p, "wp_polka").error, "already_owned");
-  assert.ok(S.applyBuy(p, "fl_checker").ok);
-  assert.equal(canBuy(p, "fl_checker").error, "already_owned");
-  for (const id of ["skin_classic", "wp_dirt", "wp_plain", "fl_straw", "fl_pine"]) assert.equal(canBuy(p, id).error, "already_owned");
+  assert.ok(S.applyBuy(p, "skin_albino", T0).ok);
+  assert.equal(canBuy(p, "skin_albino", T0).error, "already_owned");
+  assert.ok(S.applyBuy(p, "wp_polka", T0).ok);
+  assert.equal(canBuy(p, "wp_polka", T0).error, "already_owned");
+  assert.ok(S.applyBuy(p, "fl_checker", T0).ok);
+  assert.equal(canBuy(p, "fl_checker", T0).error, "already_owned");
+  for (const id of ["skin_classic", "wp_dirt", "wp_plain", "fl_straw", "fl_pine"]) assert.equal(canBuy(p, id, T0).error, "already_owned");
   assert.equal(p.watts, 100_000 - 20_000 - 2400 - 2400);
 });
 
@@ -439,23 +439,23 @@ test("catalog: bed and room ladders (tiers 1..5, not placeable); teacup bed stay
 test("buy: bed tiers strictly in order, set bedTier, single copy", () => {
   const p = fresh({ watts: 1_000_000 });
   assert.equal(p.bedTier, 0);
-  assert.equal(canBuy(p, "bed_t2").error, "wrong_tier");
-  assert.equal(canBuy(p, "bed_t5").error, "wrong_tier");
-  assert.ok(S.applyBuy(p, "bed_t1").ok);
+  assert.equal(canBuy(p, "bed_t2", T0).error, "wrong_tier");
+  assert.equal(canBuy(p, "bed_t5", T0).error, "wrong_tier");
+  assert.ok(S.applyBuy(p, "bed_t1", T0).ok);
   assert.equal(p.bedTier, 1);
   assert.equal(p.owned.bed_t1, 1);
-  assert.equal(canBuy(p, "bed_t1").error, "already_owned");
-  assert.ok(S.applyBuy(p, "bed_t2").ok);
+  assert.equal(canBuy(p, "bed_t1", T0).error, "already_owned");
+  assert.ok(S.applyBuy(p, "bed_t2", T0).ok);
   assert.equal(p.bedTier, 2);
-  assert.equal(canBuy(p, "bed_t1").error, "already_owned");
-  assert.equal(canBuy(p, "bed_t4").error, "wrong_tier");
+  assert.equal(canBuy(p, "bed_t1", T0).error, "already_owned");
+  assert.equal(canBuy(p, "bed_t4", T0).error, "wrong_tier");
   assert.equal(p.watts, 1_000_000 - 6000 - 20000);
   assert.equal(p.wheelTier, 0); // ladders are independent
   assert.equal(p.roomTier, 0);
   assert.equal(validatePlacement(p, "bed_t1", 0, 11).error, "not_placeable");
-  const r = canBuy(fresh(), "bed_t3");
+  const r = canBuy(fresh(), "bed_t3", T0);
   assert.equal(r.error, "wrong_tier"); // tier order is checked before price
-  assert.equal(canBuy(fresh({ bedTier: 2 }), "bed_t3").need, 60_000 - W0);
+  assert.equal(canBuy(fresh({ bedTier: 2 }), "bed_t3", T0).need, 60_000 - W0);
   // the new bed raises bed income right away
   assert.equal(S.bedCredit(p, 10 * 60_000, T0), 320);
 });
@@ -463,12 +463,12 @@ test("buy: bed tiers strictly in order, set bedTier, single copy", () => {
 test("buy: room material tiers strictly in order, set roomTier, single copy", () => {
   const p = fresh({ watts: 1_000_000 });
   assert.equal(p.roomTier, 0);
-  assert.equal(canBuy(p, "room_t3").error, "wrong_tier");
-  assert.ok(S.applyBuy(p, "room_t1").ok);
+  assert.equal(canBuy(p, "room_t3", T0).error, "wrong_tier");
+  assert.ok(S.applyBuy(p, "room_t1", T0).ok);
   assert.equal(p.roomTier, 1);
-  assert.equal(canBuy(p, "room_t1").error, "already_owned");
-  assert.equal(canBuy(p, "room_t3").error, "wrong_tier");
-  assert.ok(S.applyBuy(p, "room_t2").ok);
+  assert.equal(canBuy(p, "room_t1", T0).error, "already_owned");
+  assert.equal(canBuy(p, "room_t3", T0).error, "wrong_tier");
+  assert.ok(S.applyBuy(p, "room_t2", T0).ok);
   assert.equal(p.roomTier, 2);
   assert.equal(p.watts, 1_000_000 - 20000 - 60000);
   assert.equal(p.bedTier, 0);
@@ -2196,4 +2196,172 @@ test("golden blocks: deterministic from the height (~1 in 150), 10x wheel watts 
   S.accrueAll(st2, g + 2, T0, 100, () => 1); // 5 blocks, 1 golden: (5 + 9) x 12
   assert.equal(st2.players[TA].lifetimeWatts, 168);
   assert.ok("golden" in S.snapshot(null));
+});
+
+// ---------- v3 patch 3: decor wave, colourways, the daily shop ----------
+// Load every sprite file the page loads (in its order) into a sandbox, to check the catalog against the art.
+function loadSprites() {
+  const vm = require("node:vm"), fs = require("node:fs"), path = require("node:path");
+  const pub = path.join(__dirname, "..", "public");
+  const html = fs.readFileSync(path.join(pub, "index.html"), "utf8");
+  const files = [...html.matchAll(/<script src="(sprites[^"]*\.js)"><\/script>/g)].map((m) => m[1]);
+  const warns = [];
+  const ctx = { console: { log() {}, warn: (m) => warns.push(String(m)), error: (m) => warns.push(String(m)) }, document: { createElement: () => ({ getContext: () => null }) }, performance: { now: () => 0 } };
+  ctx.window = ctx;
+  vm.createContext(ctx);
+  for (const f of files) vm.runInContext(fs.readFileSync(path.join(pub, f), "utf8"), ctx, { filename: f });
+  return { SPR: ctx.SPRITES, files, warns };
+}
+
+test("v3 catalog: the new items, prices, sizes and zones", () => {
+  const want = {
+    wall_paw_stickers: [300, 1, 1, "wall"], wall_run_poster: [400, 1, 2, "wall"], wall_doodle: [500, 1, 1, "wall"], wall_polaroids: [800, 3, 1, "wall"],
+    wall_mirror: [900, 2, 2, "wall"], wall_ivy: [1000, 2, 2, "wall"], wall_portrait: [1200, 2, 2, "wall"], wall_fairy_lights: [1800, 4, 1, "wall"], wall_fish_tank: [22_000, 2, 2, "wall"],
+    fur_mushroom: [300, 1, 1, "floor"], fur_yarn: [400, 1, 1, "floor"], fur_water_bottle: [500, 1, 2, "floor"], fur_fern: [600, 1, 2, "floor"], fur_stool: [700, 1, 1, "floor"],
+    fur_melon_cushion: [900, 1, 1, "floor"], fur_box_house: [1500, 2, 2, "floor"], fur_hammock: [14_000, 2, 2, "floor"],
+    rug_doormat: [500, 2, 1, "rug"], rug_leaves: [600, 2, 1, "rug"], rug_sand: [800, 3, 1, "rug"],
+  };
+  for (const [id, [price, w, h, zone]] of Object.entries(want)) {
+    const it = S.CATALOG_BY_ID.get(id);
+    assert.ok(it, id);
+    assert.deepEqual([it.price, it.w, it.h, it.zone, it.sprite, !!it.crate], [price, w, h, zone, id, false], id);
+  }
+  assert.equal(S.CATALOG_BY_ID.get("wall_fairy_lights").animated, true);
+  assert.equal(S.CATALOG_BY_ID.get("wall_fish_tank").animated, true);
+  const cheap = CATALOG.filter((i) => i.price >= 300 && i.price <= 2000 && !i.colorOf).length;
+  assert.ok(cheap >= 20, `${cheap} items in the 300-2,000 W band`);
+  // the crate-only jackpots: never sold, never a free default, but in the crate decor table
+  const crate = CATALOG.filter((i) => i.crate).map((i) => i.id).sort();
+  assert.deepEqual(crate, ["fur_clover_jar", "fur_sunflower", "wall_lucky_lantern", "wall_shooting_star"]);
+  for (const id of crate) {
+    assert.equal(S.CATALOG_BY_ID.get(id).price, 0);
+    assert.ok(!S.FREE_IDS.includes(id), id);
+    assert.ok(!(id in S.newPlayer(1000, T0).owned), id);
+  }
+  assert.equal(S.CATALOG_BY_ID.get("fur_sunflower").zone, "floor");
+  assert.equal(S.CATALOG_BY_ID.get("wall_lucky_lantern").animated, true);
+});
+
+test("v3 catalog integrity: unique ids, valid zones, every sprite exists (flat always, iso for floor items)", () => {
+  const ids = CATALOG.map((i) => i.id);
+  assert.equal(new Set(ids).size, ids.length);
+  const { SPR, files, warns } = loadSprites();
+  assert.deepEqual(warns, [], "sprite rows all the right length");
+  assert.ok(files.includes("sprites_crate.js") && files.includes("sprites_v3_floor_b.js"), files.join(","));
+  for (const it of CATALOG) {
+    assert.ok([null, "floor", "wall", "rug"].includes(it.zone), it.id);
+    if (it.zone) {
+      assert.ok(Number.isInteger(it.w) && it.w >= 1 && Number.isInteger(it.h) && it.h >= 1, it.id);
+      if (it.zone === "wall") assert.ok(it.h <= S.ROOM.WALL_BOTTOM - S.ROOM.WALL_TOP + 1 && it.w <= S.ROOM.COLS, it.id);
+    }
+    if (!it.zone && !["wallpaper", "floor"].includes(it.cat) && it.cat !== "skin") continue; // ladders draw their own art
+    const flat = SPR[it.sprite];
+    assert.ok(flat, `flat sprite ${it.sprite} for ${it.id}`);
+    if (it.zone === "rug" || it.zone === "wall" || it.zone === "floor") {
+      if (typeof flat !== "function") {
+        const want = it.zone === "rug" ? [16 * it.w, 10] : [16 * it.w, 16 * it.h];
+        assert.deepEqual([flat.w, flat.h], want, `${it.id} flat size`);
+      }
+    }
+    if (it.zone === "floor") {
+      const iso = SPR["iso_" + it.sprite];
+      assert.ok(iso && iso.iso, `iso sprite iso_${it.sprite} for ${it.id}`);
+      const W = 16 * (it.w + 1), H = 16 * it.h + 8 * (it.w + 1);
+      assert.deepEqual([iso.w, iso.h, iso.iso.ax, iso.iso.ay], [W, H, W - 16, H], `${it.id} iso geometry`);
+    }
+  }
+  assert.ok(SPR.crate && SPR.iso_crate && SPR.iso_crate.iso, "the crate parcel");
+});
+
+test("v3 colourways: share the base art, valid palette remaps, same price; fairy lights + melon keep their swap colours apart", () => {
+  const cw = CATALOG.filter((i) => i.colorOf);
+  assert.equal(cw.length, 12);
+  const per = {};
+  for (const it of cw) {
+    const base = S.CATALOG_BY_ID.get(it.colorOf);
+    assert.ok(base && !base.colorOf, it.id);
+    assert.deepEqual([it.sprite, it.price, it.zone, it.w, it.h, it.cat], [base.sprite, base.price, base.zone, base.w, base.h, base.cat], it.id);
+    assert.ok(Array.isArray(it.remap) && it.remap.length > 0, it.id);
+    for (const [a, b] of it.remap) assert.ok(Number.isInteger(a) && Number.isInteger(b) && a >= 2 && a <= 15 && b >= 1 && b <= 15, `${it.id} ${a}->${b}`);
+    per[it.colorOf] = (per[it.colorOf] || 0) + 1;
+  }
+  assert.deepEqual(per, { rug_rag: 3, wall_pennant: 3, wall_fairy_lights: 2, fur_melon_cushion: 2, fur_sofa: 2 }); // 4, 4, 3, 3, 3 colours with the base
+  // every colour a remap touches is actually in the base art (so each colourway looks different)
+  const { SPR } = loadSprites();
+  const used = (id) => { const s = new Set(); for (const fr of SPR[id].rows) for (const r of fr) for (const ch of r) if (ch !== ".") s.add(parseInt(ch, 16)); return s; };
+  for (const it of cw) for (const [a] of it.remap) assert.ok(used(it.sprite).has(a), `${it.id}: ${a.toString(16)} not in ${it.sprite}`);
+  // the swap colours of the new art sit only where they should
+  const lights = used("wall_fairy_lights");
+  assert.deepEqual([...lights].sort((a, b) => a - b), [1, 2, 6, 7, 9, 11, 14]);
+  for (const id of ["fur_melon_cushion", "iso_fur_melon_cushion"]) assert.deepEqual([...used(id)].sort((a, b) => a - b), [1, 2, 9, 10, 11, 12], id);
+  // colourways sit right after their base in the shop
+  const order = CATALOG.map((i) => i.id);
+  assert.deepEqual(order.slice(order.indexOf("rug_rag"), order.indexOf("rug_rag") + 4), ["rug_rag", "rug_rag_sea", "rug_rag_meadow", "rug_rag_ember"]);
+});
+
+test("daily shop: 3 picks from the UTC date, the same for everyone, new at 00:00 UTC; never tiers, free, crate-only or colourways", () => {
+  assert.deepEqual(BALANCE.DAILY, { COUNT: 3, OFF_PCT: 30 });
+  const day = Date.UTC(2026, 10, 1, 0, 0, 0);
+  const a = S.dailyShop(day + 1000), b = S.dailyShop(day + 86_399_999);
+  assert.deepEqual(a.items, b.items); // all day long
+  assert.equal(a.items.length, 3);
+  assert.equal(new Set(a.items).size, 3);
+  assert.deepEqual([a.day, a.offPct, a.resetMs], ["2026-11-01", 30, 86_400_000 - 1000]);
+  assert.deepEqual(S.dailyPicks("2026-11-01"), a.items); // a pure function of the date
+  const days = [];
+  for (let d = 0; d < 60; d++) days.push(S.dailyShop(day + d * 86_400_000).items.join(","));
+  assert.ok(new Set(days).size >= 55, "it rotates"); // a repeat is possible, a stuck shop is not
+  const seen = new Set();
+  for (let d = 0; d < 400; d++) for (const id of S.dailyShop(day + d * 86_400_000).items) seen.add(id);
+  for (const id of seen) {
+    const it = S.CATALOG_BY_ID.get(id);
+    assert.ok(it.price > 0 && !it.crate && !it.colorOf && !["wheel", "bed", "room"].includes(it.cat), id);
+  }
+  assert.ok(seen.size > 30, `${seen.size} different items over 400 days`);
+  assert.ok(!S.DAILY_POOL.some((id) => /^(wheel|bed|room)_t/.test(id)));
+});
+
+test("daily shop: the 30% discount is applied server-side, only today, only to the picks", () => {
+  const day = Date.UTC(2026, 10, 1, 12);
+  const [pick] = S.dailyShop(day).items;
+  const it = S.CATALOG_BY_ID.get(pick);
+  const off = Math.floor((it.price * 70) / 100);
+  assert.equal(S.priceFor(it, day), off);
+  const other = CATALOG.find((i) => i.price > 0 && !S.dailyShop(day).items.includes(i.id) && !S.dailyShop(day + 86_400_000).items.includes(i.id));
+  assert.equal(S.priceFor(other, day), other.price);
+  const p = fresh({ watts: it.price });
+  const r = S.applyBuy(p, pick, day);
+  assert.deepEqual([r.ok, r.price, p.watts], [true, off, it.price - off]);
+  // tomorrow it's full price again (unless it's picked again)
+  const tomorrow = day + 86_400_000;
+  if (!S.dailyShop(tomorrow).items.includes(pick)) assert.equal(S.priceFor(it, tomorrow), it.price);
+  // the poor check uses the discounted price too
+  const q = fresh({ watts: off });
+  assert.ok(S.canBuy(q, pick, day).ok || it.cat === "skin" || ["wallpaper", "floor"].includes(it.cat));
+  assert.equal(S.canBuy(fresh({ watts: off - 1 }), pick, day).need, 1);
+  // tiers are never discounted
+  for (let d = 0; d < 100; d++) for (const t of ["wheel_t1", "bed_t1", "room_t1"]) assert.equal(S.priceFor(S.CATALOG_BY_ID.get(t), day + d * 86_400_000), S.CATALOG_BY_ID.get(t).price);
+  // the snapshot carries today's picks for the shop strip
+  assert.deepEqual(Object.keys(S.snapshot(null).daily).sort(), ["day", "items", "offPct", "resetMs"]);
+});
+
+test("crate-only decor can't be bought, but drops from crates and places like any other item", () => {
+  const p = fresh({ watts: 1e9 });
+  for (const id of ["fur_sunflower", "fur_clover_jar", "wall_lucky_lantern", "wall_shooting_star"]) {
+    assert.deepEqual(S.canBuy(p, id, T0), { ok: false, error: "crate_only" }, id);
+    assert.equal(S.applyBuy(p, id, T0).error, "crate_only");
+  }
+  assert.equal(p.watts, 1e9);
+  // the decor slot of the crate table hands one out (seeded), then rerolls duplicates to 800 W
+  const decor = CATALOG.filter((i) => i.crate).map((i) => i.id);
+  const q = fresh({ lastHeartbeat: T0 }), st = { players: { [TA]: q } };
+  S.rollCrates(q, 1, T0, seq(0, 0.97, (decor.indexOf("fur_sunflower") + 0.5) / decor.length, 0.5));
+  assert.equal(q.crates.length, 1);
+  assert.deepEqual(S.openCrate(st, TA, { id: q.crates[0].id }, T0).got, { kind: "decor", item: "fur_sunflower" });
+  assert.equal(q.owned.fur_sunflower, 1);
+  assert.deepEqual(S.rollCrateContents(q, seq(0.97, (decor.indexOf("fur_sunflower") + 0.5) / decor.length)), { kind: "watts", watts: 800, dup: "fur_sunflower" });
+  const v = S.validatePlacement(q, "fur_sunflower", 2, 6, null, false);
+  assert.equal(v.ok, true);
+  const w = S.validatePlacement(q, "wall_lucky_lantern", 4, 3);
+  assert.equal(w.error, "unowned");
 });

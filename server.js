@@ -134,6 +134,9 @@ const BALANCE = {
   // Golden blocks: a settled height is golden when its hash says so (~1 in ONE_IN, the same answer on
   // every boot). It pays MULT_PCT wheel watts to every den watching when it settles; others get the normal rate.
   GOLDEN: { ONE_IN: 150, MULT_PCT: 1000 },
+  // Daily shop: COUNT items picked from the UTC date (same for everyone), OFF_PCT off until 00:00 UTC.
+  // Never wheel/bed/room tiers, free items, crate-only decor or colourways (their base can be picked).
+  DAILY: { COUNT: 3, OFF_PCT: 30 },
 };
 
 // ---------- room grid ----------
@@ -171,13 +174,17 @@ const tileOnFloor = ([i, j]) => i >= 0 && j >= 0 && i < ROOM.ISO_NI && j < ROOM.
 const tileKey = ([i, j]) => i * 100 + j;
 
 // ---------- catalog ----------
-// {id, name, cat, price, w, h, zone, sprite, tier?, multPct?, animated?}
+// {id, name, cat, price, w, h, zone, sprite, tier?, multPct?, animated?, crate?, remap?, colorOf?}
 // w/h are in cells; zone is "floor" | "wall" | "rug" for placeables, null otherwise.
+// crate: only found in lucky crates, never sold (price 0, but not one of the free defaults).
+// Colourways reuse their base item's art (sprite and iso_ sprite) with remap: [[from, to], ...]
+// palette-index pairs; the client builds the 16-entry map. colorOf names the base item.
 const style = (id, name, cat, price) => ({ id, name, cat, price, w: 0, h: 0, zone: null, sprite: id });
 const wheel = (tier, name, price) => ({ id: `wheel_t${tier}`, name, cat: "wheel", price, w: 0, h: 0, zone: null, sprite: `wheel_t${tier}`, tier, multPct: BALANCE.WHEEL_MULT_PCT[tier] });
 const bed = (tier, name, price) => ({ id: `bed_t${tier}`, name, cat: "bed", price, w: 0, h: 0, zone: null, sprite: `bed_t${tier}`, tier, multPct: BALANCE.BED_MULT_PCT[tier] });
 const roomMat = (tier, material, price) => ({ id: `room_t${tier}`, name: `${material} Room`, cat: "room", price, w: 0, h: 0, zone: null, sprite: `room_t${tier}`, tier, material });
 const place = (id, name, cat, price, w, h, zone, animated) => ({ id, name, cat, price, w, h, zone, sprite: id, ...(animated ? { animated: true } : {}) });
+const crateOnly = (id, name, cat, w, h, zone, animated) => ({ ...place(id, name, cat, 0, w, h, zone, animated), crate: true });
 
 const CATALOG = [
   // wheel upgrades (strictly in order; with beds, the only items that change generation)
@@ -215,6 +222,9 @@ const CATALOG = [
   place("rug_rag", "Round Rag Rug", "rug", 1_600, 2, 1, "rug"),
   place("rug_cheese", "Cheese Wedge Rug", "rug", 5_000, 3, 1, "rug"),
   place("rug_persian", "Pixel Persian", "rug", 14_000, 4, 1, "rug"),
+  place("rug_doormat", "Doormat", "rug", 500, 2, 1, "rug"),
+  place("rug_leaves", "Leaf Pile", "rug", 600, 2, 1, "rug"),
+  place("rug_sand", "Sand Patch", "rug", 800, 3, 1, "rug"),
   // floor furniture
   place("fur_seed_bowl", "Seed Bowl", "furniture", 1_200, 1, 1, "floor"),
   place("fur_cactus", "Cactus Pot", "furniture", 3_000, 1, 2, "floor"),
@@ -227,6 +237,17 @@ const CATALOG = [
   place("fur_jukebox", "Jukebox", "furniture", 50_000, 2, 3, "floor", true),
   place("fur_trophy_case", "Trophy Case", "furniture", 80_000, 2, 3, "floor"),
   place("fur_golden_statue", "Golden Seed Statue", "furniture", 150_000, 2, 3, "floor"),
+  // v3 decor wave: small, cheap things for the first days, plus a pricey hammock
+  place("fur_mushroom", "Tiny Mushroom", "furniture", 300, 1, 1, "floor"),
+  place("fur_yarn", "Ball of Yarn", "furniture", 400, 1, 1, "floor"),
+  place("fur_water_bottle", "Water Bottle", "furniture", 500, 1, 2, "floor"),
+  place("fur_fern", "Potted Fern", "furniture", 600, 1, 2, "floor"),
+  place("fur_stool", "Tiny Stool", "furniture", 700, 1, 1, "floor"),
+  place("fur_melon_cushion", "Watermelon Cushion", "furniture", 900, 1, 1, "floor"),
+  place("fur_box_house", "Cardboard Box House", "furniture", 1_500, 2, 2, "floor"),
+  place("fur_hammock", "Hamster Hammock", "furniture", 14_000, 2, 2, "floor"),
+  crateOnly("fur_sunflower", "Golden Sunflower", "furniture", 1, 2, "floor"),
+  crateOnly("fur_clover_jar", "Four-Leaf Clover Jar", "furniture", 1, 1, "floor"),
   // wall decor (rows 2..7)
   place("wall_pennant", "Pennant", "wall", 1_400, 1, 1, "wall"),
   place("wall_photo", "Family Photo", "wall", 1_800, 1, 1, "wall"),
@@ -236,6 +257,17 @@ const CATALOG = [
   place("wall_cuckoo", "Cuckoo Clock", "wall", 24_000, 1, 2, "wall"),
   place("wall_tv", "Wall TV", "wall", 36_000, 2, 2, "wall", true),
   place("wall_plaque", "Speed Record Plaque", "wall", 60_000, 2, 1, "wall"),
+  place("wall_paw_stickers", "Paw Print Stickers", "wall", 300, 1, 1, "wall"),
+  place("wall_run_poster", "\"RUN\" Poster", "wall", 400, 1, 2, "wall"),
+  place("wall_doodle", "Doodle of Squeektoshi", "wall", 500, 1, 1, "wall"),
+  place("wall_polaroids", "Polaroid String", "wall", 800, 3, 1, "wall"),
+  place("wall_mirror", "Round Mirror", "wall", 900, 2, 2, "wall"),
+  place("wall_ivy", "Hanging Ivy", "wall", 1_000, 2, 2, "wall"),
+  place("wall_portrait", "Framed Squeektoshi Portrait", "wall", 1_200, 2, 2, "wall"),
+  place("wall_fairy_lights", "Fairy Lights", "wall", 1_800, 4, 1, "wall", true),
+  place("wall_fish_tank", "Fish Tank", "wall", 22_000, 2, 2, "wall", true),
+  crateOnly("wall_lucky_lantern", "Lucky Lantern", "wall", 1, 2, "wall", true),
+  crateOnly("wall_shooting_star", "Shooting Star", "wall", 2, 1, "wall", true),
   // hamster skins (palette remaps of one sprite set)
   style("skin_classic", "Classic", "skin", 0),
   style("skin_albino", "Albino", "skin", 20_000),
@@ -244,13 +276,58 @@ const CATALOG = [
   style("skin_shadow", "Shadow", "skin", 50_000),
   style("skin_golden", "Golden", "skin", 120_000),
 ];
+// Colourways: the same art with a palette swap (see the catalog header). Same price as the base.
+const COLORWAYS = [
+  ["rug_rag", "rug_rag_sea", "Round Rag Rug (Sea)", [[0xf, 0x7], [0x7, 0x8], [0x6, 0x2], [0xb, 0x9], [0xc, 0x7]]],
+  ["rug_rag", "rug_rag_meadow", "Round Rag Rug (Meadow)", [[0xf, 0x9], [0x7, 0xa], [0xb, 0x3], [0xc, 0x9]]],
+  ["rug_rag", "rug_rag_ember", "Round Rag Rug (Ember)", [[0xf, 0xb], [0x7, 0x4], [0xb, 0x5], [0xc, 0x3]]],
+  ["wall_pennant", "wall_pennant_blue", "Pennant (Blue)", [[0xc, 0x7], [0xb, 0x8]]],
+  ["wall_pennant", "wall_pennant_green", "Pennant (Green)", [[0xc, 0x9], [0xb, 0xa]]],
+  ["wall_pennant", "wall_pennant_gold", "Pennant (Gold)", [[0xc, 0x6], [0xb, 0x3], [0x4, 0x5]]],
+  ["wall_fairy_lights", "wall_fairy_lights_warm", "Fairy Lights (Warm)", [[0xb, 0x6], [0x7, 0x3], [0x9, 0x6]]],
+  ["wall_fairy_lights", "wall_fairy_lights_rose", "Fairy Lights (Rose)", [[0x6, 0xc], [0xb, 0xf], [0x7, 0xc], [0x9, 0xf]]],
+  ["fur_melon_cushion", "fur_kiwi_cushion", "Kiwi Cushion", [[0xb, 0x9], [0xc, 0x6], [0x9, 0x4], [0xa, 0x5]]],
+  ["fur_melon_cushion", "fur_orange_cushion", "Orange Cushion", [[0xb, 0x3], [0xc, 0x6], [0x9, 0x4], [0xa, 0x5]]],
+  ["fur_sofa", "fur_sofa_navy", "Mini Sofa (Navy)", [[0xb, 0x7], [0xc, 0xf], [0x4, 0x8]]],
+  ["fur_sofa", "fur_sofa_moss", "Mini Sofa (Moss)", [[0xb, 0x9], [0xc, 0x6], [0x4, 0xa]]],
+];
+for (const [baseId, id, name, remap] of COLORWAYS) {
+  const at = CATALOG.findIndex((i) => i.id === baseId);
+  const base = CATALOG[at];
+  let end = at + 1; // keep a base's colourways together, right after it
+  while (end < CATALOG.length && CATALOG[end].colorOf === baseId) end++;
+  CATALOG.splice(end, 0, { ...base, id, name, remap, colorOf: baseId });
+}
 const CATALOG_BY_ID = new Map(CATALOG.map((i) => [i.id, i]));
 const SINGLE_COPY = new Set(["wallpaper", "floor", "skin"]);
 // Tier ladders: bought strictly in order, one copy each; buying sets the player field to the tier.
 const TIER_FIELD = { wheel: "wheelTier", bed: "bedTier", room: "roomTier" };
 const tierField = (cat) => (Object.hasOwn(TIER_FIELD, cat) ? TIER_FIELD[cat] : null);
 const DEFAULTS = { skin: "skin_classic", wallpaper: "wp_plain", floor: "fl_straw" };
-const FREE_IDS = CATALOG.filter((i) => i.price === 0).map((i) => i.id); // every player owns these
+const FREE_IDS = CATALOG.filter((i) => i.price === 0 && !i.crate).map((i) => i.id); // every player owns these
+
+// ---------- daily shop ----------
+// DAILY.COUNT picks from the UTC date's hash (the same for everyone, new at 00:00 UTC), OFF_PCT off.
+const DAILY_POOL = CATALOG.filter((i) => i.price > 0 && !i.crate && !i.colorOf && !Object.hasOwn(TIER_FIELD, i.cat)).map((i) => i.id);
+const dailyCache = { day: null, items: [] };
+function dailyPicks(day) {
+  if (dailyCache.day === day) return dailyCache.items;
+  const h = crypto.createHash("sha256").update(`squeekden-daily|${day}`).digest("hex");
+  const pool = DAILY_POOL.slice(), items = [];
+  for (let k = 0; k < BALANCE.DAILY.COUNT && pool.length; k++) items.push(pool.splice(parseInt(h.slice(k * 8, k * 8 + 8), 16) % pool.length, 1)[0]);
+  dailyCache.day = day;
+  dailyCache.items = items;
+  return items;
+}
+function dailyShop(now = Date.now()) {
+  const day = new Date(now).toISOString().slice(0, 10);
+  return { day, items: dailyPicks(day).slice(), offPct: BALANCE.DAILY.OFF_PCT, resetMs: 86_400_000 - (now % 86_400_000) };
+}
+// What an item costs right now (the daily discount applied server-side).
+function priceFor(item, now = Date.now()) {
+  if (!item) return 0;
+  return dailyPicks(new Date(now).toISOString().slice(0, 10)).includes(item.id) ? Math.floor((item.price * (100 - BALANCE.DAILY.OFF_PCT)) / 100) : item.price;
+}
 
 // ---------- fixtures: the wheel and the bed ----------
 const FIXTURES = ["wheel", "bed"];
@@ -715,9 +792,10 @@ const speedOpts = (baseBpm, B = BALANCE.SPEED) => ({ windowMs: B.WINDOW_MS, base
 // The live speed bonus now. SPEED_BASE_BPM is fixed at boot (below REPLAY_SCHEDULE).
 const currentSpeedPct = (now = Date.now()) => speedPctFrom(speedSamples, now, speedOpts(SPEED_BASE_BPM));
 
-function canBuy(player, itemId) {
+function canBuy(player, itemId, now = Date.now()) {
   const item = typeof itemId === "string" ? CATALOG_BY_ID.get(itemId) : undefined;
   if (!item) return { ok: false, error: "unknown_item" };
+  if (item.crate) return { ok: false, error: "crate_only" };
   const field = tierField(item.cat);
   if (field) {
     const cur = player[field] | 0;
@@ -726,18 +804,19 @@ function canBuy(player, itemId) {
   } else if (SINGLE_COPY.has(item.cat) && (player.owned[item.id] || 0) > 0) {
     return { ok: false, error: "already_owned" };
   }
-  if (player.watts < item.price) return { ok: false, error: "poor", need: item.price - player.watts };
-  return { ok: true, item };
+  const price = priceFor(item, now);
+  if (player.watts < price) return { ok: false, error: "poor", need: price - player.watts };
+  return { ok: true, item, price };
 }
-function applyBuy(player, itemId) {
-  const c = canBuy(player, itemId);
+function applyBuy(player, itemId, now = Date.now()) {
+  const c = canBuy(player, itemId, now);
   if (!c.ok) return c;
   const item = c.item;
-  player.watts -= item.price;
+  player.watts -= c.price;
   player.owned[item.id] = (player.owned[item.id] || 0) + 1;
   const field = tierField(item.cat);
   if (field) player[field] = item.tier;
-  return { ok: true, item };
+  return { ok: true, item, price: c.price };
 }
 
 const fail = (error) => ({ ok: false, error });
@@ -1710,6 +1789,7 @@ function snapshot(token, ip = null) {
     idle: asleep(state, now, readAt), // asleep (live reading, else the chain): bed income flows, raids are closed
     speedPct: currentSpeedPct(now), // speed bonus on wheel income (100 = none), from the chain's cadence
     golden: state.lastGolden || null, // newest golden block {height, at}: 10x wheel watts for everyone watching
+    daily: dailyShop(now), // today's discounted picks {day, items, offPct, resetMs}
     raid: viewer ? raidStatus(state, viewer, now, readAt) : null, // this viewer's raid window + cooldown
     raidFeed: (Array.isArray(state.raidFeed) ? state.raidFeed : []).slice(-BALANCE.RAID.FEED_SNAPSHOT), // oldest first
     burned: state.burned || 0,
@@ -1746,7 +1826,7 @@ const POST_ROUTES = {
   "/api/buy": (b, p) => {
     const r = applyBuy(p, b.itemId);
     if (!r.ok) return err(400, r.error, r.need != null ? { need: r.need } : {});
-    return okMe(p, { item: r.item.id });
+    return okMe(p, { item: r.item.id, price: r.price });
   },
   "/api/place": (b, p) => {
     const v = validatePlacement(p, b.itemId, b.x, b.y, null, b.flip === true);
@@ -1966,7 +2046,8 @@ Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, apply
   replayReading, replayTick, leaveReplay, advanceTo,
   wattsFor, speedPctFrom, speedOpts, replayRunMeanBpm, recordSpeedSample,
   BOOST_KINDS, ITEM_KINDS, boostActive, useBoost, raiseShield, shieldUp, boughtShieldUp, shieldPrice, isGoldenBlock, goldenBetween,
-  rollCrateContents, rollCrates, crateTile, openCrate });
+  rollCrateContents, rollCrates, crateTile, openCrate,
+  COLORWAYS, DAILY_POOL, dailyPicks, dailyShop, priceFor, FREE_IDS });
 
 if (require.main === module) {
   if (DEMO && REPLAY_REQUESTED) {

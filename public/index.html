@@ -59,6 +59,20 @@ h1 .logo{width:40px;height:40px;image-rendering:pixelated;flex:none}
 .chip.on.shd{border-color:#3b82f6;color:#3b82f6}
 .chip.on.crate{border-color:#c2410c;color:#c2410c}
 .card .cdesc{font-size:11px;line-height:1.3;color:var(--muted)}
+.today{border:1px dashed var(--line);border-radius:8px;padding:6px;margin-bottom:8px}
+.todayhead{font-size:11px;color:var(--muted);margin-bottom:5px}
+.todayhead b{color:var(--ink);letter-spacing:.06em;text-transform:uppercase}
+.todayrow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.card.mini{padding:5px;gap:2px}
+.card.mini .thumb{width:48px;height:48px}
+.card.mini .cname{font-size:11px}
+.card.mini button{font-size:11px;padding:4px 2px}
+.card.mini .cmeta{display:block;white-space:normal;line-height:1.25}
+.card.mini .price s{display:block;font-size:10px}
+.card.mini .own{display:block}
+.card.deal .cmeta{flex-wrap:wrap;white-space:normal}
+.card .price s{color:var(--muted);font-weight:400}
+.card.deal{border-color:#f5a623}
 .spacer{flex:1}
 .demobar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px max(16px,env(safe-area-inset-right,0px)) 6px max(16px,env(safe-area-inset-left,0px));border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--chain) 7%,var(--panel))}
 .demobar[hidden]{display:none}
@@ -503,6 +517,7 @@ body.modal-open{overflow:hidden}
 
   <aside class="panel" id="shop">
     <div class="shophead"><h2>SHOP</h2><span class="wallet" id="wallet"></span></div>
+    <div class="today" id="today" hidden><div class="todayhead" id="todayHead"></div><div class="todayrow" id="todayRow"></div></div>
     <div class="tabs" id="tabs" role="tablist" aria-label="Shop categories"></div>
     <div class="cards" id="cards"></div>
     <div class="nickrow">
@@ -633,6 +648,10 @@ body.modal-open{overflow:hidden}
 <script src="sprites_iso_furniture.js"></script>
 <script src="sprites_iso_beds.js"></script>
 <script src="sprites_crate.js"></script>
+<script src="sprites_v3_wall_a.js"></script>
+<script src="sprites_v3_wall_b.js"></script>
+<script src="sprites_v3_floor_a.js"></script>
+<script src="sprites_v3_floor_b.js"></script>
 <script src="sprites_iso_wheel.js"></script>
 <script src="game.js"></script>
 <script src="wallet.js"></script>
