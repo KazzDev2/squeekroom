@@ -111,6 +111,13 @@ All numbers live in `BALANCE.BOOSTS`, `SHIELD`, `CRATES` and `GOLDEN` and reach 
 - Colourways are catalog entries with `remap: [[from, to], ...]` palette pairs over their base item's art (`colorOf`), so there is no duplicated sprite code. The client turns the pairs into the 16-entry map `drawSprite` already takes.
 - The shop tabs run Decor, Rugs, Walls & Floors, Skins, Wheel, Bed, Den (Decor is where a new den starts), each sorted cheapest first. Boosts and shield tokens aren't in the shop at all: they come from lucky crates and wait in Your things.
 
+## v4: names first, visits, bigger fixtures, a guide
+
+- A den exists only once it has a username. `/api/state` never creates one: a fresh token gets `needsName` and the page shows a preview den that earns nothing, through the tutorial (which a new visitor can't skip) to the name step. `POST /api/username` creates the den (`createDen`: name valid and free, then the server cap and the per-address new-den limit). A one-time migration (`state.migrations.anonPurge1`) deleted every den without a username and kept them in `state.anon-purge.bak.json`.
+- Visiting: `GET /api/den?id=<publicId>` and `/api/den/random` (rate-limited per address) return a den's look (style, furniture, fixtures, tiers, skin, a raised shield) and its public name and watts, never its crates, items, boosts, wallet or token, plus the viewer's raid flags (`viewerFlags`, the same as the leaderboard's). The page draws the visited den read-only; the leaderboard has a Visit button per row and Random den, and raid-feed names visit.
+- The wheel covers 3 floor tiles and the bed 2, along their facing (`fixtureTiles`); old saves are repaired on load (`repairFixtures`), furniture never moves.
+- `public/guide.html` explains the game in a few short sections; every number on it comes from `/api/config`.
+
 ## Ideas for v3
 
 - WalletConnect QR (mobile wallets) via a Reown projectId.
