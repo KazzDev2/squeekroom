@@ -2,6 +2,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const S = require("../server.js");
+require("./alert.test.js"); // security alerts; Node 22+ runs only this file for `node --test test/` (see package.json)
 const { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible } = S;
 
 const T0 = Date.UTC(2026, 9, 30, 22, 0, 0);
