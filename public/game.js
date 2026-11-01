@@ -515,7 +515,6 @@ function applyState(j) {
   S.idle = j.idle === true;
   S.speedPct = typeof j.speedPct === "number" ? j.speedPct : 100; // speed bonus on wheel income (100 = none)
   if (typeof j.serverTime === "number") S.skew = j.serverTime - Date.now();
-  applyDaily(j.daily); // before applyMe, so the first render already shows today's prices
   if (j.me) { applyMe(j.me, first, { at: j.serverTime, soft: S.idle }); if (!first) noteTrickle(); }
   else if (j.meError) toast(j.meError === "server_full" ? "The server is full." : j.meError === "too_many_dens" ? "Too many new dens from your network. Try again in an hour." : `Couldn't load your den (${j.meError}).`, "err");
   if (j.raid !== undefined) applyRaidStatus(j.raid);
@@ -1839,14 +1838,13 @@ function tickThumbs() {
 
 // ---------- shop ----------
 const TABS = [
-  { id: "wheel", label: "Wheel", cats: ["wheel"] },
-  { id: "bed", label: "Bed", cats: ["bed"] },
-  { id: "room", label: "Den", cats: ["room"] },
-  { id: "boosts", label: "Boosts", cats: [], boosts: true },
   { id: "decor", label: "Decor", cats: ["furniture", "wall"] },
   { id: "rugs", label: "Rugs", cats: ["rug"] },
   { id: "styles", label: "Walls & Floors", cats: ["wallpaper", "floor"] },
   { id: "skins", label: "Skins", cats: ["skin"] },
+  { id: "wheel", label: "Wheel", cats: ["wheel"] },
+  { id: "bed", label: "Bed", cats: ["bed"] },
+  { id: "room", label: "Den", cats: ["room"] },
 ];
 const SUBHEAD = { furniture: "Floor", wall: "Wall", wallpaper: "Wallpaper", floor: "Flooring" };
 let shopTab = ls.get("sr_tab");
@@ -1872,9 +1870,9 @@ function buildCards() {
   builtTab = shopTab;
   builtSize = S.catalog.size;
   if (!S.catalog.size) { box.innerHTML = "<p>Opening the shop…</p>"; return; }
-  if (tab.boosts) buildBoostCards(box);
   for (const cat of tab.cats) {
-    const items = [...S.catalog.values()].filter((i) => i.cat === cat);
+    // cheapest first (a stable sort keeps colourways next to their base); crate finds are never listed
+    const items = [...S.catalog.values()].filter((i) => i.cat === cat && !i.crate).sort((a, b) => a.price - b.price);
     if (!items.length) continue;
     if (tab.cats.length > 1) { const h = document.createElement("div"); h.className = "sub"; h.textContent = SUBHEAD[cat] || cat; box.appendChild(h); }
     for (const it of items) {
@@ -1915,8 +1913,7 @@ function tierCardState(it, me, poor, need) {
 }
 function cardState(it, me) {
   const watts = me ? me.watts : 0, owned = me ? me.owned[it.id] || 0 : 0;
-  if (it.crate) return owned ? { kind: "found", label: "Found", disabled: true, note: "from a lucky crate", own: `own ${owned}` } : { kind: "crate", label: "Crate only", disabled: true, note: "only in lucky crates" };
-  const price = priceOf(it), poor = watts < price, need = price - watts;
+  const poor = watts < it.price, need = it.price - watts;
   if (Object.hasOwn(TIERED, it.cat)) return tierCardState(it, me, poor, need);
   if (!it.zone) { // wallpaper, flooring, skins: buy once, then equip
     const equipped = me && (it.cat === "skin" ? me.skin : it.cat === "wallpaper" ? me.wallpaper : me.floor) === it.id;
@@ -1931,15 +1928,9 @@ function updateCards() {
   const me = S.me;
   $("wallet").textContent = me ? `${fmt(me.watts)} W to spend` : "";
   for (const c of shopCards.values()) {
-    if (c.it.boost) { updateBoostCard(c, me); continue; }
     const st = cardState(c.it, me), buying = st.kind === "buy" || st.kind === "upgrade";
     c.state = st;
-    const now = priceOf(c.it);
-    if (st.kind === "owned" || st.kind === "equip" || st.kind === "equipped" || st.kind === "found") c.price.textContent = "";
-    else if (c.it.crate) c.price.textContent = "rare";
-    else if (now < c.it.price) c.price.innerHTML = `<s>${fmt(c.it.price)}</s> ${fmt(now)} W`;
-    else c.price.textContent = c.it.price ? `${fmt(c.it.price)} W` : "Free";
-    c.el.classList.toggle("deal", now < c.it.price && (st.kind === "buy" || st.kind === "upgrade"));
+    c.price.textContent = st.kind === "owned" || st.kind === "equip" || st.kind === "equipped" ? "" : c.it.price ? `${fmt(c.it.price)} W` : "Free";
     c.price.classList.toggle("poor", buying && !!st.poor);
     c.own.textContent = st.own || "";
     c.own.title = st.ownTitle || "";
@@ -1950,9 +1941,8 @@ function updateCards() {
     c.note.className = cls;
     c.el.classList.toggle("cur", !!st.cur);
     if (!c.busy && !c.ticking) { c.btn.textContent = st.label; c.btn.disabled = !!st.disabled; c.btn.className = st.alt ? "alt" : ""; }
-    c.btn.setAttribute("aria-label", `${st.label}: ${c.it.name}${buying && c.it.price ? `, ${fmt(now)} watts` : ""}`);
+    c.btn.setAttribute("aria-label", `${st.label}: ${c.it.name}${buying && c.it.price ? `, ${fmt(c.it.price)} watts` : ""}`);
   }
-  renderToday();
 }
 async function equip(it) {
   const r = it.cat === "skin" ? await post("/api/skin", { skinId: it.id }) : await post("/api/style", { [it.cat]: it.id });
@@ -1961,7 +1951,6 @@ async function equip(it) {
   return r;
 }
 async function cardAction(c) {
-  if (c.it.boost) return boostAction(c);
   const it = c.it, st = c.state || cardState(it, S.me);
   if (c.busy || st.disabled) return;
   c.busy = true;
@@ -1976,7 +1965,7 @@ async function cardAction(c) {
       return;
     }
     applyMe(r.j.me);
-    spendFeedback(c, Number.isFinite(r.j.price) ? r.j.price : priceOf(it));
+    spendFeedback(c, it.price);
     if (it.cat === "wheel") toast(`${it.name}: ${(it.multPct / 100).toFixed(2)}× watts per block`, "ok");
     else if (it.cat === "bed") toast(`${it.name}: ${(it.multPct / 100).toFixed(2)}× bed watts`, "ok");
     else if (it.cat === "room") toast(`Your den is now ${it.material || it.name}`, "ok");
@@ -2011,76 +2000,36 @@ function spendFeedback(c, price) {
   }
 }
 
-// ---------- the daily shop: three picks a day, 30% off, the same for everyone ----------
-// The server picks and prices them (snapshot.daily); this only shows the strip and its countdown.
-S.daily = null;
-function applyDaily(d) {
-  if (!d || !Array.isArray(d.items)) return;
-  const was = S.daily && S.daily.day;
-  S.daily = { day: d.day, items: d.items, offPct: Number(d.offPct) || 0, resetAt: Date.now() + Math.max(0, Number(d.resetMs) || 0) };
-  if (was !== d.day) { todaySig = ""; if (was) updateCards(); else renderToday(); } // new picks at midnight; the first load shows the strip at once
-}
-const priceOf = (it) => (it && S.daily && S.daily.items.includes(it.id) && Date.now() < S.daily.resetAt ? Math.floor((it.price * (100 - S.daily.offPct)) / 100) : it ? it.price : 0);
-const todayCards = new Map(); // itemId -> card (same shape as the shop's)
-let todaySig = "";
-function renderToday() {
-  const box = $("today"), d = S.daily;
-  const items = d ? d.items.map((id) => S.catalog.get(id)).filter(Boolean) : [];
-  box.hidden = !items.length;
-  if (!items.length) return;
-  const left = Math.max(0, d.resetAt - Date.now());
-  $("todayHead").innerHTML = `<b>Today</b> · ${d.offPct}% off · new picks in ${durText(left)}`;
-  const sig = d.day + "|" + items.map((i) => i.id).join(",");
-  if (sig !== todaySig) {
-    todaySig = sig;
-    const row = $("todayRow");
-    row.innerHTML = "";
-    todayCards.clear();
-    for (const it of items) {
-      const el = document.createElement("div");
-      el.className = "card mini deal";
-      el.innerHTML = '<canvas class="thumb" width="48" height="48"></canvas><div class="cname"></div><div class="cmeta"><span class="price"></span><span class="own"></span></div><div class="cnote"></div><button></button>';
-      el.querySelector(".cname").textContent = it.name;
-      const c = { el, it, thumb: el.querySelector("canvas"), btn: el.querySelector("button"), price: el.querySelector(".price"), own: el.querySelector(".own"), note: el.querySelector(".cnote"), state: null, busy: false, ticking: false };
-      c.thumb.setAttribute("aria-hidden", "true");
-      c.btn.onclick = () => cardAction(c);
-      drawThumb(c.thumb, it);
-      todayCards.set(it.id, c);
-      row.appendChild(el);
-    }
-  }
-  const me = S.me;
-  for (const c of todayCards.values()) {
-    const st = cardState(c.it, me), buying = st.kind === "buy" || st.kind === "upgrade", now = priceOf(c.it);
-    c.state = st;
-    c.price.innerHTML = buying || st.kind === "buy" ? `<s>${fmt(c.it.price)}</s> ${fmt(now)} W` : "";
-    c.price.classList.toggle("poor", buying && !!st.poor);
-    c.own.textContent = st.own || "";
-    c.note.textContent = st.kind === "equipped" || st.kind === "equip" ? st.note || "" : ""; // a red price says "can't afford" here; the shop card below has the exact gap
-    c.note.className = "cnote";
-    c.el.title = buying && st.poor ? `Need ${fmt(st.need)} more watts` : "";
-    if (!c.busy && !c.ticking) { c.btn.textContent = st.label; c.btn.disabled = !!st.disabled; c.btn.className = st.alt ? "alt" : ""; }
-  }
-}
-setInterval(() => { if (S.daily && !document.hidden) renderToday(); }, 30_000); // the countdown
-
 // ---------- inventory strip: owned but not yet placed ----------
 let invChips = [], invSig = null;
 function renderInventory() {
   const me = S.me, box = $("inv"), rows = [];
+  const finds = heldRows(me); // boosts and shield tokens from lucky crates
   if (me) for (const it of S.catalog.values()) if (it.zone) { const n = unplaced(it.id); if (n > 0) rows.push([it, n]); }
   const holding = P.mode === "place" ? P.it.id : "";
-  const sig = rows.map(([it, n]) => `${it.id}:${n}`).join(",") + "|" + holding + "|" + (me ? me.placed.length : -1);
+  const sig = finds.map(([k, n]) => `${k}:${n}`).join(",") + "|" + rows.map(([it, n]) => `${it.id}:${n}`).join(",") + "|" + holding + "|" + (me ? me.placed.length : -1);
   if (sig === invSig) return;
   invSig = sig;
   box.innerHTML = "";
   invChips = [];
-  if (!rows.length) {
+  if (!rows.length && !finds.length) {
     const s = document.createElement("span");
     s.className = "empty";
-    s.textContent = !me || me.placed.length ? "" : "Nothing yet. Things you buy show up here.";
+    s.textContent = !me || me.placed.length ? "" : "Nothing yet. Things you buy or find show up here.";
     box.appendChild(s);
     return;
+  }
+  for (const [k, n] of finds) {
+    const it = { id: `boost:${k}`, boost: k, name: BOOST_INFO[k].name, zone: null };
+    const b = document.createElement("button");
+    b.className = "chip2 find";
+    b.title = `${it.name}: ${BOOST_INFO[k].desc} Tap twice to use it.`;
+    b.setAttribute("aria-label", `${it.name}, ${n} found in lucky crates. Tap twice to use one.`);
+    b.innerHTML = `<canvas width="72" height="72"></canvas><span class="n">×${n}</span>`;
+    const cv = b.querySelector("canvas");
+    drawThumb(cv, it);
+    b.onclick = () => useHeld(k);
+    box.appendChild(b);
   }
   for (const [it, n] of rows) {
     const b = document.createElement("button");
@@ -2138,52 +2087,6 @@ function renderFxChips(me) {
   $("fxStat").hidden = !chips.length;
 }
 
-// shop cards for the Boosts tab: pseudo items keyed "boost:<kind>"
-const boostsForSale = () => !!(S.balance && S.balance.BOOSTS_FOR_SALE); // off for now: crate finds only
-function buildBoostCards(box) {
-  const h = document.createElement("div"); h.className = "sub"; h.textContent = boostsForSale() ? "Single use · bought watts burn" : "Single use · found in lucky crates"; box.appendChild(h);
-  for (const k of BOOST_ORDER) {
-    const it = { id: `boost:${k}`, boost: k, name: BOOST_INFO[k].name, zone: null };
-    const el = document.createElement("div");
-    el.className = "card boost";
-    el.innerHTML = '<canvas class="thumb" width="64" height="64"></canvas><div class="cname"></div><div class="cdesc"></div><div class="cmeta"><span class="price"></span><span class="own"></span></div><div class="cnote"></div><button></button>';
-    el.querySelector(".cname").textContent = it.name;
-    el.querySelector(".cdesc").textContent = BOOST_INFO[k].desc;
-    const c = { el, it, thumb: el.querySelector("canvas"), btn: el.querySelector("button"), price: el.querySelector(".price"), own: el.querySelector(".own"), note: el.querySelector(".cnote"), state: null, busy: false, ticking: false };
-    c.thumb.setAttribute("aria-hidden", "true");
-    c.btn.onclick = () => cardAction(c);
-    drawThumb(c.thumb, it);
-    shopCards.set(it.id, c);
-    box.appendChild(el);
-  }
-}
-function boostCardState(k, me) {
-  const watts = me ? me.watts : 0;
-  if (k === "shield") {
-    const sh = myShield(), tok = held("shield_token"), price = me && me.shield ? me.shield.price : 500;
-    if (sh.up && sh.kind === "bought") return { label: `Up · ${durText(sh.left)}`, disabled: true, note: "nobody can raid you", price: "" };
-    if (me && me.shield && me.shield.usedToday) return { label: "Used today", disabled: true, note: `next one after 00:00 UTC`, price: "" };
-    if (tok) return { label: "Use token", from: "token", price: "free", own: `${tok} token${tok === 1 ? "" : "s"}`, note: sh.kind === "bruise" ? "replaces the bruise shield" : "" };
-    if (!boostsForSale()) return { label: "Crate only", disabled: true, note: "shield tokens drop from lucky crates", price: "" };
-    return { label: "Raise shield", from: "watts", price: `${fmt(price)} W`, poor: watts < price, need: price - watts, note: "max(500, 3% of your watts)" };
-  }
-  const cfg = boostCfg(k), n = held(k), price = cfg.PRICE || 0;
-  if (boostOn(k)) return { label: cfg.MS ? `Active · ${durText(boostLeft(k))}` : "Armed", disabled: true, note: cfg.MS ? "running now" : "used on your next raid", price: "", own: n ? `have ${n}` : "" };
-  if (n) return { label: `Use (${n})`, from: "item", price: "from a crate", own: `have ${n}` };
-  if (!boostsForSale()) return { label: "Crate only", disabled: true, note: "drops from lucky crates", price: "" };
-  return { label: "Buy & use", from: "watts", price: `${fmt(price)} W`, poor: watts < price, need: price - watts };
-}
-function updateBoostCard(c, me) {
-  const st = boostCardState(c.it.boost, me);
-  c.state = st;
-  c.price.textContent = st.price || "";
-  c.price.classList.toggle("poor", !!st.poor);
-  c.own.textContent = st.own || "";
-  c.note.textContent = st.poor ? `need ${fmt(st.need)} more` : st.note || "";
-  c.note.className = "cnote" + (st.poor ? " poor" : "");
-  if (!c.busy && !c.ticking) { c.btn.textContent = st.label; c.btn.disabled = !!st.disabled; c.btn.className = st.from === "item" || st.from === "token" ? "alt" : ""; }
-  c.btn.setAttribute("aria-label", `${st.label}: ${c.it.name}`);
-}
 function boostErrorWords(j, k) {
   switch (j && j.error) {
     case "boost_active": return `${BOOST_INFO[k].name} is already working. One at a time.`;
@@ -2194,32 +2097,40 @@ function boostErrorWords(j, k) {
     default: return errorWords(j);
   }
 }
-async function boostAction(c) {
-  const k = c.it.boost, st = c.state || boostCardState(k, S.me);
-  if (c.busy || st.disabled) return;
-  c.busy = true;
-  c.btn.disabled = true;
-  try {
-    const r = k === "shield" ? await post("/api/shield", { from: st.from }) : await post("/api/boost", { kind: k, from: st.from });
-    if (!r.ok || !r.j.me) {
-      if (r.j.error === "poor") poorFeedback(c);
-      toast(boostErrorWords(r.j, k), "err");
-      refresh();
-      return;
-    }
-    const before = S.me ? S.me.watts : 0;
-    applyMe(r.j.me);
-    spendFeedback(c, Math.max(0, before - r.j.me.watts));
-    c.btn.textContent = "✓ On";
-    const words = { double_wheel: "Double Wheel is on for an hour.", deep_sleep: "Deep Sleep is on for 8 hours.", lucky_whisker: "Lucky Whisker is ready for your next raid.", wager_insurance: "Wager Insurance covers your next raid.", shield: "Your Raid Shield is up for 3 hours." };
-    toast(words[k], "ok");
-    if (k === "shield") { chipSig = ""; renderRaidChip(); if (LB.open) loadLb(); }
-  } finally {
-    c.busy = false;
-    updateCards();
+// Crate finds wait in "Your things" (nothing here is sold for now: BALANCE.BOOSTS_FOR_SALE).
+// The first tap says what it does, a second tap within a few seconds uses it; the server re-checks.
+const HELD_ITEM = { double_wheel: "double_wheel", deep_sleep: "deep_sleep", lucky_whisker: "lucky_whisker", wager_insurance: "wager_insurance", shield: "shield_token" };
+const heldRows = (me) => (me && me.items ? BOOST_ORDER.map((k) => [k, held(HELD_ITEM[k])]).filter(([, n]) => n > 0) : []);
+function heldWhyNot(k) { // null: it can be used right now
+  if (k === "shield") {
+    const sh = myShield();
+    if (sh.up && sh.kind === "bought") return "Your shield is already up.";
+    if (S.me && S.me.shield && S.me.shield.usedToday) return "You've used today's shield. The next one is after 00:00 UTC.";
+    return null;
   }
+  return boostOn(k) ? `${BOOST_INFO[k].name} is already working. One at a time.` : null;
 }
-// pixel icons for the boost cards (drawn into the shared thumbnail buffer)
+const USED_WORDS = { double_wheel: "Double Wheel is on for an hour.", deep_sleep: "Deep Sleep is on for 8 hours.", lucky_whisker: "Lucky Whisker is ready for your next raid.", wager_insurance: "Wager Insurance covers your next raid.", shield: "Your Raid Shield is up for 3 hours." };
+const heldPick = { k: null, until: 0, busy: false };
+async function useHeld(k) {
+  if (heldPick.busy) return;
+  const why = heldWhyNot(k);
+  if (why) { toast(why, "err"); return; }
+  if (heldPick.k !== k || Date.now() > heldPick.until) {
+    Object.assign(heldPick, { k, until: Date.now() + 4000 });
+    toast(`${BOOST_INFO[k].name}: ${BOOST_INFO[k].desc} Tap it again to use it.`);
+    return;
+  }
+  Object.assign(heldPick, { k: null, until: 0, busy: true });
+  try {
+    const r = k === "shield" ? await post("/api/shield", { from: "token" }) : await post("/api/boost", { kind: k, from: "item" });
+    if (!r.ok || !r.j.me) { toast(boostErrorWords(r.j, k), "err"); refresh(); return; }
+    applyMe(r.j.me);
+    toast(USED_WORDS[k], "ok");
+    if (k === "shield") { chipSig = ""; renderRaidChip(); if (LB.open) loadLb(); }
+  } finally { heldPick.busy = false; }
+}
+// pixel icons for crate finds in "Your things" (drawn into the shared thumbnail buffer)
 function boostThumb(k) {
   const px = (x, y, w, h, col) => { tg.fillStyle = col; tg.fillRect(x, y, w, h); };
   const sparkle = (x, y, col = "#ffd166") => { px(x, y - 2, 1, 5, col); px(x - 2, y, 5, 1, col); px(x, y, 1, 1, "#ffffff"); };
@@ -2311,8 +2222,8 @@ async function openCrateUi(c) {
     const got = r.j.got || {}, name = (id) => (S.catalog.get(id) || {}).name || "something";
     let words, label;
     if (got.kind === "watts") { words = got.dup ? `Lucky crate: +${fmt(got.watts)} W. You already have the ${name(got.dup)}.` : `Lucky crate: +${fmt(got.watts)} W`; label = `+${popAmt(got.watts)} W`; gainFlash(got.watts); }
-    else if (got.kind === "boost") { words = `Lucky crate: ${BOOST_INFO[got.boost] ? BOOST_INFO[got.boost].name : "a boost"}. It's waiting in Boosts.`; label = "BOOST"; }
-    else if (got.kind === "shield") { words = "Lucky crate: a Raid Shield token. It's waiting in Boosts."; label = "SHIELD"; }
+    else if (got.kind === "boost") { words = `Lucky crate: ${BOOST_INFO[got.boost] ? BOOST_INFO[got.boost].name : "a boost"}. It's in your things.`; label = "BOOST"; }
+    else if (got.kind === "shield") { words = "Lucky crate: a Raid Shield token. It's in your things."; label = "SHIELD"; }
     else if (got.kind === "decor") { words = `Lucky crate: ${name(got.item)}. A rare find. It's in your things.`; label = "RARE"; }
     else words = "Lucky crate opened.";
     toast(words, "ok");
