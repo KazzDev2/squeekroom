@@ -85,9 +85,9 @@ Each room is ~1–2 KB, and the whole state is rewritten as one JSON file. That'
 Raids only work while the hamster is RUNNING (the same chain signal that drives accrual). Each player gets 10 raids per UTC day; a room can be raided any number of times.
 
 - Wager: stake `S` at 1.5×, 2×, 3×, 5× or 10×. The raid screen shows the odds and the loot range, never the EV.
-- Stake bounds: at least `max(50, 5% of your balance)`, so every raid matters; at most your balance, and at most `cap / ((M−1) × 1.25)`, the stake whose best loot roll still fits under the target's loot cap. Past that point a bigger stake would only risk more, so the game doesn't offer it. Against a small target the high multipliers can be out of reach.
+- Stake bounds: at least `max(50, 5% of your balance)`, so every raid matters; at most your balance, and at most `cap / ((M−1) × 1.5)`, the stake whose crit still fits under the target's loot cap. Past that point the cap would eat the win while the loss kept growing, so the game doesn't offer it. Against a small target the high multipliers can be out of reach.
 - Win chance: `clamp((110%/M) × (1 − defense) × tilt, 2%, 90%)`, where defense is the target's room material (wood 0% → diamond 25%) and tilt is `(theirWatts/yourWatts)^0.25` clamped 0.75–1.75. **Punching up** (the target holds at least your watts) lifts it to at least `1/M`.
-- Win: loot `(M−1)×S` (×0.75–1.25 roll, 5% crit ×1.5), taken from the defender, capped at 25% of their balance, so no single roll can empty a room. Lose: you lose the stake and all of it burns; the defender gets nothing (a share would let alt dens wager their welcome watts into a main).
+- Win: loot is exactly `(M−1)×S` (a 5% crit pays ×1.5), taken from the defender, capped at 25% of their balance, so no single raid can empty a room. The raid screen shows the chosen multiplier's win chance big and one win amount; pressing Raid opens nine holes, and whacking one rolls the raid on the server (the hole doesn't change the odds). Lose: you lose the stake and all of it burns; the defender gets nothing (a share would let alt dens wager their welcome watts into a main).
 - Earned-watts floor: a den can raid, and be raided, only once its lifetime earnings (wheel + bed, never the welcome grant or loot) reach `RAID.MIN_EARNED` (5,000 W). Fresh dens can't be farmed by a main and can't feed one.
 - You can only raid rooms holding ≥ 70% of your watts (punching down is impossible, which protects new rooms), except one revenge raid within 24 h of being hit.
 - EV (never shown in the game): attacker EV is `S × (p×M×1.025 − 1)`, about `1.10×(1−d)×tilt − 1`. Punching up is never −EV (at the floor it is about +2.5% × (M−1)/M), so the top of the leaderboard is everyone's best target. Peer raids into strong rooms and revenge on poorer rooms can be −EV. Being raided is −EV at every tier. `test/economy.test.js` checks both across every tier, multiplier and stake shape.
@@ -110,6 +110,13 @@ All numbers live in `BALANCE.BOOSTS`, `SHIELD`, `CRATES` and `GOLDEN` and reach 
 - Crate-only decor (`crate: true` in the catalog: Golden Sunflower, Lucky Lantern, Four-Leaf Clover Jar, Shooting Star) is never sold or listed in the shop: players find it in lucky crates (and then it sits in their things like anything else).
 - Colourways are catalog entries with `remap: [[from, to], ...]` palette pairs over their base item's art (`colorOf`), so there is no duplicated sprite code. The client turns the pairs into the 16-entry map `drawSprite` already takes.
 - The shop tabs run Decor, Rugs, Walls & Floors, Skins, Wheel, Bed, Den (Decor is where a new den starts), each sorted cheapest first. Boosts and shield tokens aren't in the shop at all: they come from lucky crates and wait in Your things.
+
+## v4: names first, visits, bigger fixtures, a guide
+
+- A den exists only once it has a username. `/api/state` never creates one: a fresh token gets `needsName` and the page shows a preview den that earns nothing, through the tutorial (which a new visitor can't skip) to the name step. `POST /api/username` creates the den (`createDen`: name valid and free, then the server cap and the per-address new-den limit). A one-time migration (`state.migrations.anonPurge1`) deleted every den without a username and kept them in `state.anon-purge.bak.json`.
+- Visiting: `GET /api/den?id=<publicId>` and `/api/den/random` (rate-limited per address) return a den's look (style, furniture, fixtures, tiers, skin, a raised shield) and its public name and watts, never its crates, items, boosts, wallet or token, plus the viewer's raid flags (`viewerFlags`, the same as the leaderboard's). The page draws the visited den read-only; the leaderboard has a Visit button per row and Random den, and raid-feed names visit.
+- The wheel covers 3 floor tiles and the bed 2, along their facing (`fixtureTiles`); old saves are repaired on load (`repairFixtures`), furniture never moves.
+- `public/guide.html` explains the game in a few short sections; every number on it comes from `/api/config`.
 
 ## Ideas for v3
 

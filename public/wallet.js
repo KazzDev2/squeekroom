@@ -20,7 +20,7 @@ const W = {
 };
 
 // ---------- header button ----------
-function me() { const b = B(); return b && b.S ? b.S.me : null; }
+function me() { const b = B(), m = b && b.S ? b.S.me : null; return m && !m.preview ? m : null; } // no wallet before the den exists
 function linked(m = me()) { return !!(m && m.verified && m.wallet); }
 function renderBtn() {
   const btn = $("walletBtn");
@@ -90,7 +90,7 @@ function pxbtn(label, alt, onclick) { const b = h("button", "pxbtn" + (alt ? " a
 // ---------- step 1: burner warning (always before any wallet is touched) ----------
 function start() {
   const b = B();
-  if (!W.cfg || !b || !b.S.me) return;
+  if (!W.cfg || !b || !me()) return;
   openModal();
   if (linked()) { showPanel(); return; }
   if (W.cfg.burnerWarning === false) { showPicker(); return; }

@@ -4,11 +4,12 @@
 // Watts buy cosmetics; wheel and bed upgrades are the only items that raise generation.
 // While he runs, players may raid richer rooms (POST /api/raid): a won raid moves watts, a lost
 // stake burns entirely. Only dens that have earned RAID.MIN_EARNED watts can raid or be raided.
-// GET /api/leaderboard lists every room by balance.
+// GET /api/leaderboard lists every room by balance; GET /api/den (?id= or /random) shows one den's look.
 // Boosts (POST /api/boost), the Raid Shield (POST /api/shield) and lucky crates (POST /api/crate): single-use
 // consumables bought with watts (burned) or found in crates that drop, on settled blocks, for dens that are
 // watching. About 1 settled block in 150 is golden: it pays 10x wheel watts to every den watching.
-// Usernames (POST /api/username): every den picks a unique one when it starts; it's the name others see.
+// Usernames (POST /api/username): a den only exists once it has one. The onboarding name step creates it;
+// until then the page shows a preview that earns nothing. The username is the name others see.
 // Optional wallet sign-in (POST /api/wallet/{nonce,verify}): a gasless personal_sign proof binds an EVM
 // address, which adds a verified badge next to the username.
 // Zero dependencies. Node 18+ (uses global fetch).
@@ -21,6 +22,7 @@
 // Env: PORT (default 8788), SQUEEK_API (default https://api.squeekchain.com/v1),
 //      DATA_DIR (where state.json lives; mount a persistent disk here in production),
 //      CORE_ADDRESS, SEPOLIA_RPC (comma-separated)
+//      ALERT_WEBHOOK (Discord webhook for security alerts, see lib/alert.js; never commit it)
 //      Replay only: REPLAY_SPEED (default 3), REPLAY_START_HEIGHT (default 5204),
 //      REPLAY_EPOCH (ISO time the schedule is anchored to, default 2026-10-30T21:00:00Z)
 
@@ -30,6 +32,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const zlib = require("node:zlib");
 const ethsig = require("./lib/ethsig.js");
+const alert = require("./lib/alert.js");
 
 const PORT = Number(process.env.PORT || 8788);
 const API = process.env.SQUEEK_API || "https://api.squeekchain.com/v1";
@@ -79,8 +82,9 @@ const BALANCE = {
   // p = clamp((EDGE / M) x (1 - defense) x tilt, P_MIN, P_MAX), raised to at least 1/M when the target
   // holds at least the attacker's watts, so attacker EV = S x (p x M - 1) does not depend on M (the
   // multiplier only dials variance). Punching up is never -EV; peer raids into strong rooms and
-  // revenge on poorer rooms can be. Stakes stop at the point where the loot cap would cut the loot
-  // roll (only a crit can hit the cap), so no stake is a trap. A loss burns the whole stake: the
+  // revenge on poorer rooms can be. A win pays exactly (M - 1) x stake, and 5% of wins crit for x1.5.
+  // Stakes stop where a crit would hit the loot cap, so the cap never cuts a win and no stake is a
+  // trap. A loss burns the whole stake: the
   // defender gets nothing (a share would let alt dens wager welcome watts into a main), so being
   // raided is -EV. The UI shows odds and loot, never EV: working that out is part of the game.
   RAID: {
@@ -92,13 +96,11 @@ const BALANCE = {
     TILT_MAX_PCT: 175, // reached at ~9.4x the attacker's watts
     P_MIN_PCT: 2,
     P_MAX_PCT: 90,
-    LOOT_U_MIN_PCT: 75, // win: loot = (M - 1) x stake x U, U uniform in [0.75, 1.25], <= defender balance
-    LOOT_U_MAX_PCT: 125,
-    CRIT_CHANCE_PCT: 5,
+    CRIT_CHANCE_PCT: 5, // win: loot = (M - 1) x stake, a crit x CRIT_MULT, <= LOOT_MAX_DEF_PCT of the defender
     CRIT_MULT_PCT: 150,
     LOOT_MAX_DEF_PCT: 25, // one raid takes at most 25% of the defender's balance
     STAKE_MIN: 50, // stake >= max(STAKE_MIN, STAKE_MIN_BAL_PCT of the attacker's balance)
-    STAKE_MIN_BAL_PCT: 5, // stake <= min(balance, cap / ((M - 1) x LOOT_U_MAX)): see stakeBounds()
+    STAKE_MIN_BAL_PCT: 5, // stake <= min(balance, cap / ((M - 1) x CRIT_MULT)): see stakeBounds()
     ELIGIBLE_MIN_PCT: 70, // targets must hold >= 70% of the attacker's balance (punch-up only)...
     REVENGE_WINDOW_MS: 86_400_000, // ...unless they raided the attacker within 24 h (once per provocation)
     RAIDED_BY_MAX: 20,
@@ -151,9 +153,9 @@ const ROOM = {
   WALL_TOP: 2,
   WALL_BOTTOM: 7,
   RESERVED: {}, // inclusive floor-column ranges by name; the burrow mound (16..18) was removed 1 Nov 2026
-  // The wheel and the bed stand on any floor tile (i, j) of the iso room, against the walls too.
-  // Tiles with i + j > FIX_MAX_SUM fall off the bottom of the view. The two fixtures
-  // keep FIX_GAP tiles apart (Chebyshev) so neither hides the other or the hamster.
+  // The wheel and the bed stand on floor tiles, against the walls too: the wheel covers 3 tiles and
+  // the bed 2 (see fixtureTiles). Tiles with i + j > FIX_MAX_SUM fall off the bottom of the view.
+  // The two never share a tile, and their anchors keep FIX_GAP tiles apart (Chebyshev).
   ISO_NI: 11,
   ISO_NJ: 10,
   FIX_MAX_SUM: 14,
@@ -309,30 +311,81 @@ const FREE_IDS = CATALOG.filter((i) => i.price === 0 && !i.crate).map((i) => i.i
 // ---------- fixtures: the wheel and the bed ----------
 const FIXTURES = ["wheel", "bed"];
 const defaultFixtures = () => ({ wheel: { ...ROOM.FIXTURE_DEFAULTS.wheel }, bed: { ...ROOM.FIXTURE_DEFAULTS.bed } });
-const fixtureTileOk = (i, j) => Number.isInteger(i) && Number.isInteger(j) && i >= 0 && i < ROOM.ISO_NI && j >= 0 && j < ROOM.ISO_NJ && i + j <= ROOM.FIX_MAX_SUM;
-const fixturesApart = (a, b) => Math.max(Math.abs(a.i - b.i), Math.abs(a.j - b.j)) >= ROOM.FIX_GAP;
+// Floor tiles a fixture covers, from its anchor (i, j) and facing, matching the iso art: the wheel's
+// disc stands across its axle, 3 tiles centred on the anchor, along i (flip false) or j (flip true);
+// the bed reaches one tile back from its anchor, to (i - 1, j) (flip false) or (i, j - 1) (flip true).
+function fixtureTiles(kind, f) {
+  const out = [];
+  for (let d = -1; d <= (kind === "wheel" ? 1 : 0); d++) out.push(f.flip ? [f.i, f.j + d] : [f.i + d, f.j]);
+  return out;
+}
+const fixtureFits = (kind, f) => !!f && Number.isInteger(f.i) && Number.isInteger(f.j) && typeof f.flip === "boolean" && fixtureTiles(kind, f).every(tileOnFloor);
+// The wheel and the bed never share a tile, and their anchors stay FIX_GAP apart (room for him).
+function fixturesClear(wheelF, bedF) {
+  if (Math.max(Math.abs(wheelF.i - bedF.i), Math.abs(wheelF.j - bedF.j)) < ROOM.FIX_GAP) return false;
+  const w = new Set(fixtureTiles("wheel", wheelF).map(tileKey));
+  return !fixtureTiles("bed", bedF).some((t) => w.has(tileKey(t)));
+}
 function validFixtures(f) {
   if (!f || typeof f !== "object") return false;
-  for (const k of FIXTURES) if (!f[k] || !fixtureTileOk(f[k].i, f[k].j) || typeof f[k].flip !== "boolean") return false;
-  return fixturesApart(f.wheel, f.bed);
+  for (const k of FIXTURES) if (!fixtureFits(k, f[k])) return false;
+  return fixturesClear(f.wheel, f.bed);
 }
+const furnitureTiles = (player) => {
+  const s = new Map(); // tileKey -> item id
+  for (const o of player.placed || []) {
+    const oi = CATALOG_BY_ID.get(o.item);
+    if (oi && oi.zone === "floor") for (const t of footprint(oi, o.x, o.y, !!o.flip)) s.set(tileKey(t), oi.id);
+  }
+  return s;
+};
 // Move the wheel or the bed to floor tile (i, j); flip is optional (keeps the current facing).
 function moveFixture(player, body) {
   const b = body && typeof body === "object" ? body : {};
   if (!FIXTURES.includes(b.which)) return fail("bad_fixture");
-  if (!fixtureTileOk(b.i, b.j)) return fail("out_of_bounds");
   if (b.flip != null && typeof b.flip !== "boolean") return fail("bad_flip");
+  const cur = player.fixtures[b.which];
+  const next = { i: b.i, j: b.j, flip: typeof b.flip === "boolean" ? b.flip : !!cur.flip };
+  if (!fixtureFits(b.which, next)) return fail("out_of_bounds");
   const other = player.fixtures[b.which === "wheel" ? "bed" : "wheel"];
-  if (!fixturesApart({ i: b.i, j: b.j }, other)) return fail("too_close");
-  for (const o of player.placed || []) { // not onto furniture (rugs are flat: fine)
-    const oi = CATALOG_BY_ID.get(o.item);
-    if (oi && oi.zone === "floor" && footprint(oi, o.x, o.y, !!o.flip).some(([i, j]) => i === b.i && j === b.j)) return { ok: false, error: "occupied", with: oi.id };
+  if (!(b.which === "wheel" ? fixturesClear(next, other) : fixturesClear(other, next))) return fail("too_close");
+  const furn = furnitureTiles(player); // not onto furniture (rugs are flat: fine)
+  for (const t of fixtureTiles(b.which, next)) if (furn.has(tileKey(t))) return { ok: false, error: "occupied", with: furn.get(tileKey(t)) };
+  cur.i = next.i;
+  cur.j = next.j;
+  cur.flip = next.flip;
+  return { ok: true, fixture: cur };
+}
+// Saves from before the fixtures grew (1 tile each) can now collide with furniture, the walls or each
+// other. Keep what still fits; move the rest to the nearest spot that does (either facing), wheel
+// first. Furniture never moves. A crate left under a fixture moves to a free tile. Returns true if
+// anything moved.
+function repairFixtures(p) {
+  const f = p.fixtures && typeof p.fixtures === "object" ? p.fixtures : {};
+  const furn = furnitureTiles(p);
+  const fits = (k, c) => fixtureFits(k, c) && fixtureTiles(k, c).every((t) => !furn.has(tileKey(t)));
+  const out = {};
+  let moved = false;
+  for (const k of FIXTURES) {
+    const ok = (c) => fits(k, c) && (k === "wheel" || fixturesClear(out.wheel, c));
+    const was = f[k] && Number.isInteger(f[k].i) && Number.isInteger(f[k].j) ? { i: f[k].i, j: f[k].j, flip: !!f[k].flip } : { ...ROOM.FIXTURE_DEFAULTS[k] };
+    let pick = ok(was) ? was : null;
+    for (let r = 1; !pick && r <= Math.max(ROOM.ISO_NI, ROOM.ISO_NJ); r++) {
+      for (let di = -r; di <= r && !pick; di++) for (let dj = -r; dj <= r && !pick; dj++) {
+        if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue;
+        for (const flip of [was.flip, !was.flip]) { const c = { i: was.i + di, j: was.j + dj, flip }; if (ok(c)) { pick = c; break; } }
+      }
+    }
+    if (!pick) pick = { ...ROOM.FIXTURE_DEFAULTS[k] }; // a den packed wall to wall: the default spot, overlap and all
+    if (!f[k] || pick.i !== f[k].i || pick.j !== f[k].j || pick.flip !== f[k].flip) moved = true;
+    out[k] = pick;
   }
-  const f = player.fixtures[b.which];
-  f.i = b.i;
-  f.j = b.j;
-  if (typeof b.flip === "boolean") f.flip = b.flip;
-  return { ok: true, fixture: f };
+  p.fixtures = out;
+  if (Array.isArray(p.crates)) {
+    const under = new Set(FIXTURES.flatMap((k) => fixtureTiles(k, out[k])).map(tileKey));
+    for (const c of p.crates) if (c && under.has(tileKey([c.i, c.j]))) { const t = crateTile(p); c.i = t.i; c.j = t.j; }
+  }
+  return moved;
 }
 
 // ---------- consumables: boosts, shield tokens (the shapes newPlayer/patchPlayer use) ----------
@@ -396,7 +449,7 @@ function patchPlayer(p, token) {
   if (!Number.isFinite(p.lastRaidAt)) p.lastRaidAt = 0;
   if (p.raidDay === undefined) p.raidDay = null;
   if (!Number.isInteger(p.raidsToday)) p.raidsToday = 0;
-  if (!validFixtures(p.fixtures)) p.fixtures = defaultFixtures();
+  repairFixtures(p); // older saves: 1-tile fixtures may collide with the 3-tile wheel / 2-tile bed
   if (!Array.isArray(p.raidedBy)) p.raidedBy = [];
   if (p.wallet === undefined) p.wallet = null;
   if (p.username === undefined) p.username = null;
@@ -473,19 +526,64 @@ function verifyWallet(st, token, body, now = Date.now()) {
   invalidateLeaderboard(st);
   return { ok: true, wallet: address };
 }
-// body {username}: 3-16 of [A-Za-z0-9_], unique case-insensitively; may change. No wallet needed.
+// What's wrong with username `u` for den `p` (null: a den not created yet), or null if it's fine:
+// 3-16 of [A-Za-z0-9_], unique case-insensitively.
+function usernameProblem(st, p, u) {
+  if (typeof u !== "string" || !WALLET.USERNAME_RE.test(u)) return "bad_username";
+  const key = u.toLowerCase();
+  for (const q of Object.values(st.players)) {
+    if (q && q !== p && typeof q.username === "string" && q.username.toLowerCase() === key) return "username_taken";
+  }
+  return null;
+}
+// body {username}: set or change an existing den's username. No wallet needed.
 function setUsername(st, token, body) {
   const p = getPlayer(st, token);
   if (!p) return fail("unknown_player");
   const u = body && typeof body === "object" ? body.username : undefined;
-  if (typeof u !== "string" || !WALLET.USERNAME_RE.test(u)) return fail("bad_username");
-  const key = u.toLowerCase();
-  for (const q of Object.values(st.players)) {
-    if (q && q !== p && typeof q.username === "string" && q.username.toLowerCase() === key) return fail("username_taken");
-  }
+  const bad = usernameProblem(st, p, u);
+  if (bad) return fail(bad);
   p.username = u;
   invalidateLeaderboard(st);
   return { ok: true, username: u };
+}
+// A den is created only here, with its username (the onboarding name step). Order: name valid -> name
+// free -> room on the server -> the new-den rate limit -> create. A refused name never leaves a den behind.
+// count: dens on the server (the live server passes its running count).
+function createDen(st, token, body, now = Date.now(), { ip = null, count = Object.keys(st.players).length } = {}) {
+  if (typeof token !== "string" || !TOKEN_RE.test(token)) return fail("bad_token");
+  if (getPlayer(st, token)) return fail("den_exists");
+  const u = body && typeof body === "object" ? body.username : undefined;
+  const bad = usernameProblem(st, null, u);
+  if (bad) return fail(bad);
+  if (count >= MAX_PLAYERS) return fail("server_full");
+  if (!allowNewDen(ip, now)) return fail("too_many_dens");
+  const p = (st.players[token] = newPlayer(st.height, now, token));
+  indexPlayer(st, token, p);
+  p.username = u;
+  p.lastSeen = now;
+  invalidateLeaderboard(st);
+  return { ok: true, player: p, username: u };
+}
+// One-time cleanup (v4): delete every den that never picked a username (they were created on page load,
+// before onboarding, and kept earning while idle). Returns the removed dens by token. Also drops them
+// from the raid feed and from every revenge list, and resets the publicId index. Pure on `st`.
+function purgeNameless(st) {
+  const removed = {};
+  for (const [token, p] of Object.entries(st.players || {})) {
+    if (!p || typeof p !== "object" || typeof p.username !== "string" || !p.username) {
+      removed[token] = p;
+      delete st.players[token];
+    }
+  }
+  const gone = new Set(Object.values(removed).map((p) => p && p.publicId).filter(Boolean));
+  if (gone.size) {
+    for (const p of Object.values(st.players)) if (Array.isArray(p.raidedBy)) p.raidedBy = p.raidedBy.filter((e) => e && !gone.has(e.pid));
+    if (Array.isArray(st.raidFeed)) st.raidFeed = st.raidFeed.filter((e) => e && !gone.has(e.atkId) && !gone.has(e.defId));
+  }
+  PID_INDEX.delete(st);
+  invalidateLeaderboard(st);
+  return removed;
 }
 
 // ---------- economy (pure-ish: explicit args, no globals) ----------
@@ -638,7 +736,7 @@ function rollCrateContents(p, rng = Math.random) {
 // A free floor tile for the parcel: on the visible floor, off the wheel, the bed, furniture and other crates.
 function crateTile(p, rng = Math.random) {
   const taken = new Set();
-  for (const k of FIXTURES) { const f = p.fixtures && p.fixtures[k]; if (f) taken.add(tileKey([f.i, f.j])); }
+  for (const k of FIXTURES) { const f = p.fixtures && p.fixtures[k]; if (f) for (const t of fixtureTiles(k, f)) taken.add(tileKey(t)); }
   for (const o of p.placed || []) {
     const oi = CATALOG_BY_ID.get(o.item);
     if (oi && oi.zone === "floor") for (const t of footprint(oi, o.x, o.y, !!o.flip)) taken.add(tileKey(t));
@@ -831,7 +929,7 @@ function validatePlacement(player, itemId, x, y, ignorePid = null, flip = false)
   }
   if (item.zone === "floor") for (const k of FIXTURES) {
     const f = player.fixtures && player.fixtures[k];
-    if (f && mine.has(tileKey([f.i, f.j]))) return { ok: false, error: "fixture", which: k };
+    if (f && fixtureTiles(k, f).some((t) => mine.has(tileKey(t)))) return { ok: false, error: "fixture", which: k };
   }
   return { ok: true, item, x, y };
 }
@@ -909,7 +1007,7 @@ function raidChance(attacker, defender, multPct) {
   if (!BALANCE.RAID.MULT_PCT.includes(multPct)) return 0;
   return raidOdds(multPct, raidDefensePct(defender), wealthTilt(attacker.watts, defender.watts), isPunchUp(attacker.watts, defender.watts));
 }
-// One resolution, rolls in a fixed order: win, then loot U, then crit (a loss uses one roll).
+// One resolution, rolls in a fixed order: win, then crit (a loss uses one roll).
 // Loot is capped at LOOT_MAX_DEF_PCT of the defender's balance, crit included, so no single roll can
 // empty a room however big the stake. A loss loses the whole stake, and it all burns.
 // oddsPts (Lucky Whisker) adds percentage points after all other maths, still capped at P_MAX.
@@ -919,24 +1017,23 @@ function resolveRaid(attacker, defender, stake, multPct, rng = Math.random, odds
   let p = raidChance(attacker, defender, multPct);
   if (oddsPts > 0 && p > 0) p = Math.min(R.P_MAX_PCT / 100, p + oddsPts / 100);
   if (!(rng() < p)) return { win: false, p, stakeLost: stake };
-  const uPct = R.LOOT_U_MIN_PCT + (R.LOOT_U_MAX_PCT - R.LOOT_U_MIN_PCT) * rng();
   const cap = lootCap(defender.watts);
-  let loot = Math.min(Math.floor(((multPct - 100) * stake * uPct) / 10_000), cap);
+  let loot = Math.min(Math.floor(((multPct - 100) * stake) / 100), cap);
   const crit = rng() < R.CRIT_CHANCE_PCT / 100;
   if (crit) loot = Math.min(Math.floor((loot * R.CRIT_MULT_PCT) / 100), cap);
   return { win: true, p, loot: Math.max(0, loot), crit };
 }
 const lootCap = (defWatts) => Math.floor((Math.max(0, defWatts) * BALANCE.RAID.LOOT_MAX_DEF_PCT) / 100);
 // Stake bounds: min = max(50, 5% of the balance); max = the balance, and with a target and a
-// multiplier also the largest stake whose top loot roll (M - 1) x S x 1.25 fits under the target's
-// loot cap. Past it a crit-free win could not grow while the loss would, so it would be a trap.
+// multiplier also the largest stake whose crit loot (M - 1) x S x 1.5 fits under the target's loot
+// cap. Past it the cap would eat the crit (and then the win itself) while the loss kept growing.
 // limit: which bound sets max ("balance" | "target"). max < min: can't raid (at this multiplier).
 function stakeBounds(watts, defWatts = null, multPct = null) {
   const R = BALANCE.RAID;
   const bal = Math.max(0, Math.floor(watts));
   const min = Math.max(R.STAKE_MIN, Math.ceil((bal * R.STAKE_MIN_BAL_PCT) / 100));
   if (defWatts == null || multPct == null) return { min, max: bal, limit: "balance" };
-  const top = Math.floor((lootCap(defWatts) * 10_000) / ((multPct - 100) * R.LOOT_U_MAX_PCT));
+  const top = Math.floor((lootCap(defWatts) * 10_000) / ((multPct - 100) * R.CRIT_MULT_PCT));
   return top < bal ? { min, max: top, limit: "target" } : { min, max: bal, limit: "balance" };
 }
 // The multiplier as shown (1.5, 2, 3, 5, 10) or as its percentage (150 .. 1000). null if neither.
@@ -1079,17 +1176,56 @@ function leaderboardRows(st, now) {
   LB_CACHE.set(st, out);
   return out;
 }
+// What `viewer` (null: anonymous) may do to den `row` ({publicId, watts, fresh, shielded}): the same
+// rules applyRaid enforces (it re-checks everything). Shared by the leaderboard and den visits.
+function viewerFlags(viewer, row, now) {
+  const you = !!viewer && row.publicId === viewer.publicId;
+  const revenge = !!viewer && !you && pendingRevenge(viewer, row.publicId, now) != null;
+  const raidable = !!viewer && !you && raidReady(viewer) && !boughtShieldUp(viewer, now) && !row.fresh && !row.shielded && (row.watts * 100 >= viewer.watts * BALANCE.RAID.ELIGIBLE_MIN_PCT || revenge);
+  return { raidable, revenge, you };
+}
 function leaderboard(st, token, now = Date.now(), { chainReadAt = null } = {}) {
   const viewer = getPlayer(st, token);
   const c = leaderboardRows(st, now);
   const rows = c.rows.map(({ shieldUntil, ...r }) => {
-    const you = !!viewer && r.publicId === viewer.publicId;
     const shielded = shieldUntil > now; // cached rows hold the expiry, so a shield ends on time
-    const revenge = !!viewer && !you && pendingRevenge(viewer, r.publicId, now) != null;
-    const raidable = !!viewer && !you && raidReady(viewer) && !boughtShieldUp(viewer, now) && !r.fresh && !shielded && (r.watts * 100 >= viewer.watts * BALANCE.RAID.ELIGIBLE_MIN_PCT || revenge);
-    return { ...r, shielded, raidable, revenge, you };
+    return { ...r, shielded, ...viewerFlags(viewer, { ...r, shielded }, now) };
   });
   return { rows, total: c.total, cachedAt: c.at, raid: viewer ? raidStatus(st, viewer, now, chainReadAt) : null };
+}
+
+// ---------- den visits ----------
+// A den as visitors see it: how it looks (style, furniture, fixtures, tiers, skin, a raised shield)
+// and what the leaderboard already shows (name, watts). Never its crates, held items, boosts,
+// wallet address or token. raid: the viewer's flags against it, as on the leaderboard.
+function denView(st, p, viewer, now = Date.now()) {
+  const sh = shieldUp(p, now) ? { until: p.shield.until, kind: p.shield.kind } : { until: 0, kind: null };
+  const den = {
+    publicId: p.publicId, name: displayName(p), verified: !!p.wallet, watts: p.watts, lifetimeWatts: p.lifetimeWatts,
+    roomTier: p.roomTier | 0, wheelTier: p.wheelTier | 0, bedTier: p.bedTier | 0, skin: p.skin, wallpaper: p.wallpaper, floor: p.floor,
+    placed: (p.placed || []).map(({ pid, item, x, y, flip }) => ({ pid, item, x, y, flip: !!flip })),
+    fixtures: { wheel: { ...p.fixtures.wheel }, bed: { ...p.fixtures.bed } },
+    shield: sh,
+  };
+  const row = { publicId: p.publicId, watts: p.watts, fresh: !raidReady(p), shielded: sh.until > 0 };
+  return { den, raid: { ...viewerFlags(viewer, row, now), fresh: row.fresh, shielded: row.shielded } };
+}
+// GET /api/den?id=<publicId>&token=<viewer, optional>
+function visitDen(st, id, token, now = Date.now()) {
+  const t = tokenForPublicId(st, id);
+  if (!t) return fail("unknown_den");
+  return { ok: true, ...denView(st, st.players[t], getPlayer(st, token), now) };
+}
+// GET /api/den/random?token=: any named den but the viewer's. The token list is cached for 10 s.
+const RANDOM_CACHE = new WeakMap(); // state -> { at, tokens }
+function randomDen(st, token, now = Date.now(), rng = Math.random) {
+  let c = RANDOM_CACHE.get(st);
+  if (!c || now < c.at || now - c.at >= 10_000) RANDOM_CACHE.set(st, (c = { at: now, tokens: Object.keys(st.players).filter((t) => st.players[t] && st.players[t].username) }));
+  const viewer = getPlayer(st, token);
+  const pool = viewer ? c.tokens.filter((t) => t !== token) : c.tokens;
+  const live = pool.filter((t) => Object.hasOwn(st.players, t));
+  if (!live.length) return fail("no_dens");
+  return { ok: true, ...denView(st, st.players[live[Math.floor(rng() * live.length) % live.length]], viewer, now) };
 }
 
 // ---------- state ----------
@@ -1145,7 +1281,28 @@ function load() {
   const fresh = state.resetId !== STATE_RESET;
   state.resetId = STATE_RESET;
   patchState(state);
-  if (fresh) writeNow(); // persist the wipe at once, so a crash before the first save can't bring the old rooms back
+  const purged = runMigrations(state);
+  if (fresh || purged) writeNow(); // persist a wipe or a purge at once, so a crash can't bring the old dens back
+}
+// One-time migrations, each gated by a flag in state.migrations. Returns true when something changed.
+// anonPurge1 (v4): dens without a username are deleted; they're kept in state.anon-purge.bak.json.
+function runMigrations(st, now = Date.now(), { backupFile = DATA_FILE.replace(/\.json$/, ".anon-purge.bak.json"), log = console.log } = {}) {
+  if (!st.migrations || typeof st.migrations !== "object") st.migrations = {};
+  if (st.migrations.anonPurge1) return false;
+  const removed = purgeNameless(st);
+  const list = Object.values(removed).filter(Boolean);
+  if (list.length && backupFile) {
+    try {
+      fs.mkdirSync(path.dirname(backupFile), { recursive: true });
+      fs.writeFileSync(backupFile, JSON.stringify({ at: new Date(now).toISOString(), players: removed }));
+    } catch (e) {
+      console.error("anon purge: backup failed:", e.message || e);
+    }
+  }
+  st.migrations.anonPurge1 = new Date(now).toISOString();
+  const spent = list.filter((p) => Number.isFinite(p.watts) && Number.isFinite(p.lifetimeWatts) && p.watts < p.lifetimeWatts + BALANCE.WELCOME_WATTS).length;
+  log(`anon purge: ${list.length} nameless dens deleted (${spent} had spent watts, ${list.filter((p) => p.wallet).length} had a wallet, ${list.filter((p) => p.nick && p.nick !== "anon").length} had a nick); backup: ${list.length ? backupFile : "none"}`);
+  return true;
 }
 // Coalesced, atomic save: at most one write per SAVE_DEBOUNCE_MS (a steady stream of changes
 // cannot starve it), written to a tmp file then renamed over state.json.
@@ -1163,7 +1320,9 @@ function writeNow() {
   fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
   const tmp = DATA_FILE + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(state));
+  security.beforeWrite();
   fs.renameSync(tmp, DATA_FILE);
+  security.wrote();
 }
 async function writeChunked() {
   const gen = writeGen;
@@ -1180,7 +1339,11 @@ async function writeChunked() {
   await fs.promises.mkdir(path.dirname(DATA_FILE), { recursive: true });
   const tmp = DATA_FILE + ".chunked.tmp";
   await fs.promises.writeFile(tmp, text);
-  if (gen === writeGen) await fs.promises.rename(tmp, DATA_FILE);
+  if (gen === writeGen) {
+    security.beforeWrite();
+    await fs.promises.rename(tmp, DATA_FILE);
+    security.wrote();
+  }
 }
 function save() {
   if (saving) { saveAgain = true; return; }
@@ -1540,6 +1703,7 @@ async function poll() {
       state.apiError = String(e.message || e);
     }
   }
+  security.tick(state, { saving });
   save();
 }
 
@@ -1682,6 +1846,18 @@ function readBody(req) {
 }
 // New dens per client address: one script can't fill MAX_PLAYERS (which would lock every new player
 // out) or mint welcome grants by the thousand. Railway's edge sets X-Real-IP; locally it's the socket.
+// Den visits per client address: a visit is cheap, but nobody should crawl every den in a minute.
+const VISIT_LIMIT = { MAX: 120, WINDOW_MS: 60_000 };
+const visitHits = new Map(); // ip -> { start, n }
+function allowVisit(ip, now = Date.now()) {
+  if (!ip) return true;
+  if (visitHits.size > 10_000) for (const [k, e] of visitHits) if (now - e.start >= VISIT_LIMIT.WINDOW_MS) visitHits.delete(k);
+  let e = visitHits.get(ip);
+  if (!e || now - e.start >= VISIT_LIMIT.WINDOW_MS) visitHits.set(ip, (e = { start: now, n: 0 }));
+  if (e.n >= VISIT_LIMIT.MAX) return false;
+  e.n++;
+  return true;
+}
 const NEW_DEN_LIMIT = { MAX: 60, WINDOW_MS: 3_600_000 };
 const newDenHits = new Map(); // ip -> { start, n }
 const clientIp = (req) => String((req && req.headers["x-real-ip"]) || (req && req.socket && req.socket.remoteAddress) || "").trim().slice(0, 64);
@@ -1736,22 +1912,14 @@ function snapshot(token, ip = null) {
   const now = Date.now();
   let me = null;
   let meError = null;
+  let needsName = false; // a fresh token: no den until the name step (POST /api/username) creates one
   if (typeof token === "string" && TOKEN_RE.test(token)) {
-    let p = getPlayer(state, token);
-    if (!p) {
-      if (playerCount >= MAX_PLAYERS) meError = "server_full";
-      else if (!allowNewDen(ip, now)) meError = "too_many_dens";
-      else {
-        p = state.players[token] = newPlayer(state.height, now, token);
-        indexPlayer(state, token, p);
-        playerCount++;
-      }
-    }
+    const p = getPlayer(state, token);
     if (p) {
       p.lastSeen = now;
       me = publicPlayer(p, now);
       save();
-    }
+    } else needsName = true;
   } else if (token) meError = "bad_token";
   const readAt = chainReadAt();
   const viewer = me ? getPlayer(state, token) : null;
@@ -1777,6 +1945,7 @@ function snapshot(token, ip = null) {
     serverTime: now,
     me,
     meError,
+    needsName,
   };
 }
 // Static rules and catalog: fetched once per page load (GET /api/config), never polled.
@@ -1905,6 +2074,7 @@ const POST_ROUTES = {
 };
 // {username}: set or change the den's username (the onboarding step and the side panel; the wallet
 // panel still uses its old path)
+const USERNAME_PATHS = new Set(["/api/username", "/api/wallet/username"]);
 POST_ROUTES["/api/username"] = POST_ROUTES["/api/wallet/username"] = (b, p, token) => {
   const r = setUsername(state, token, b);
   if (!r.ok) return err(WALLET_ERR_STATUS[r.error] || 400, r.error);
@@ -1912,7 +2082,7 @@ POST_ROUTES["/api/username"] = POST_ROUTES["/api/wallet/username"] = (b, p, toke
 };
 const RAID_ERR_STATUS = { hamster_asleep: 409, chain_unknown: 409, chain_stale: 409, no_raids_left: 429, bad_target: 404, unknown_player: 404, not_eligible: 403, self_target: 400, shielded: 409, target_shielded: 409 };
 const SHOP_ERR_STATUS = { unknown_player: 404, not_for_sale: 403, boost_active: 409, shield_active: 409, shield_used_today: 429, unknown_crate: 404 };
-const WALLET_ERR_STATUS = { unknown_player: 404, no_nonce: 409, nonce_expired: 410, wallet_taken: 409, username_taken: 409 };
+const WALLET_ERR_STATUS = { unknown_player: 404, no_nonce: 409, nonce_expired: 410, wallet_taken: 409, username_taken: 409, server_full: 503, too_many_dens: 429, den_exists: 409 };
 const DEV_ROUTES = {
   "/api/dev/advance": (b) => {
     const n = b.n == null ? 1 : b.n;
@@ -1956,10 +2126,19 @@ async function handle(req, res) {
       return json(res, 200, snapshot(url.searchParams.get("token"), clientIp(req)));
     }
     if (url.pathname === "/api/config" && req.method === "GET") return json(res, 200, configPayload());
+    if ((url.pathname === "/api/den" || url.pathname === "/api/den/random") && req.method === "GET") {
+      if (!allowVisit(clientIp(req))) return json(res, 429, { error: "slow_down" });
+      const tok = url.searchParams.get("token");
+      const r = url.pathname === "/api/den" ? visitDen(state, url.searchParams.get("id"), tok) : randomDen(state, tok);
+      if (!r.ok) return json(res, 404, { error: r.error });
+      const { ok, ...body } = r;
+      return json(res, 200, body);
+    }
     if (url.pathname === "/api/leaderboard" && req.method === "GET") {
       return json(res, 200, leaderboard(state, url.searchParams.get("token"), Date.now(), { chainReadAt: chainReadAt() }));
     }
     const devRoute = DEMO ? DEV_ROUTES[url.pathname] : undefined;
+    if (!DEMO && url.pathname.startsWith("/api/dev/")) security.devProbe(url.pathname, clientIp(req));
     const route = Object.hasOwn(POST_ROUTES, url.pathname) ? POST_ROUTES[url.pathname] : devRoute;
     if (route && req.method === "POST") {
       let b;
@@ -1975,8 +2154,13 @@ async function handle(req, res) {
         const token = clean(b.token, 64);
         if (!TOKEN_RE.test(token)) return json(res, 400, { error: "bad_token" });
         const p = getPlayer(state, token);
-        if (!p) return json(res, 404, { error: "unknown_player" });
-        out = route(b, p, token);
+        if (!p && USERNAME_PATHS.has(url.pathname)) { // the name step creates the den
+          const r = createDen(state, token, b, Date.now(), { ip: clientIp(req), count: playerCount });
+          if (!r.ok) return json(res, WALLET_ERR_STATUS[r.error] || 400, { error: r.error });
+          playerCount++;
+          out = okMe(r.player, { username: r.username, created: true });
+        } else if (!p) return json(res, 404, { error: "unknown_player" });
+        else out = route(b, p, token);
       }
       save();
       return json(res, out[0], out[1]);
@@ -1991,9 +2175,13 @@ async function handle(req, res) {
     return serveStatic(req, res, full);
   } catch (e) {
     console.error("request failed:", req.method, url.pathname, e);
+    security.serverError(url.pathname);
     json(res, 500, { error: "server_error" });
   }
 }
+
+// Security alerts (lib/alert.js): a no-op unless ALERT_WEBHOOK is set.
+const security = alert.createSecurity({ dataFile: DATA_FILE, BALANCE, baseBpm: SPEED_BASE_BPM, demo: DEMO });
 
 function listen() {
   const server = http.createServer(handle);
@@ -2016,9 +2204,9 @@ module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certElig
 // Extra helpers for tests (the plan's six names above stay the primary surface).
 Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
-  raidChance, resolveRaid, raidOdds, raidReady, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
-  leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS,
-  WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername,
+  raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
+  leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS, viewerFlags, denView, visitDen, randomDen, allowVisit, VISIT_LIMIT,
+  WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername, usernameProblem, createDen, purgeNameless, runMigrations,
   REPLAY_NIGHT, REPLAY_NONSTOP_NIGHT, REPLAY_API_SINK, REPLAY_MIN_SLEEP_MS, replaySchedule, replayLocate, replayCumulativeBlocks, cumulativeBlocks: replayCumulativeBlocks,
   replayReading, replayTick, leaveReplay, advanceTo,
   wattsFor, speedPctFrom, speedOpts, replayRunMeanBpm, recordSpeedSample,
@@ -2032,6 +2220,7 @@ if (require.main === module) {
     process.exit(1);
   }
   load();
+  security.boot();
   playerCount = Object.keys(state.players).length;
   poll();
   setInterval(poll, POLL_MS);
