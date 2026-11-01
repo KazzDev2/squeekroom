@@ -26,9 +26,20 @@ const SLOTS = [
   { id: "pantry", w: 37 }, { id: "nest", w: 34 }, { id: "dead", w: 30 },
 ];
 
-// payouts, as multiples of the drop cost (tuned with thousands of simulated drops: about 0.85 back
-// per drop before the stash, about 0.94 with a 15x stash). Seeds pay SEED_PCT of the cost, more in a chain.
-const PAY = { dead: 0.2, nest: 0.6, pantry: 1.5, SEED_PCT: 2, COMBO_MAX: 5, COMBO_FRAMES: 90, STASH_START: 10, STASH_FEED_PCT: 5 };
+// payouts, as multiples of the drop cost. Seeds pay SEED_PCT of the cost, more in a chain. Tuned on
+// simulated drops through the server (crates, duplicate prizes and a full stash included): about 0.89
+// back per drop on average and 0.955 at the best aim, so no aim beats the house.
+const PAY = { dead: 0.2, nest: 0.6, pantry: 1.4, SEED_PCT: 1, COMBO_MAX: 5, COMBO_FRAMES: 90 };
+// Where a prize can sit, by rarity: measured reach (the best aim, how often the ball passes close
+// enough) is about 0.7-0.9 for common spots, 0.4-0.5 uncommon, 0.3 rare, 0.13-0.17 epic, 0.05-0.07
+// legendary. A prize is a 7-px target, knocked loose like the crate.
+const PRIZE_SPOTS = [
+  ["common", 84, 160], ["common", 172, 120], ["common", 116, 144],
+  ["uncommon", 156, 256], ["uncommon", 44, 264], ["uncommon", 220, 256],
+  ["rare", 204, 216], ["rare", 68, 296], ["rare", 84, 240],
+  ["epic", 204, 184], ["epic", 36, 176], ["epic", 188, 272],
+  ["legendary", 28, 176], ["legendary", 196, 152],
+].map(([tier, x, y]) => ({ tier, x, y, r: 7 }));
 
 function rng32(seed) { // mulberry32
   let a = seed >>> 0;
@@ -73,12 +84,13 @@ const dividers = [];
 const slotAt = (x) => { let edge = LEFT; for (let i = 0; i < SLOTS.length; i++) { edge += SLOTS[i].w; if (x < edge) return i; } return SLOTS.length - 1; };
 
 // ---------- one drop ----------
-function simulate(dropX, seed, { crate = -1 } = {}) {
+function simulate(dropX, seed, { crate = -1, prize = -1 } = {}) {
   const r = rng32(seed);
   let x = Math.min(RIGHT - BALL_R - 1, Math.max(LEFT + BALL_R + 1, dropX)) + (r() - 0.5) * 3; // a hidden wobble:
   let y = RAIL_Y, vx = (r() - 0.5) * 0.4, vy = 0.2, ang = 0; // the same aim never lands quite the same
   const frames = [], events = [], got = new Set();
   let crateOn = crate >= 0 && crate < crateSpots.length, still = 0, slot = -1, slotFrame = -1, after = 0;
+  let prizeOn = prize >= 0 && prize < PRIZE_SPOTS.length;
   const lastHit = new Map();
   const hit = (f, kind, i, vn) => { // one flash per thing per few frames
     const k = kind + i;
@@ -130,6 +142,10 @@ function simulate(dropX, seed, { crate = -1 } = {}) {
         const c = crateSpots[crate], vn = circle(c.x, c.y, c.r, 0.4);
         if (vn < 0) { crateOn = false; events.push({ f, kind: "crate", i: crate }); }
       }
+      if (prizeOn) {
+        const c = PRIZE_SPOTS[prize], vn = circle(c.x, c.y, c.r, 0.4);
+        if (vn < 0) { prizeOn = false; events.push({ f, kind: "prize", i: prize }); }
+      }
       for (const dx of dividers) segment(dx, DIV_TOP, dx, H, 0.35);
     }
     const sp = vx * vx + vy * vy;
@@ -149,12 +165,14 @@ function simulate(dropX, seed, { crate = -1 } = {}) {
     }
   }
   if (slot < 0) { slot = slotAt(x); slotFrame = frames.length / 3 - 1; events.push({ f: slotFrame, kind: "slot", i: slot }); }
-  return { frames, events, slot, slotId: SLOTS[slot].id, slotFrame, seeds: [...got].length };
+  return { frames, events, slot, slotId: SLOTS[slot].id, slotFrame, seeds: [...got].length,
+    crateHit: events.some((e) => e.kind === "crate"), prizeHit: events.some((e) => e.kind === "prize") };
 }
 
 return {
   W, H, BALL_R, RAIL_Y, LEFT, RIGHT, DIV_TOP, FLOOR, PAY,
-  WHEEL, ACORNS, SLOTS, roots, pebbles, seeds, crateSpots, dividers,
+  WHEEL, ACORNS, SLOTS, roots, pebbles, seeds, crateSpots, dividers, PRIZE_SPOTS,
+  AIM_MIN: LEFT + BALL_R + 1, AIM_MAX: RIGHT - BALL_R - 1,
   rng32, simulate, slotAt,
 };
 });

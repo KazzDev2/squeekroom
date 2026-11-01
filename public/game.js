@@ -569,7 +569,7 @@ function applyMe(me, first = false, opts = {}) {
 // Nothing about it reaches the server; the name step (POST /api/username) creates the real one.
 function previewDen() {
   const B = S.balance || {}, owned = {};
-  for (const it of S.catalog.values()) if (it.price === 0 && !it.crate) owned[it.id] = 1;
+  for (const it of S.catalog.values()) if (it.price === 0 && !it.crate && !it.drop) owned[it.id] = 1;
   return {
     preview: true, publicId: null, nick: "anon", username: null, createdAt: null, joinHeight: null,
     watts: B.WELCOME_WATTS || 10_000, lifetimeWatts: 0, wheelTier: 0, multPct: 100, bedTier: 0, bedMultPct: 100, bedWattsPerMin: 0, roomTier: 0,
@@ -1913,8 +1913,8 @@ function buildCards() {
   builtSize = S.catalog.size;
   if (!S.catalog.size) { box.innerHTML = "<p>Opening the shop…</p>"; return; }
   for (const cat of tab.cats) {
-    // cheapest first (a stable sort keeps colourways next to their base); crate finds are never listed
-    const items = [...S.catalog.values()].filter((i) => i.cat === cat && !i.crate).sort((a, b) => a.price - b.price);
+    // cheapest first (a stable sort keeps colourways next to their base); crate finds and Burrow Drop prizes are never listed
+    const items = [...S.catalog.values()].filter((i) => i.cat === cat && !i.crate && !i.drop).sort((a, b) => a.price - b.price);
     if (!items.length) continue;
     if (tab.cats.length > 1) { const h = document.createElement("div"); h.className = "sub"; h.textContent = SUBHEAD[cat] || cat; box.appendChild(h); }
     for (const it of items) {
