@@ -104,12 +104,12 @@ All numbers live in `BALANCE.BOOSTS`, `SHIELD`, `CRATES` and `GOLDEN` and reach 
 - Lucky crates (`POST /api/crate {id}`): on each settled block every den that is watching (the same heartbeat as the +20% bonus) has a 1% chance of a crate, at most 5 a UTC day and 3 unopened. The contents are rolled when it drops and stay on the server until it is opened: 60% 200–800 W (balance only, not lifetime), 25% a boost, 10% a shield token, 5% crate-only decor (one already owned or already waiting becomes 800 W). It keys off settled blocks and watching only, never off making him run.
 - Golden blocks: a height is golden when `sha256("squeekden-golden|" + height)` says so (about 1 in 150, the same on every boot). It pays 10× wheel watts to every den watching when it settles. `/api/state` carries the newest one as `golden`; the page shows a toast and sparks.
 
-## Decor wave, colourways and the daily shop
+## Decor wave and colourways
 
 - About twenty cheap new pieces (300–2,000 W), so decorating doesn't wait on income: wall decals in `public/sprites_v3_wall_*.js`, floor items (flat + `iso_` art) in `public/sprites_v3_floor_*.js`, plus two pricey anchors (Fish Tank 22,000 W, Hamster Hammock 14,000 W).
-- Crate-only decor (`crate: true` in the catalog: Golden Sunflower, Lucky Lantern, Four-Leaf Clover Jar, Shooting Star) is never sold; the shop shows it as "Crate only" until a lucky crate hands one over.
+- Crate-only decor (`crate: true` in the catalog: Golden Sunflower, Lucky Lantern, Four-Leaf Clover Jar, Shooting Star) is never sold or listed in the shop: players find it in lucky crates (and then it sits in their things like anything else).
 - Colourways are catalog entries with `remap: [[from, to], ...]` palette pairs over their base item's art (`colorOf`), so there is no duplicated sprite code. The client turns the pairs into the 16-entry map `drawSprite` already takes.
-- Daily shop: `BALANCE.DAILY` picks 3 items from the hash of the UTC date (the same for everyone, new at 00:00 UTC) at 30% off. The discount is applied by the server (`priceFor()`); wheel, bed and den tiers, free items, crate-only items and colourways are never picked. `/api/state` carries `daily`; the shop shows a "Today" strip with a countdown.
+- The shop tabs run Decor, Rugs, Walls & Floors, Skins, Wheel, Bed, Den (Decor is where a new den starts), each sorted cheapest first. Boosts and shield tokens aren't in the shop at all: they come from lucky crates and wait in Your things.
 
 ## Ideas for v3
 

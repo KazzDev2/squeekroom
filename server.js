@@ -137,9 +137,6 @@ const BALANCE = {
   // Golden blocks: a settled height is golden when its hash says so (~1 in ONE_IN, the same answer on
   // every boot). It pays MULT_PCT wheel watts to every den watching when it settles; others get the normal rate.
   GOLDEN: { ONE_IN: 150, MULT_PCT: 1000 },
-  // Daily shop: COUNT items picked from the UTC date (same for everyone), OFF_PCT off until 00:00 UTC.
-  // Never wheel/bed/room tiers, free items, crate-only decor or colourways (their base can be picked).
-  DAILY: { COUNT: 3, OFF_PCT: 30 },
 };
 
 // ---------- room grid ----------
@@ -308,29 +305,6 @@ const TIER_FIELD = { wheel: "wheelTier", bed: "bedTier", room: "roomTier" };
 const tierField = (cat) => (Object.hasOwn(TIER_FIELD, cat) ? TIER_FIELD[cat] : null);
 const DEFAULTS = { skin: "skin_classic", wallpaper: "wp_plain", floor: "fl_straw" };
 const FREE_IDS = CATALOG.filter((i) => i.price === 0 && !i.crate).map((i) => i.id); // every player owns these
-
-// ---------- daily shop ----------
-// DAILY.COUNT picks from the UTC date's hash (the same for everyone, new at 00:00 UTC), OFF_PCT off.
-const DAILY_POOL = CATALOG.filter((i) => i.price > 0 && !i.crate && !i.colorOf && !Object.hasOwn(TIER_FIELD, i.cat)).map((i) => i.id);
-const dailyCache = { day: null, items: [] };
-function dailyPicks(day) {
-  if (dailyCache.day === day) return dailyCache.items;
-  const h = crypto.createHash("sha256").update(`squeekden-daily|${day}`).digest("hex");
-  const pool = DAILY_POOL.slice(), items = [];
-  for (let k = 0; k < BALANCE.DAILY.COUNT && pool.length; k++) items.push(pool.splice(parseInt(h.slice(k * 8, k * 8 + 8), 16) % pool.length, 1)[0]);
-  dailyCache.day = day;
-  dailyCache.items = items;
-  return items;
-}
-function dailyShop(now = Date.now()) {
-  const day = new Date(now).toISOString().slice(0, 10);
-  return { day, items: dailyPicks(day).slice(), offPct: BALANCE.DAILY.OFF_PCT, resetMs: 86_400_000 - (now % 86_400_000) };
-}
-// What an item costs right now (the daily discount applied server-side).
-function priceFor(item, now = Date.now()) {
-  if (!item) return 0;
-  return dailyPicks(new Date(now).toISOString().slice(0, 10)).includes(item.id) ? Math.floor((item.price * (100 - BALANCE.DAILY.OFF_PCT)) / 100) : item.price;
-}
 
 // ---------- fixtures: the wheel and the bed ----------
 const FIXTURES = ["wheel", "bed"];
@@ -797,7 +771,7 @@ const speedOpts = (baseBpm, B = BALANCE.SPEED) => ({ windowMs: B.WINDOW_MS, base
 // The live speed bonus now. SPEED_BASE_BPM is fixed at boot (below REPLAY_SCHEDULE).
 const currentSpeedPct = (now = Date.now()) => speedPctFrom(speedSamples, now, speedOpts(SPEED_BASE_BPM));
 
-function canBuy(player, itemId, now = Date.now()) {
+function canBuy(player, itemId) {
   const item = typeof itemId === "string" ? CATALOG_BY_ID.get(itemId) : undefined;
   if (!item) return { ok: false, error: "unknown_item" };
   if (item.crate) return { ok: false, error: "crate_only" };
@@ -809,12 +783,11 @@ function canBuy(player, itemId, now = Date.now()) {
   } else if (SINGLE_COPY.has(item.cat) && (player.owned[item.id] || 0) > 0) {
     return { ok: false, error: "already_owned" };
   }
-  const price = priceFor(item, now);
-  if (player.watts < price) return { ok: false, error: "poor", need: price - player.watts };
-  return { ok: true, item, price };
+  if (player.watts < item.price) return { ok: false, error: "poor", need: item.price - player.watts };
+  return { ok: true, item, price: item.price };
 }
-function applyBuy(player, itemId, now = Date.now()) {
-  const c = canBuy(player, itemId, now);
+function applyBuy(player, itemId) {
+  const c = canBuy(player, itemId);
   if (!c.ok) return c;
   const item = c.item;
   player.watts -= c.price;
@@ -1794,7 +1767,6 @@ function snapshot(token, ip = null) {
     idle: asleep(state, now, readAt), // asleep (live reading, else the chain): bed income flows, raids are closed
     speedPct: currentSpeedPct(now), // speed bonus on wheel income (100 = none), from the chain's cadence
     golden: state.lastGolden || null, // newest golden block {height, at}: 10x wheel watts for everyone watching
-    daily: dailyShop(now), // today's discounted picks {day, items, offPct, resetMs}
     raid: viewer ? raidStatus(state, viewer, now, readAt) : null, // this viewer's raid window + cooldown
     raidFeed: (Array.isArray(state.raidFeed) ? state.raidFeed : []).slice(-BALANCE.RAID.FEED_SNAPSHOT), // oldest first
     burned: state.burned || 0,
@@ -2052,7 +2024,7 @@ Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, apply
   wattsFor, speedPctFrom, speedOpts, replayRunMeanBpm, recordSpeedSample,
   BOOST_KINDS, ITEM_KINDS, boostActive, useBoost, raiseShield, shieldUp, boughtShieldUp, shieldPrice, isGoldenBlock, goldenBetween,
   rollCrateContents, rollCrates, crateTile, openCrate,
-  COLORWAYS, DAILY_POOL, dailyPicks, dailyShop, priceFor, FREE_IDS });
+  COLORWAYS, FREE_IDS });
 
 if (require.main === module) {
   if (DEMO && REPLAY_REQUESTED) {

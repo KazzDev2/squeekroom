@@ -515,7 +515,6 @@ function applyState(j) {
   S.idle = j.idle === true;
   S.speedPct = typeof j.speedPct === "number" ? j.speedPct : 100; // speed bonus on wheel income (100 = none)
   if (typeof j.serverTime === "number") S.skew = j.serverTime - Date.now();
-  applyDaily(j.daily); // before applyMe, so the first render already shows today's prices
   if (j.me) { applyMe(j.me, first, { at: j.serverTime, soft: S.idle }); if (!first) noteTrickle(); }
   else if (j.meError) toast(j.meError === "server_full" ? "The server is full." : j.meError === "too_many_dens" ? "Too many new dens from your network. Try again in an hour." : `Couldn't load your den (${j.meError}).`, "err");
   if (j.raid !== undefined) applyRaidStatus(j.raid);
@@ -1839,13 +1838,13 @@ function tickThumbs() {
 
 // ---------- shop ----------
 const TABS = [
-  { id: "wheel", label: "Wheel", cats: ["wheel"] },
-  { id: "bed", label: "Bed", cats: ["bed"] },
-  { id: "room", label: "Den", cats: ["room"] },
   { id: "decor", label: "Decor", cats: ["furniture", "wall"] },
   { id: "rugs", label: "Rugs", cats: ["rug"] },
   { id: "styles", label: "Walls & Floors", cats: ["wallpaper", "floor"] },
   { id: "skins", label: "Skins", cats: ["skin"] },
+  { id: "wheel", label: "Wheel", cats: ["wheel"] },
+  { id: "bed", label: "Bed", cats: ["bed"] },
+  { id: "room", label: "Den", cats: ["room"] },
 ];
 const SUBHEAD = { furniture: "Floor", wall: "Wall", wallpaper: "Wallpaper", floor: "Flooring" };
 let shopTab = ls.get("sr_tab");
@@ -1872,7 +1871,8 @@ function buildCards() {
   builtSize = S.catalog.size;
   if (!S.catalog.size) { box.innerHTML = "<p>Opening the shop…</p>"; return; }
   for (const cat of tab.cats) {
-    const items = [...S.catalog.values()].filter((i) => i.cat === cat);
+    // cheapest first (a stable sort keeps colourways next to their base); crate finds are never listed
+    const items = [...S.catalog.values()].filter((i) => i.cat === cat && !i.crate).sort((a, b) => a.price - b.price);
     if (!items.length) continue;
     if (tab.cats.length > 1) { const h = document.createElement("div"); h.className = "sub"; h.textContent = SUBHEAD[cat] || cat; box.appendChild(h); }
     for (const it of items) {
@@ -1913,8 +1913,7 @@ function tierCardState(it, me, poor, need) {
 }
 function cardState(it, me) {
   const watts = me ? me.watts : 0, owned = me ? me.owned[it.id] || 0 : 0;
-  if (it.crate) return owned ? { kind: "found", label: "Found", disabled: true, note: "from a lucky crate", own: `own ${owned}` } : { kind: "crate", label: "Crate only", disabled: true, note: "only in lucky crates" };
-  const price = priceOf(it), poor = watts < price, need = price - watts;
+  const poor = watts < it.price, need = it.price - watts;
   if (Object.hasOwn(TIERED, it.cat)) return tierCardState(it, me, poor, need);
   if (!it.zone) { // wallpaper, flooring, skins: buy once, then equip
     const equipped = me && (it.cat === "skin" ? me.skin : it.cat === "wallpaper" ? me.wallpaper : me.floor) === it.id;
@@ -1931,12 +1930,7 @@ function updateCards() {
   for (const c of shopCards.values()) {
     const st = cardState(c.it, me), buying = st.kind === "buy" || st.kind === "upgrade";
     c.state = st;
-    const now = priceOf(c.it);
-    if (st.kind === "owned" || st.kind === "equip" || st.kind === "equipped" || st.kind === "found") c.price.textContent = "";
-    else if (c.it.crate) c.price.textContent = "rare";
-    else if (now < c.it.price) c.price.innerHTML = `<s>${fmt(c.it.price)}</s> ${fmt(now)} W`;
-    else c.price.textContent = c.it.price ? `${fmt(c.it.price)} W` : "Free";
-    c.el.classList.toggle("deal", now < c.it.price && (st.kind === "buy" || st.kind === "upgrade"));
+    c.price.textContent = st.kind === "owned" || st.kind === "equip" || st.kind === "equipped" ? "" : c.it.price ? `${fmt(c.it.price)} W` : "Free";
     c.price.classList.toggle("poor", buying && !!st.poor);
     c.own.textContent = st.own || "";
     c.own.title = st.ownTitle || "";
@@ -1947,9 +1941,8 @@ function updateCards() {
     c.note.className = cls;
     c.el.classList.toggle("cur", !!st.cur);
     if (!c.busy && !c.ticking) { c.btn.textContent = st.label; c.btn.disabled = !!st.disabled; c.btn.className = st.alt ? "alt" : ""; }
-    c.btn.setAttribute("aria-label", `${st.label}: ${c.it.name}${buying && c.it.price ? `, ${fmt(now)} watts` : ""}`);
+    c.btn.setAttribute("aria-label", `${st.label}: ${c.it.name}${buying && c.it.price ? `, ${fmt(c.it.price)} watts` : ""}`);
   }
-  renderToday();
 }
 async function equip(it) {
   const r = it.cat === "skin" ? await post("/api/skin", { skinId: it.id }) : await post("/api/style", { [it.cat]: it.id });
@@ -1972,7 +1965,7 @@ async function cardAction(c) {
       return;
     }
     applyMe(r.j.me);
-    spendFeedback(c, Number.isFinite(r.j.price) ? r.j.price : priceOf(it));
+    spendFeedback(c, it.price);
     if (it.cat === "wheel") toast(`${it.name}: ${(it.multPct / 100).toFixed(2)}× watts per block`, "ok");
     else if (it.cat === "bed") toast(`${it.name}: ${(it.multPct / 100).toFixed(2)}× bed watts`, "ok");
     else if (it.cat === "room") toast(`Your den is now ${it.material || it.name}`, "ok");
@@ -2006,59 +1999,6 @@ function spendFeedback(c, price) {
     setTimeout(() => { c.ticking = false; updateCards(); }, 1200);
   }
 }
-
-// ---------- the daily shop: three picks a day, 30% off, the same for everyone ----------
-// The server picks and prices them (snapshot.daily); this only shows the strip and its countdown.
-S.daily = null;
-function applyDaily(d) {
-  if (!d || !Array.isArray(d.items)) return;
-  const was = S.daily && S.daily.day;
-  S.daily = { day: d.day, items: d.items, offPct: Number(d.offPct) || 0, resetAt: Date.now() + Math.max(0, Number(d.resetMs) || 0) };
-  if (was !== d.day) { todaySig = ""; if (was) updateCards(); else renderToday(); } // new picks at midnight; the first load shows the strip at once
-}
-const priceOf = (it) => (it && S.daily && S.daily.items.includes(it.id) && Date.now() < S.daily.resetAt ? Math.floor((it.price * (100 - S.daily.offPct)) / 100) : it ? it.price : 0);
-const todayCards = new Map(); // itemId -> card (same shape as the shop's)
-let todaySig = "";
-function renderToday() {
-  const box = $("today"), d = S.daily;
-  const items = d ? d.items.map((id) => S.catalog.get(id)).filter(Boolean) : [];
-  box.hidden = !items.length;
-  if (!items.length) return;
-  const left = Math.max(0, d.resetAt - Date.now());
-  $("todayHead").innerHTML = `<b>Today</b> · ${d.offPct}% off · new picks in ${durText(left)}`;
-  const sig = d.day + "|" + items.map((i) => i.id).join(",");
-  if (sig !== todaySig) {
-    todaySig = sig;
-    const row = $("todayRow");
-    row.innerHTML = "";
-    todayCards.clear();
-    for (const it of items) {
-      const el = document.createElement("div");
-      el.className = "card mini deal";
-      el.innerHTML = '<canvas class="thumb" width="48" height="48"></canvas><div class="cname"></div><div class="cmeta"><span class="price"></span><span class="own"></span></div><div class="cnote"></div><button></button>';
-      el.querySelector(".cname").textContent = it.name;
-      const c = { el, it, thumb: el.querySelector("canvas"), btn: el.querySelector("button"), price: el.querySelector(".price"), own: el.querySelector(".own"), note: el.querySelector(".cnote"), state: null, busy: false, ticking: false };
-      c.thumb.setAttribute("aria-hidden", "true");
-      c.btn.onclick = () => cardAction(c);
-      drawThumb(c.thumb, it);
-      todayCards.set(it.id, c);
-      row.appendChild(el);
-    }
-  }
-  const me = S.me;
-  for (const c of todayCards.values()) {
-    const st = cardState(c.it, me), buying = st.kind === "buy" || st.kind === "upgrade", now = priceOf(c.it);
-    c.state = st;
-    c.price.innerHTML = buying || st.kind === "buy" ? `<s>${fmt(c.it.price)}</s> ${fmt(now)} W` : "";
-    c.price.classList.toggle("poor", buying && !!st.poor);
-    c.own.textContent = st.own || "";
-    c.note.textContent = st.kind === "equipped" || st.kind === "equip" ? st.note || "" : ""; // a red price says "can't afford" here; the shop card below has the exact gap
-    c.note.className = "cnote";
-    c.el.title = buying && st.poor ? `Need ${fmt(st.need)} more watts` : "";
-    if (!c.busy && !c.ticking) { c.btn.textContent = st.label; c.btn.disabled = !!st.disabled; c.btn.className = st.alt ? "alt" : ""; }
-  }
-}
-setInterval(() => { if (S.daily && !document.hidden) renderToday(); }, 30_000); // the countdown
 
 // ---------- inventory strip: owned but not yet placed ----------
 let invChips = [], invSig = null;
