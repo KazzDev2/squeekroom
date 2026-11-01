@@ -125,8 +125,8 @@ function sfx(name, o = {}) {
 // Two CC0 (public domain) tracks from opengameart.org, streamed by an <audio> element and routed
 // through the music bus, so the speaker button and fades work the same.
 const TRACKS = {
-  den: { src: "music/chill_lofi.mp3", type: "audio/mpeg", vol: 0.5 }, // "Chill lofi inspired" by omfgdude
-  drop: { src: "music/pixel_sprinter_loop.ogg", type: 'audio/ogg; codecs="vorbis"', vol: 0.42 }, // "Pixel Sprinter" (loop) by Zane Little Music
+  den: { src: "music/chill_lofi.mp3", type: "audio/mpeg", vol: 0.25 }, // "Chill lofi inspired" by omfgdude
+  drop: { src: "music/pixel_sprinter_loop.ogg", type: 'audio/ogg; codecs="vorbis"', vol: 0.21 }, // "Pixel Sprinter" (loop) by Zane Little Music
 };
 const canPlay = (type) => { try { return !!new Audio().canPlayType(type); } catch { return false; } };
 let el = null, elNode = null;
