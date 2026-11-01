@@ -155,93 +155,39 @@ test("file guard: our own writes are fine, an outside edit or delete is caught",
   assert.equal(g.check(), "missing");
 });
 
-// ---------- watts supply ----------
+// ---------- balances ----------
 const den = (watts, extra = {}) => Object.assign(S.newPlayer(1000, T0), { watts }, extra);
 const world = (players, height = 1000) => ({ resetId: "r", startHeight: 900, height, players });
-const RATES = A.supplyRates(S.BALANCE, S.BALANCE.SPEED.BASE_BPM);
 
-test("supply: rates are real upper bounds (one block at tier 5, every bonus maxed)", () => {
-  const B = S.BALANCE;
-  const best = S.wattsFor(1, B.WHEEL_MULT_PCT.length - 1, B.LIVE_BONUS_PCT, B.SPEED.MAX_PCT);
-  assert.ok(RATES.perBlock >= best, `${RATES.perBlock} >= ${best}`);
-  assert.ok(RATES.perMin >= S.bedWattsPerMin({ bedTier: B.BED_MULT_PCT.length - 1 }) * (B.LIVE_BONUS_PCT / 100));
-});
-
-test("supply: real income, raids, purchases and new dens never alert", () => {
-  const m = A.createSupplyMonitor(RATES);
-  const players = { a: den(50_000), b: den(80_000) };
-  const st = world(players);
-  assert.equal(m.observe(st, T0), null, "baseline");
-  // a whole night of blocks at once (catch-up after an RPC outage), at the best tier
-  for (const p of Object.values(players)) p.watts += S.wattsFor(1000, 5, 120, 150);
-  st.height += 1000;
-  assert.equal(m.observe(st, T0 + 10_000), null);
-  players.a.watts -= 20_000; players.b.watts += 20_000; // raid loot moves watts
-  players.c = den(S.BALANCE.WELCOME_WATTS); // a new den with its welcome grant
-  assert.equal(m.observe(st, T0 + 20_000), null);
-  players.a.watts += 800; // a v3 crate
-  assert.equal(m.observe(st, T0 + 30_000), null);
-});
-
-test("supply: minted watts -> jump with the biggest gainers; broken balances -> bad", () => {
-  const m = A.createSupplyMonitor(RATES);
+test("balances: only impossible ones are flagged (growth never is)", () => {
   const players = { a: den(5_000, { username: "alice" }), b: den(5_000) };
-  const st = world(players);
-  m.observe(st, T0);
-  players.a.watts += 10_000_000;
-  st.height += 1;
-  const r = m.observe(st, T0 + 10_000);
-  assert.ok(r.jump);
-  assert.equal(r.jump.delta, 10_000_000);
-  assert.equal(r.jump.gainers[0].name, "alice");
-  assert.equal(r.jump.gainers[0].gain, 10_000_000);
+  assert.deepEqual(A.badBalances(world(players)), []);
+  players.a.watts += 10_000_000; // lots of watts is fine
+  assert.deepEqual(A.badBalances(world(players)), []);
   players.b.watts = NaN;
-  assert.equal(m.observe(st, T0 + 20_000).bad.length, 1);
+  assert.deepEqual(A.badBalances(world(players)).map((x) => x.watts), ["NaN"]);
   players.b.watts = -5;
-  assert.equal(m.observe(st, T0 + 30_000).bad.length, 1);
-});
-
-test("supply: raid crit bonuses (state.minted) are not a jump; watts beyond them still are", () => {
-  const m = A.createSupplyMonitor(RATES);
-  const players = { a: den(5_000_000), b: den(5_000_000) };
-  const st = world(players);
-  m.observe(st, T0);
-  players.a.watts += 600_000; // a big crit: the game paid the bonus
-  st.minted = (st.minted || 0) + 600_000;
-  assert.equal(m.observe(st, T0 + 10_000), null);
-  players.b.watts += 600_000; // the same again, not counted
-  st.minted += 100;
-  const r = m.observe(st, T0 + 20_000);
-  assert.ok(r && r.jump);
-  assert.equal(r.jump.delta, 599_900);
-});
-
-test("supply: survives a restart (saved snapshot), a state reset rebaselines", () => {
-  let saved = null;
-  const players = { a: den(5_000) };
-  const st = world(players);
-  A.createSupplyMonitor(RATES, { onSave: (s) => (saved = s) }).observe(st, T0);
-  players.a.watts = 50_000_000; // edited while the server was down
-  const r = A.createSupplyMonitor(RATES, { saved }).observe(st, T0 + 3_600_000);
-  assert.ok(r.jump && r.jump.restored);
-  assert.equal(A.createSupplyMonitor(RATES, { saved }).observe({ ...st, resetId: "new" }, T0 + 3_600_000), null);
+  assert.equal(A.badBalances(world(players)).length, 1);
+  players.a.watts = "9";
+  assert.equal(A.badBalances(world(players)).length, 2);
+  assert.deepEqual(A.badBalances({}), []);
 });
 
 // ---------- the server hooks ----------
 test("security: no ALERT_WEBHOOK -> every hook is a no-op (no files, no fetch)", async () => {
   const dir = tmpDir();
-  const sec = A.createSecurity({ env: { ...RAILWAY }, dataFile: path.join(dir, "state.json"), BALANCE: S.BALANCE, baseBpm: 4, fetchFn: () => assert.fail("fetch"), log: quiet });
+  const sec = A.createSecurity({ env: { ...RAILWAY }, dataFile: path.join(dir, "state.json"), fetchFn: () => assert.fail("fetch"), log: quiet });
   assert.equal(sec.enabled, false);
   await sec.boot();
   sec.beforeWrite(); sec.wrote(); sec.tick(world({ a: den(NaN) })); sec.serverError("/x"); sec.devProbe("/api/dev/grant", "1.2.3.4");
   assert.deepEqual(fs.readdirSync(dir), []);
 });
 
-test("security: wired end to end (deploy, demo on prod, outside edit, minted watts, dev probe, 5xx burst)", async () => {
+test("security: wired end to end (deploy, demo on prod, outside edit, broken balance, dev probe, 5xx burst)", async () => {
   const dir = tmpDir(), dataFile = path.join(dir, "state.json");
   const net = fakeNet(() => ok({ status: "behind" }));
   let t = T0;
-  const mk = (demo) => A.createSecurity({ env: { ...RAILWAY, ALERT_WEBHOOK: HOOK }, dataFile, BALANCE: S.BALANCE, baseBpm: 4, demo, fetchFn: net.fetchFn, now: () => t, log: quiet, sleep: noSleep });
+  const mk = (demo) => A.createSecurity({ env: { ...RAILWAY, ALERT_WEBHOOK: HOOK }, dataFile, demo, fetchFn: net.fetchFn, now: () => t, log: quiet, sleep: noSleep });
   fs.writeFileSync(dataFile, "{}");
   const sec = mk(false);
   await sec.boot();
@@ -264,20 +210,25 @@ test("security: wired end to end (deploy, demo on prod, outside edit, minted wat
   sec.tick(st, { now: t }); // the same change is reported once
   assert.equal(net.posts.length, 2);
 
-  players.a.watts += 99_000_000;
+  players.a.watts += 99_000_000; // growth alone says nothing
+  t += 10_000;
+  sec.tick(st, { now: t });
+  await sec.alerter.settle();
+  assert.equal(net.posts.length, 2);
+  players.a.watts = -1;
   t += 10_000;
   sec.tick(st, { now: t });
   sec.devProbe("/api/dev/grant", "1.2.3.4");
   for (let i = 0; i < 20; i++) sec.serverError("/api/raid");
   await sec.alerter.settle();
   const texts = net.posts.map((p) => p.content);
-  assert.ok(texts.some((c) => /^@everyone .*watts supply jumped by 99,000,000 W/.test(c)));
+  assert.ok(texts.some((c) => /^@everyone .*impossible balances.* = -1/.test(c)));
   assert.ok(texts.some((c) => /^Squeek Den: `\/api\/dev\/grant` was requested/.test(c)));
   assert.ok(texts.some((c) => /^Squeek Den: 20 server_error/.test(c)));
   assert.ok(fs.existsSync(path.join(dir, "alerts.json")));
 
   const net2 = fakeNet(() => ok({ status: "identical" }));
-  const demo = A.createSecurity({ env: { ...RAILWAY, ALERT_WEBHOOK: HOOK, ALERT_DEPLOY_NOTICE: "0" }, dataFile: path.join(tmpDir(), "state.json"), BALANCE: S.BALANCE, baseBpm: 4, demo: true, fetchFn: net2.fetchFn, log: quiet });
+  const demo = A.createSecurity({ env: { ...RAILWAY, ALERT_WEBHOOK: HOOK, ALERT_DEPLOY_NOTICE: "0" }, dataFile: path.join(tmpDir(), "state.json"), demo: true, fetchFn: net2.fetchFn, log: quiet });
   await demo.boot();
   assert.equal(net2.posts.length, 1);
   assert.match(net2.posts[0].content, /^@everyone .*demo mode is ON in production/);
