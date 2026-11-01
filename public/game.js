@@ -74,21 +74,33 @@ function applyRoom(room) {
 }
 // ---------- fixtures: the wheel and the bed stand on open floor tiles (i, j) and move like furniture ----------
 // They ride the placement UI as pseudo placements with pid "fx:wheel" / "fx:bed" (x = i, y = j).
-const FIX_ITEM = { wheel: { id: "fx_wheel", name: "Wheel", zone: "fixture", fixture: "wheel", w: 1, h: 1 }, bed: { id: "fx_bed", name: "Bed", zone: "fixture", fixture: "bed", w: 1, h: 1 } };
+const FIX_ITEM = { wheel: { id: "fx_wheel", name: "Wheel", zone: "fixture", fixture: "wheel", w: 3, h: 1 }, bed: { id: "fx_bed", name: "Bed", zone: "fixture", fixture: "bed", w: 2, h: 1 } };
+// Floor tiles a fixture covers (same as server.js fixtureTiles): the wheel 3 centred on its anchor,
+// the bed its anchor and the tile behind it; along i (flip false) or j (flip true).
+function fixtureTiles(k, f) {
+  const out = [];
+  for (let d = -1; d <= (k === "wheel" ? 1 : 0); d++) out.push(f.flip ? [f.i, f.j + d] : [f.i + d, f.j]);
+  return out;
+}
 const fixOf = (pid) => (typeof pid === "string" && pid.startsWith("fx:") ? pid.slice(3) : null);
 let myFixtures = null; // S.me.fixtures, set by applyMe (S itself is declared further down)
 function fixture(k) {
   const f = myFixtures && myFixtures[k];
   return f && Number.isInteger(f.i) && Number.isInteger(f.j) ? f : ROOM.FIXTURE_DEFAULTS[k];
 }
-// same rules as server.js moveFixture(): on the floor (walls included, on screen), FIX_GAP apart, off furniture
-function checkFixture(k, i, j) {
-  if (!(Number.isInteger(i) && Number.isInteger(j) && i >= 0 && i < ROOM.ISO_NI && j >= 0 && j < ROOM.ISO_NJ && i + j <= ROOM.FIX_MAX_SUM)) return { ok: false, error: "out_of_bounds" };
-  const o = fixture(k === "wheel" ? "bed" : "wheel");
-  if (Math.max(Math.abs(o.i - i), Math.abs(o.j - j)) < ROOM.FIX_GAP) return { ok: false, error: "too_close", which: k };
+// same rules as server.js moveFixture(): every tile on the floor, off the other fixture (anchors FIX_GAP
+// apart), off furniture
+function checkFixture(k, i, j, flip = !!fixture(k).flip) {
+  const f = { i, j, flip };
+  if (!(Number.isInteger(i) && Number.isInteger(j)) || !fixtureTiles(k, f).every(tileOnFloor)) return { ok: false, error: "out_of_bounds" };
+  const ok = k === "wheel" ? "bed" : "wheel", o = fixture(ok);
+  const near = Math.max(Math.abs(o.i - i), Math.abs(o.j - j)) < ROOM.FIX_GAP;
+  const theirs = new Set(fixtureTiles(ok, o).map(([a, b]) => a * 100 + b));
+  if (near || fixtureTiles(k, f).some(([a, b]) => theirs.has(a * 100 + b))) return { ok: false, error: "too_close", which: k };
+  const mine = new Set(fixtureTiles(k, f).map(([a, b]) => a * 100 + b));
   for (const p of (S.me && S.me.placed) || []) { // not onto furniture (rugs are flat: fine)
     const it = S.catalog.get(p.item);
-    if (it && it.zone === "floor" && footprint(it, p.x, p.y, p.flip).some(([a, b]) => a === i && b === j)) return { ok: false, error: "occupied", with: it };
+    if (it && it.zone === "floor" && footprint(it, p.x, p.y, p.flip).some(([a, b]) => mine.has(a * 100 + b))) return { ok: false, error: "occupied", with: it };
   }
   return { ok: true };
 }
@@ -104,7 +116,10 @@ function wheelAt(i, j, flip) {
 function placeFixtures() {
   const w = fixture("wheel"), b = fixture("bed"), g0 = wheelAt(w.i, w.j, !!w.flip);
   IWHEEL = { cx: g0.cx, cy: g0.cy, r: g0.r, x: g0.box.x, y: g0.box.y, foot: g0.foot };
-  const si = w.i + 1 < ROOM.ISO_NI && !(w.i + 1 === b.i && w.j === b.j) ? [w.i + 1, w.j] : [w.i, Math.min(w.j + 1, ROOM.ISO_NJ - 1)];
+  // where he rests by the wheel: the first open floor tile next to it (off both fixtures)
+  const taken = new Set([...fixtureTiles("wheel", w), ...fixtureTiles("bed", b)].map(([i, j]) => i * 100 + j));
+  const si = [[w.i, w.j + 1], [w.i + 1, w.j], [w.i, w.j - 1], [w.i - 1, w.j], [w.i + 1, w.j + 1], [w.i + 2, w.j], [w.i, w.j + 2]]
+    .find(([i, j]) => i >= 0 && j >= 0 && i < ROOM.ISO_NI && j < ROOM.ISO_NJ && i + j <= ROOM.FIX_MAX_SUM && !taken.has(i * 100 + j)) || [w.i, Math.min(w.j + 1, ROOM.ISO_NJ - 1)]; // runs at load: no tileOnFloor yet
   const sit = isoTileCenter(si[0], si[1]), bed = isoTileCenter(b.i, b.j);
   SPOT = { wheel: { x: g0.run.x, y: g0.run.y }, sit: { x: sit.x, y: sit.y + 2 }, bed: { x: bed.x, y: bed.y + ISO.FOOT } };
 }
@@ -1235,10 +1250,10 @@ function drawStanding(me) {
   const hamInWheel = ham.mode === "run" || (m && m.wheel), hamInBed = ham.mode === "sleep" || (m && m.bed);
   const moving = P.mode === "move" ? fixOf(P.pid) : null; // a fixture being moved fades in place
   const wf = fixture("wheel");
-  drawTileOverlay(g, wf.i, wf.j, SHADOW());
+  for (const [i, j] of fixtureTiles("wheel", wf)) drawTileOverlay(g, i, j, SHADOW());
   list.push({ d: IWHEEL.foot, x: IWHEEL.x, draw: () => drawWheel(wf.i, wf.j, !!wf.flip, (me && me.wheelTier) | 0, hamInWheel, moving === "wheel" ? 0.35 : 1) });
   const b = bedGeom();
-  drawTileOverlay(g, b.i, b.j, SHADOW());
+  for (const [i, j] of fixtureTiles("bed", b)) drawTileOverlay(g, i, j, SHADOW());
   list.push({ d: b.foot, x: b.x, draw: () => drawBed(b, hamInBed, moving === "bed" ? 0.35 : 1) });
   if (!hamInWheel && !hamInBed) {
     g.fillStyle = "rgba(0,0,0,.2)"; g.fillRect(Math.round(ham.x) - 6, Math.round(ham.gy) - 1, 12, 2); // his own little shadow
@@ -1477,7 +1492,7 @@ function checkSpot(it, x, y, ignorePid = null, flip = false) {
     const oi = S.catalog.get(o.item);
     if (oi && oi.zone === it.zone && footprint(oi, o.x, o.y, o.flip).some(([i, j]) => mine.has(i * 100 + j))) return { ok: false, error: "overlap", with: oi };
   }
-  if (it.zone === "floor") for (const k of ["wheel", "bed"]) { const f = fixture(k); if (mine.has(f.i * 100 + f.j)) return { ok: false, error: "fixture", which: k }; }
+  if (it.zone === "floor") for (const k of ["wheel", "bed"]) { if (fixtureTiles(k, fixture(k)).some(([i, j]) => mine.has(i * 100 + j))) return { ok: false, error: "fixture", which: k }; }
   return { ok: true };
 }
 // Server error codes in words.
@@ -1578,7 +1593,7 @@ function updateGhost(L) {
 function revalidate() {
   if (!P.mode || !P.cell) return;
   const c = P.cell;
-  P.valid = P.it.zone === "fixture" ? checkFixture(P.it.fixture, c.x, c.y) : checkSpot(P.it, c.x, c.y, P.mode === "move" ? P.pid : null, P.flip);
+  P.valid = P.it.zone === "fixture" ? checkFixture(P.it.fixture, c.x, c.y, P.flip) : checkSpot(P.it, c.x, c.y, P.mode === "move" ? P.pid : null, P.flip);
 }
 function hitTest(L) {
   if (!S.me || S.preview) return null;
@@ -1767,7 +1782,7 @@ function drawPlacement() {
     for (let i = 0; i < ROOM.ISO_NI; i++) for (let j = 0; j < ROOM.ISO_NJ; j++) if (i + j <= ROOM.FIX_MAX_SUM) drawTileOverlay(g, i, j, OV.lane());
     if (P.cell) {
       const ok = !!(P.valid && P.valid.ok) && P.flashUntil < now, { x: ci, y: cj } = P.cell;
-      drawTileOverlay(g, ci, cj, ok ? OV.ok() : OV.bad());
+      for (const [i, j] of fixtureTiles(k, { i: ci, j: cj, flip: P.flip })) if (tileOnFloor([i, j])) drawTileOverlay(g, i, j, ok ? OV.ok() : OV.bad());
       if (k === "wheel") drawWheel(ci, cj, P.flip, (S.me && S.me.wheelTier) | 0, false, 0.8);
       else drawBed(bedGeom({ i: ci, j: cj, flip: P.flip }), false, 0.8);
       ring(fixtureRect(k, ci, cj, P.flip), ok ? "#4ade80" : "#f87171");
@@ -1781,7 +1796,7 @@ function drawPlacement() {
       }
     } else { // every floor tile outlined; for furniture the wheel's and the bed's hatched red
       for (let i = 0; i < ROOM.ISO_NI; i++) for (let j = 0; j < ROOM.ISO_NJ; j++) if (tileOnFloor([i, j])) drawTileOverlay(g, i, j, OV.lane());
-      if (it.zone === "floor") for (const k of ["wheel", "bed"]) { const f = fixture(k); drawTileOverlay(g, f.i, f.j, OV.reserved()); }
+      if (it.zone === "floor") for (const k of ["wheel", "bed"]) for (const [i, j] of fixtureTiles(k, fixture(k))) drawTileOverlay(g, i, j, OV.reserved());
     }
     if (P.cell) {
       const ok = !!(P.valid && P.valid.ok) && P.flashUntil < now, col = ok ? "#4ade80" : "#f87171";
@@ -1804,7 +1819,7 @@ function drawPlacement() {
   }
   if (selPid && !P.mode) {
     const p = findPlaced(selPid), it = itemOf(p);
-    if (it && it.zone === "fixture") { drawTileOverlay(g, p.x, p.y, OV.sel()); const f = fixtureRect(p.fixture, p.x, p.y, p.flip); ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now); }
+    if (it && it.zone === "fixture") { for (const [i, j] of fixtureTiles(p.fixture, { i: p.x, j: p.y, flip: !!p.flip })) drawTileOverlay(g, i, j, OV.sel()); const f = fixtureRect(p.fixture, p.x, p.y, p.flip); ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now); }
     else if (it && it.zone === "wall") { const f = wallRect(it, p.x, p.y); foldLayer((s) => ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now, s), f.x - 1, f.x + f.w + 1); }
     else if (it) {
       for (const [i, j] of footprint(it, p.x, p.y, p.flip)) drawTileOverlay(g, i, j, OV.sel());

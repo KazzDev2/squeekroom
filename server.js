@@ -153,9 +153,9 @@ const ROOM = {
   WALL_TOP: 2,
   WALL_BOTTOM: 7,
   RESERVED: {}, // inclusive floor-column ranges by name; the burrow mound (16..18) was removed 1 Nov 2026
-  // The wheel and the bed stand on any floor tile (i, j) of the iso room, against the walls too.
-  // Tiles with i + j > FIX_MAX_SUM fall off the bottom of the view. The two fixtures
-  // keep FIX_GAP tiles apart (Chebyshev) so neither hides the other or the hamster.
+  // The wheel and the bed stand on floor tiles, against the walls too: the wheel covers 3 tiles and
+  // the bed 2 (see fixtureTiles). Tiles with i + j > FIX_MAX_SUM fall off the bottom of the view.
+  // The two never share a tile, and their anchors keep FIX_GAP tiles apart (Chebyshev).
   ISO_NI: 11,
   ISO_NJ: 10,
   FIX_MAX_SUM: 14,
@@ -311,30 +311,81 @@ const FREE_IDS = CATALOG.filter((i) => i.price === 0 && !i.crate).map((i) => i.i
 // ---------- fixtures: the wheel and the bed ----------
 const FIXTURES = ["wheel", "bed"];
 const defaultFixtures = () => ({ wheel: { ...ROOM.FIXTURE_DEFAULTS.wheel }, bed: { ...ROOM.FIXTURE_DEFAULTS.bed } });
-const fixtureTileOk = (i, j) => Number.isInteger(i) && Number.isInteger(j) && i >= 0 && i < ROOM.ISO_NI && j >= 0 && j < ROOM.ISO_NJ && i + j <= ROOM.FIX_MAX_SUM;
-const fixturesApart = (a, b) => Math.max(Math.abs(a.i - b.i), Math.abs(a.j - b.j)) >= ROOM.FIX_GAP;
+// Floor tiles a fixture covers, from its anchor (i, j) and facing, matching the iso art: the wheel's
+// disc stands across its axle, 3 tiles centred on the anchor, along i (flip false) or j (flip true);
+// the bed reaches one tile back from its anchor, to (i - 1, j) (flip false) or (i, j - 1) (flip true).
+function fixtureTiles(kind, f) {
+  const out = [];
+  for (let d = -1; d <= (kind === "wheel" ? 1 : 0); d++) out.push(f.flip ? [f.i, f.j + d] : [f.i + d, f.j]);
+  return out;
+}
+const fixtureFits = (kind, f) => !!f && Number.isInteger(f.i) && Number.isInteger(f.j) && typeof f.flip === "boolean" && fixtureTiles(kind, f).every(tileOnFloor);
+// The wheel and the bed never share a tile, and their anchors stay FIX_GAP apart (room for him).
+function fixturesClear(wheelF, bedF) {
+  if (Math.max(Math.abs(wheelF.i - bedF.i), Math.abs(wheelF.j - bedF.j)) < ROOM.FIX_GAP) return false;
+  const w = new Set(fixtureTiles("wheel", wheelF).map(tileKey));
+  return !fixtureTiles("bed", bedF).some((t) => w.has(tileKey(t)));
+}
 function validFixtures(f) {
   if (!f || typeof f !== "object") return false;
-  for (const k of FIXTURES) if (!f[k] || !fixtureTileOk(f[k].i, f[k].j) || typeof f[k].flip !== "boolean") return false;
-  return fixturesApart(f.wheel, f.bed);
+  for (const k of FIXTURES) if (!fixtureFits(k, f[k])) return false;
+  return fixturesClear(f.wheel, f.bed);
 }
+const furnitureTiles = (player) => {
+  const s = new Map(); // tileKey -> item id
+  for (const o of player.placed || []) {
+    const oi = CATALOG_BY_ID.get(o.item);
+    if (oi && oi.zone === "floor") for (const t of footprint(oi, o.x, o.y, !!o.flip)) s.set(tileKey(t), oi.id);
+  }
+  return s;
+};
 // Move the wheel or the bed to floor tile (i, j); flip is optional (keeps the current facing).
 function moveFixture(player, body) {
   const b = body && typeof body === "object" ? body : {};
   if (!FIXTURES.includes(b.which)) return fail("bad_fixture");
-  if (!fixtureTileOk(b.i, b.j)) return fail("out_of_bounds");
   if (b.flip != null && typeof b.flip !== "boolean") return fail("bad_flip");
+  const cur = player.fixtures[b.which];
+  const next = { i: b.i, j: b.j, flip: typeof b.flip === "boolean" ? b.flip : !!cur.flip };
+  if (!fixtureFits(b.which, next)) return fail("out_of_bounds");
   const other = player.fixtures[b.which === "wheel" ? "bed" : "wheel"];
-  if (!fixturesApart({ i: b.i, j: b.j }, other)) return fail("too_close");
-  for (const o of player.placed || []) { // not onto furniture (rugs are flat: fine)
-    const oi = CATALOG_BY_ID.get(o.item);
-    if (oi && oi.zone === "floor" && footprint(oi, o.x, o.y, !!o.flip).some(([i, j]) => i === b.i && j === b.j)) return { ok: false, error: "occupied", with: oi.id };
+  if (!(b.which === "wheel" ? fixturesClear(next, other) : fixturesClear(other, next))) return fail("too_close");
+  const furn = furnitureTiles(player); // not onto furniture (rugs are flat: fine)
+  for (const t of fixtureTiles(b.which, next)) if (furn.has(tileKey(t))) return { ok: false, error: "occupied", with: furn.get(tileKey(t)) };
+  cur.i = next.i;
+  cur.j = next.j;
+  cur.flip = next.flip;
+  return { ok: true, fixture: cur };
+}
+// Saves from before the fixtures grew (1 tile each) can now collide with furniture, the walls or each
+// other. Keep what still fits; move the rest to the nearest spot that does (either facing), wheel
+// first. Furniture never moves. A crate left under a fixture moves to a free tile. Returns true if
+// anything moved.
+function repairFixtures(p) {
+  const f = p.fixtures && typeof p.fixtures === "object" ? p.fixtures : {};
+  const furn = furnitureTiles(p);
+  const fits = (k, c) => fixtureFits(k, c) && fixtureTiles(k, c).every((t) => !furn.has(tileKey(t)));
+  const out = {};
+  let moved = false;
+  for (const k of FIXTURES) {
+    const ok = (c) => fits(k, c) && (k === "wheel" || fixturesClear(out.wheel, c));
+    const was = f[k] && Number.isInteger(f[k].i) && Number.isInteger(f[k].j) ? { i: f[k].i, j: f[k].j, flip: !!f[k].flip } : { ...ROOM.FIXTURE_DEFAULTS[k] };
+    let pick = ok(was) ? was : null;
+    for (let r = 1; !pick && r <= Math.max(ROOM.ISO_NI, ROOM.ISO_NJ); r++) {
+      for (let di = -r; di <= r && !pick; di++) for (let dj = -r; dj <= r && !pick; dj++) {
+        if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue;
+        for (const flip of [was.flip, !was.flip]) { const c = { i: was.i + di, j: was.j + dj, flip }; if (ok(c)) { pick = c; break; } }
+      }
+    }
+    if (!pick) pick = { ...ROOM.FIXTURE_DEFAULTS[k] }; // a den packed wall to wall: the default spot, overlap and all
+    if (!f[k] || pick.i !== f[k].i || pick.j !== f[k].j || pick.flip !== f[k].flip) moved = true;
+    out[k] = pick;
   }
-  const f = player.fixtures[b.which];
-  f.i = b.i;
-  f.j = b.j;
-  if (typeof b.flip === "boolean") f.flip = b.flip;
-  return { ok: true, fixture: f };
+  p.fixtures = out;
+  if (Array.isArray(p.crates)) {
+    const under = new Set(FIXTURES.flatMap((k) => fixtureTiles(k, out[k])).map(tileKey));
+    for (const c of p.crates) if (c && under.has(tileKey([c.i, c.j]))) { const t = crateTile(p); c.i = t.i; c.j = t.j; }
+  }
+  return moved;
 }
 
 // ---------- consumables: boosts, shield tokens (the shapes newPlayer/patchPlayer use) ----------
@@ -398,7 +449,7 @@ function patchPlayer(p, token) {
   if (!Number.isFinite(p.lastRaidAt)) p.lastRaidAt = 0;
   if (p.raidDay === undefined) p.raidDay = null;
   if (!Number.isInteger(p.raidsToday)) p.raidsToday = 0;
-  if (!validFixtures(p.fixtures)) p.fixtures = defaultFixtures();
+  repairFixtures(p); // older saves: 1-tile fixtures may collide with the 3-tile wheel / 2-tile bed
   if (!Array.isArray(p.raidedBy)) p.raidedBy = [];
   if (p.wallet === undefined) p.wallet = null;
   if (p.username === undefined) p.username = null;
@@ -685,7 +736,7 @@ function rollCrateContents(p, rng = Math.random) {
 // A free floor tile for the parcel: on the visible floor, off the wheel, the bed, furniture and other crates.
 function crateTile(p, rng = Math.random) {
   const taken = new Set();
-  for (const k of FIXTURES) { const f = p.fixtures && p.fixtures[k]; if (f) taken.add(tileKey([f.i, f.j])); }
+  for (const k of FIXTURES) { const f = p.fixtures && p.fixtures[k]; if (f) for (const t of fixtureTiles(k, f)) taken.add(tileKey(t)); }
   for (const o of p.placed || []) {
     const oi = CATALOG_BY_ID.get(o.item);
     if (oi && oi.zone === "floor") for (const t of footprint(oi, o.x, o.y, !!o.flip)) taken.add(tileKey(t));
@@ -878,7 +929,7 @@ function validatePlacement(player, itemId, x, y, ignorePid = null, flip = false)
   }
   if (item.zone === "floor") for (const k of FIXTURES) {
     const f = player.fixtures && player.fixtures[k];
-    if (f && mine.has(tileKey([f.i, f.j]))) return { ok: false, error: "fixture", which: k };
+    if (f && fixtureTiles(k, f).some((t) => mine.has(tileKey(t)))) return { ok: false, error: "fixture", which: k };
   }
   return { ok: true, item, x, y };
 }
@@ -2094,7 +2145,7 @@ module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certElig
 // Extra helpers for tests (the plan's six names above stay the primary surface).
 Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
-  raidChance, resolveRaid, raidOdds, raidReady, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
+  raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS,
   WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername, usernameProblem, createDen, purgeNameless, runMigrations,
   REPLAY_NIGHT, REPLAY_NONSTOP_NIGHT, REPLAY_API_SINK, REPLAY_MIN_SLEEP_MS, replaySchedule, replayLocate, replayCumulativeBlocks, cumulativeBlocks: replayCumulativeBlocks,

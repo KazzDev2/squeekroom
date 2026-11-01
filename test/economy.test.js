@@ -207,13 +207,15 @@ test("placement: non-integer coords rejected", () => {
 
 test("placement: furniture keeps off the wheel's and the bed's tiles; rugs can lie under them; fixtures keep off furniture", () => {
   const p = own(own(own(fresh(), "fur_seed_bowl"), "fur_sofa"), "rug_rag");
-  assert.deepEqual(validatePlacement(p, "fur_seed_bowl", 1, 5), { ok: false, error: "fixture", which: "wheel" });
-  assert.deepEqual(validatePlacement(p, "fur_sofa", 5, 2), { ok: false, error: "fixture", which: "bed" }); // i 5..7 reaches the bed
-  assert.ok(validatePlacement(p, "fur_sofa", 4, 2).ok, "i 4..6 stops short of the bed");
+  // the default wheel (1, 5) flipped covers (1, 4..6); the default bed (7, 2) covers (6..7, 2)
+  for (const j of [4, 5, 6]) assert.deepEqual(validatePlacement(p, "fur_seed_bowl", 1, j), { ok: false, error: "fixture", which: "wheel" }, `(1, ${j})`);
+  assert.ok(validatePlacement(p, "fur_seed_bowl", 1, 7).ok, "just past the wheel");
+  assert.deepEqual(validatePlacement(p, "fur_sofa", 4, 2), { ok: false, error: "fixture", which: "bed" }); // i 4..6 reaches the bed's back tile
+  assert.ok(validatePlacement(p, "fur_sofa", 3, 2).ok, "i 3..5 stops short of the bed");
   assert.ok(validatePlacement(p, "rug_rag", 1, 4).ok, "a rug under the wheel");
   p.placed.push({ pid: "s1", item: "fur_sofa", x: 3, y: 7, flip: false }); // tiles (3..5, 7)
-  assert.deepEqual(S.moveFixture(p, { which: "wheel", i: 4, j: 7 }), { ok: false, error: "occupied", with: "fur_sofa" });
-  assert.ok(S.moveFixture(p, { which: "wheel", i: 4, j: 8 }).ok);
+  assert.deepEqual(S.moveFixture(p, { which: "wheel", i: 4, j: 8 }), { ok: false, error: "occupied", with: "fur_sofa" }); // (4, 7) is the wheel's end tile
+  assert.ok(S.moveFixture(p, { which: "wheel", i: 2, j: 9, flip: false }).ok); // (1..3, 9)
 });
 
 test("placement: floor overlap is 2-D over tiles", () => {
@@ -1766,26 +1768,58 @@ test("speed: bed income ignores it; a state other than the server's own never ge
   assert.equal(S.snapshot().speedPct, 100);
 });
 
-test("fixtures: the wheel and the bed move on open floor tiles, 2 tiles apart", () => {
+test("fixtures: the wheel covers 3 tiles and the bed 2, along their facing; they move on open floor, never sharing a tile", () => {
+  assert.deepEqual(S.fixtureTiles("wheel", { i: 4, j: 4, flip: false }), [[3, 4], [4, 4], [5, 4]]);
+  assert.deepEqual(S.fixtureTiles("wheel", { i: 4, j: 4, flip: true }), [[4, 3], [4, 4], [4, 5]]);
+  assert.deepEqual(S.fixtureTiles("bed", { i: 4, j: 4, flip: false }), [[3, 4], [4, 4]]);
+  assert.deepEqual(S.fixtureTiles("bed", { i: 4, j: 4, flip: true }), [[4, 3], [4, 4]]);
   const p = S.newPlayer(1000, T0, TA);
   assert.deepEqual(p.fixtures, { wheel: { i: 1, j: 5, flip: true }, bed: { i: 7, j: 2, flip: false } });
+  assert.equal(S.validFixtures(p.fixtures), true);
   assert.deepEqual(S.moveFixture(p, { which: "wheel", i: 4, j: 4, flip: true }), { ok: true, fixture: { i: 4, j: 4, flip: true } });
   assert.deepEqual(S.moveFixture(p, { which: "bed", i: 2, j: 8 }).fixture, { i: 2, j: 8, flip: false }); // flip optional
-  assert.equal(S.moveFixture(p, { which: "bed", i: 5, j: 5 }).error, "too_close"); // diagonal neighbour of the wheel
-  assert.equal(S.moveFixture(p, { which: "bed", i: 6, j: 4 }).ok, true); // two tiles off
-  for (const [i, j] of [[-1, 3], [3, -1], [11, 2], [2, 10], [10, 5], [1.5, 2], ["2", 3]]) assert.equal(S.moveFixture(p, { which: "wheel", i, j }).error, "out_of_bounds", `${i},${j}`);
-  for (const [i, j] of [[0, 3], [0, 0]]) assert.ok(S.validFixtures({ ...p.fixtures, wheel: { i, j, flip: false } }), `against the wall ${i},${j}`);
+  assert.equal(S.moveFixture(p, { which: "bed", i: 5, j: 5 }).error, "too_close"); // diagonal neighbour of the wheel's anchor
+  assert.equal(S.moveFixture(p, { which: "bed", i: 6, j: 4 }).ok, true); // (5..6, 4): two tiles off
+  // anchors far enough apart but the tiles would overlap: still too close
+  assert.equal(S.moveFixture(p, { which: "wheel", i: 4, j: 4, flip: false }).error, "too_close"); // (3..5, 4) hits the bed's (5, 4)
+  for (const [i, j] of [[-1, 3], [3, -1], [11, 2], [2, 10], [10, 5], [1.5, 2], ["2", 3], [2, 0], [0, 9]]) assert.equal(S.moveFixture(p, { which: "wheel", i, j }).error, "out_of_bounds", `${i},${j}`);
+  assert.ok(S.validFixtures({ ...p.fixtures, wheel: { i: 1, j: 0, flip: false } }), "against both walls, along i");
+  assert.ok(S.validFixtures({ ...p.fixtures, wheel: { i: 0, j: 1, flip: true } }), "against both walls, along j");
+  assert.equal(S.validFixtures({ ...p.fixtures, wheel: { i: 0, j: 3, flip: false } }), false, "an end tile off the floor");
   assert.equal(S.moveFixture(p, { which: "sofa", i: 2, j: 2 }).error, "bad_fixture");
   assert.equal(S.moveFixture(p, { which: "wheel", i: 2, j: 2, flip: "yes" }).error, "bad_flip");
-  // older saves (and broken ones) get the defaults
-  const old = S.newPlayer(1000, T0, TB);
-  delete old.fixtures;
-  S.patchPlayer(old, TB);
-  assert.equal(S.validFixtures(old.fixtures), true);
-  old.fixtures.bed = { i: 1, j: 5, flip: false }; // on top of the wheel
-  S.patchPlayer(old, TB);
-  assert.deepEqual(old.fixtures.bed, { i: 7, j: 2, flip: false });
   assert.deepEqual(S.publicPlayer(p).fixtures, p.fixtures);
+});
+
+test("fixtures: old saves are repaired on load, nothing else moves; crates under a fixture move off it", () => {
+  // no fixtures at all -> the defaults
+  const a = S.newPlayer(1000, T0, TB);
+  delete a.fixtures;
+  S.patchPlayer(a, TB);
+  assert.deepEqual(a.fixtures, { wheel: { i: 1, j: 5, flip: true }, bed: { i: 7, j: 2, flip: false } });
+  // the bed saved on top of the wheel: the wheel stays, the bed moves to a fitting spot nearby
+  a.fixtures.bed = { i: 1, j: 5, flip: false };
+  S.patchPlayer(a, TB);
+  assert.deepEqual(a.fixtures.wheel, { i: 1, j: 5, flip: true });
+  assert.equal(S.validFixtures(a.fixtures), true);
+  assert.ok(Math.max(Math.abs(a.fixtures.bed.i - 1), Math.abs(a.fixtures.bed.j - 5)) <= 3, JSON.stringify(a.fixtures.bed));
+  // a 1-tile-era wheel with a seed bowl right beside it (now under its end tile) and a crate under it
+  const b = own(own(S.newPlayer(1000, T0, TC), "fur_seed_bowl"), "fur_sofa");
+  b.placed = [{ pid: "b1", item: "fur_seed_bowl", x: 1, y: 6, flip: false }, { pid: "s1", item: "fur_sofa", x: 3, y: 2, flip: false }];
+  b.crates = [{ id: "c1", at: T0, i: 1, j: 4, c: { kind: "watts", watts: 300 } }];
+  const placedBefore = JSON.stringify(b.placed);
+  assert.equal(S.repairFixtures(b), true);
+  assert.equal(JSON.stringify(b.placed), placedBefore, "furniture never moves");
+  assert.equal(S.validFixtures(b.fixtures), true);
+  const covered = new Set(["wheel", "bed"].flatMap((k) => S.fixtureTiles(k, b.fixtures[k])).map(([i, j]) => `${i},${j}`));
+  for (const o of b.placed) for (const t of S.validatePlacement(b, o.item, o.x, o.y, o.pid, o.flip).ok ? [] : ["clash"]) assert.fail(`${o.item} clashes: ${t}`);
+  assert.ok(!covered.has("1,6") && !covered.has("3,2") && !covered.has("4,2") && !covered.has("5,2"), "off the furniture");
+  assert.ok(!covered.has(`${b.crates[0].i},${b.crates[0].j}`), "the crate moved off the fixture");
+  assert.equal(S.repairFixtures(b), false, "already fine: nothing moves");
+  // crates never drop on any fixture tile
+  const c = S.newPlayer(1000, T0, TA);
+  const cov = new Set(["wheel", "bed"].flatMap((k) => S.fixtureTiles(k, c.fixtures[k])).map(([i, j]) => i * 100 + j));
+  for (let k = 0; k < 300; k++) { const t = S.crateTile(c, prng(k)); assert.ok(!cov.has(t.i * 100 + t.j), `${t.i},${t.j}`); }
 });
 
 // ---------- sleep by the live reading ----------
