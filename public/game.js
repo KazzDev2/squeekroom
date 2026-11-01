@@ -519,6 +519,7 @@ function applyState(j) {
   else if (j.meError) toast(j.meError === "server_full" ? "The server is full." : j.meError === "too_many_dens" ? "Too many new dens from your network. Try again in an hour." : `Couldn't load your den (${j.meError}).`, "err");
   if (j.raid !== undefined) applyRaidStatus(j.raid);
   noteGolden(j.golden, first);
+  applyDaily(j.daily);
   if (typeof j.burned === "number") S.burned = j.burned;
   if (Array.isArray(j.raidFeed)) applyFeed(j.raidFeed);
   if (RU.open) renderRaid();
@@ -906,9 +907,17 @@ function fxOpts(st) {
   FX = { t, now: Date.now() + S.skew, utcHour: utcHour(), live: { key: st.key, active: st.active, speed: st.speed, rpm: st.rpm }, cuckooAge: cuckooAt ? t - cuckooAt : Infinity };
   return FX;
 }
+// Colourways (catalog remap: [[from, to], ...]) draw their base item's art through a 16-entry palette map.
+const remapCache = new Map();
+function remapOf(it) {
+  if (!it || !Array.isArray(it.remap)) return undefined;
+  let m = remapCache.get(it.id);
+  if (!m) { m = Array.from({ length: 16 }, (_, i) => i); for (const [a, b] of it.remap) if (a > 0 && a < 16 && b >= 0 && b < 16) m[a] = b; remapCache.set(it.id, m); }
+  return m;
+}
 // fx / fr default to the live values; the certificate passes frozen ones (see renderPortrait).
 function drawItem(p, it, x, y, pw, ph, c = g, fx = FX, fr = frame10) {
-  const opts = { ...fx, flip: !!p.flip, w: pw, h: ph };
+  const opts = { ...fx, flip: !!p.flip, w: pw, h: ph, remap: remapOf(it) };
   if (!sprite(c, it.sprite, fr, x, y, opts)) {
     c.drawImage(placeholderItem(it, pw, ph), x, y);
     if (it.animated && fr % 10 < 5) { c.fillStyle = "#22c55e"; c.fillRect(x + pw - 4, y + 2, 2, 2); } // "this one moves" marker
@@ -918,7 +927,7 @@ function drawItem(p, it, x, y, pw, ph, c = g, fx = FX, fr = frame10) {
 // the rug art sits on rows 3..12 (its oy) like it always has.
 function drawRugFlat(p, it, x, c = g, fx = FX, fr = frame10, y = FLOOR_Y) {
   const pw = it.w * CELL;
-  if (!sprite(c, it.sprite, fr, x, y, { ...fx, flip: !!p.flip, w: pw, h: 16 })) c.drawImage(placeholderItem(it, pw, 12), x, y + 2);
+  if (!sprite(c, it.sprite, fr, x, y, { ...fx, flip: !!p.flip, w: pw, h: 16, remap: remapOf(it) })) c.drawImage(placeholderItem(it, pw, 12), x, y + 2);
 }
 
 // ---------- iso painters ----------
@@ -1173,14 +1182,14 @@ function isoSpan(id, x, w, flip) {
 // tiles draws over it.
 function floorGeom(it, i, j, flip) {
   const f = !!flip, front = f ? [i, j + it.w - 1] : [i + it.w - 1, j], d = isoTileCenter(i, j).y + ISO.FOOT;
-  const s = isoArt(it.id);
-  if (s) { const o = isoOrigin(s, tileSouth(front[0], front[1]), f); return { art: { id: "iso_" + it.id, flip: f }, x: o.x, y: o.y, w: s.w, h: s.h, d }; }
+  const s = isoArt(it.sprite); // colourways share their base's iso art
+  if (s) { const o = isoOrigin(s, tileSouth(front[0], front[1]), f); return { art: { id: "iso_" + it.sprite, flip: f }, x: o.x, y: o.y, w: s.w, h: s.h, d }; }
   const c = isoTileCenter(front[0], front[1]), pw = it.w * CELL, ph = it.h * CELL;
   return { art: null, x: Math.round(c.x - pw / 2), y: c.y + ISO.FOOT - ph, w: pw, h: ph, d };
 }
 function drawFloorItem(p, it, c = g) {
   const G = floorGeom(it, p.x, p.y, p.flip);
-  if (G.art && sprite(c, G.art.id, frame10, G.x, G.y, { ...FX, flip: G.art.flip })) return;
+  if (G.art && sprite(c, G.art.id, frame10, G.x, G.y, { ...FX, flip: G.art.flip, remap: remapOf(it) })) return;
   drawItem(p, it, G.x, G.y, G.w, G.h, c);
 }
 function drawBurrow() {
@@ -1807,7 +1816,7 @@ function thumbPaint(it) {
     if (!sprite(tg, it.sprite, 0, 0, 0, { skin: it.id, remap: (window.SKIN_REMAPS || {})[it.id] })) tg.drawImage(hamsterFrame("sit", 0, it.id), 0, 0);
   }];
   const pw = it.w * CELL, ph = it.zone === "rug" ? 16 : it.h * CELL;
-  if (it.zone === "rug") return [pw, ph, () => { if (!sprite(tg, it.sprite, frame10, 0, 0, { ...FX, w: pw, h: 16 })) tg.drawImage(placeholderItem(it, pw, 12), 0, 2); }];
+  if (it.zone === "rug") return [pw, ph, () => { if (!sprite(tg, it.sprite, frame10, 0, 0, { ...FX, w: pw, h: 16, remap: remapOf(it) })) tg.drawImage(placeholderItem(it, pw, 12), 0, 2); }];
   return [pw, ph, () => drawItem({ flip: false }, it, 0, 0, pw, ph, tg)];
 }
 function drawThumb(cv, it) {
@@ -1906,7 +1915,8 @@ function tierCardState(it, me, poor, need) {
 }
 function cardState(it, me) {
   const watts = me ? me.watts : 0, owned = me ? me.owned[it.id] || 0 : 0;
-  const poor = watts < it.price, need = it.price - watts;
+  if (it.crate) return owned ? { kind: "found", label: "Found", disabled: true, note: "from a lucky crate", own: `own ${owned}` } : { kind: "crate", label: "Crate only", disabled: true, note: "only in lucky crates" };
+  const price = priceOf(it), poor = watts < price, need = price - watts;
   if (Object.hasOwn(TIERED, it.cat)) return tierCardState(it, me, poor, need);
   if (!it.zone) { // wallpaper, flooring, skins: buy once, then equip
     const equipped = me && (it.cat === "skin" ? me.skin : it.cat === "wallpaper" ? me.wallpaper : me.floor) === it.id;
@@ -1924,7 +1934,12 @@ function updateCards() {
     if (c.it.boost) { updateBoostCard(c, me); continue; }
     const st = cardState(c.it, me), buying = st.kind === "buy" || st.kind === "upgrade";
     c.state = st;
-    c.price.textContent = st.kind === "owned" || st.kind === "equip" || st.kind === "equipped" ? "" : c.it.price ? `${fmt(c.it.price)} W` : "Free";
+    const now = priceOf(c.it);
+    if (st.kind === "owned" || st.kind === "equip" || st.kind === "equipped" || st.kind === "found") c.price.textContent = "";
+    else if (c.it.crate) c.price.textContent = "rare";
+    else if (now < c.it.price) c.price.innerHTML = `<s>${fmt(c.it.price)}</s> ${fmt(now)} W`;
+    else c.price.textContent = c.it.price ? `${fmt(c.it.price)} W` : "Free";
+    c.el.classList.toggle("deal", now < c.it.price && (st.kind === "buy" || st.kind === "upgrade"));
     c.price.classList.toggle("poor", buying && !!st.poor);
     c.own.textContent = st.own || "";
     c.own.title = st.ownTitle || "";
@@ -1935,8 +1950,9 @@ function updateCards() {
     c.note.className = cls;
     c.el.classList.toggle("cur", !!st.cur);
     if (!c.busy && !c.ticking) { c.btn.textContent = st.label; c.btn.disabled = !!st.disabled; c.btn.className = st.alt ? "alt" : ""; }
-    c.btn.setAttribute("aria-label", `${st.label}: ${c.it.name}${buying && c.it.price ? `, ${fmt(c.it.price)} watts` : ""}`);
+    c.btn.setAttribute("aria-label", `${st.label}: ${c.it.name}${buying && c.it.price ? `, ${fmt(now)} watts` : ""}`);
   }
+  renderToday();
 }
 async function equip(it) {
   const r = it.cat === "skin" ? await post("/api/skin", { skinId: it.id }) : await post("/api/style", { [it.cat]: it.id });
@@ -1960,7 +1976,7 @@ async function cardAction(c) {
       return;
     }
     applyMe(r.j.me);
-    spendFeedback(c, it.price);
+    spendFeedback(c, Number.isFinite(r.j.price) ? r.j.price : priceOf(it));
     if (it.cat === "wheel") toast(`${it.name}: ${(it.multPct / 100).toFixed(2)}× watts per block`, "ok");
     else if (it.cat === "bed") toast(`${it.name}: ${(it.multPct / 100).toFixed(2)}× bed watts`, "ok");
     else if (it.cat === "room") toast(`Your den is now ${it.material || it.name}`, "ok");
@@ -1994,6 +2010,58 @@ function spendFeedback(c, price) {
     setTimeout(() => { c.ticking = false; updateCards(); }, 1200);
   }
 }
+
+// ---------- the daily shop: three picks a day, 30% off, the same for everyone ----------
+// The server picks and prices them (snapshot.daily); this only shows the strip and its countdown.
+S.daily = null;
+function applyDaily(d) {
+  if (!d || !Array.isArray(d.items)) return;
+  const was = S.daily && S.daily.day;
+  S.daily = { day: d.day, items: d.items, offPct: Number(d.offPct) || 0, resetAt: Date.now() + Math.max(0, Number(d.resetMs) || 0) };
+  if (was && was !== d.day) { todaySig = ""; updateCards(); } // new picks at midnight
+}
+const priceOf = (it) => (it && S.daily && S.daily.items.includes(it.id) && Date.now() < S.daily.resetAt ? Math.floor((it.price * (100 - S.daily.offPct)) / 100) : it ? it.price : 0);
+const todayCards = new Map(); // itemId -> card (same shape as the shop's)
+let todaySig = "";
+function renderToday() {
+  const box = $("today"), d = S.daily;
+  const items = d ? d.items.map((id) => S.catalog.get(id)).filter(Boolean) : [];
+  box.hidden = !items.length;
+  if (!items.length) return;
+  const left = Math.max(0, d.resetAt - Date.now());
+  $("todayHead").innerHTML = `<b>Today</b> · ${d.offPct}% off · new picks in ${durText(left)}`;
+  const sig = d.day + "|" + items.map((i) => i.id).join(",");
+  if (sig !== todaySig) {
+    todaySig = sig;
+    const row = $("todayRow");
+    row.innerHTML = "";
+    todayCards.clear();
+    for (const it of items) {
+      const el = document.createElement("div");
+      el.className = "card mini deal";
+      el.innerHTML = '<canvas class="thumb" width="48" height="48"></canvas><div class="cname"></div><div class="cmeta"><span class="price"></span><span class="own"></span></div><div class="cnote"></div><button></button>';
+      el.querySelector(".cname").textContent = it.name;
+      const c = { el, it, thumb: el.querySelector("canvas"), btn: el.querySelector("button"), price: el.querySelector(".price"), own: el.querySelector(".own"), note: el.querySelector(".cnote"), state: null, busy: false, ticking: false };
+      c.thumb.setAttribute("aria-hidden", "true");
+      c.btn.onclick = () => cardAction(c);
+      drawThumb(c.thumb, it);
+      todayCards.set(it.id, c);
+      row.appendChild(el);
+    }
+  }
+  const me = S.me;
+  for (const c of todayCards.values()) {
+    const st = cardState(c.it, me), buying = st.kind === "buy" || st.kind === "upgrade", now = priceOf(c.it);
+    c.state = st;
+    c.price.innerHTML = buying || st.kind === "buy" ? `<s>${fmt(c.it.price)}</s> ${fmt(now)} W` : "";
+    c.price.classList.toggle("poor", buying && !!st.poor);
+    c.own.textContent = st.own || "";
+    c.note.textContent = buying && st.poor ? `need ${fmt(st.need)} more` : st.kind === "equipped" || st.kind === "equip" ? st.note || "" : "";
+    c.note.className = "cnote" + (buying && st.poor ? " poor" : "");
+    if (!c.busy && !c.ticking) { c.btn.textContent = st.label; c.btn.disabled = !!st.disabled; c.btn.className = st.alt ? "alt" : ""; }
+  }
+}
+setInterval(() => { if (S.daily && !document.hidden) renderToday(); }, 30_000); // the countdown
 
 // ---------- inventory strip: owned but not yet placed ----------
 let invChips = [], invSig = null;
