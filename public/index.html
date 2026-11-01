@@ -297,6 +297,27 @@ body.modal-open{overflow:hidden}
 .rsum span{display:flex;flex-direction:column;gap:1px}
 .rsum span:last-child{text-align:right}
 .rsum small{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dk-mute)}
+.rodds{display:flex;align-items:baseline;justify-content:center;gap:8px;margin:-4px 0 -6px}
+.rodds b{font-family:var(--display);font-size:38px;line-height:1;color:var(--amber);font-variant-numeric:tabular-nums}
+.rodds small{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dk-mute)}
+.rholes{display:flex;flex-direction:column;align-items:center;gap:12px}
+.rholes[hidden]{display:none}
+.holes{display:grid;grid-template-columns:repeat(3,76px);gap:10px;padding:14px;border-radius:12px;background:linear-gradient(180deg,#6b4a2e,#4a3020);box-shadow:inset 0 2px 0 rgba(255,255,255,.08),inset 0 -3px 0 rgba(0,0,0,.25)}
+.hole{all:unset;box-sizing:border-box;position:relative;width:76px;height:64px;cursor:pointer;display:flex;align-items:flex-end;justify-content:center;overflow:hidden;border-radius:10px}
+.hole::before{content:"";position:absolute;left:9px;right:9px;bottom:6px;height:24px;border-radius:50%;background:radial-gradient(ellipse at 50% 38%,#0d0805 52%,#24150b 68%,#8a6240 100%);box-shadow:0 2px 0 rgba(0,0,0,.35)}
+.hole:hover:not(:disabled)::before{background:radial-gradient(ellipse at 50% 38%,#0d0805 52%,#2e1c0f 68%,#b0814f 100%)}
+.hole:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
+.hole canvas{position:relative;width:44px;height:44px;margin-bottom:12px;image-rendering:pixelated;transform:translateY(64px);transition:transform .28s cubic-bezier(.2,1.6,.4,1)}
+.hole.win canvas{transform:translateY(0)}
+.hole .hgain{position:absolute;top:2px;left:0;right:0;text-align:center;font-family:var(--display);font-size:13px;color:var(--amber);opacity:0}
+.hole.win .hgain{animation:hgain .9s ease-out forwards}
+.hole.hit{animation:whack .3s ease-out}
+.hole.miss::after{content:"";position:absolute;left:18px;right:18px;bottom:12px;height:16px;border-radius:50%;background:radial-gradient(circle,rgba(200,180,150,.75),rgba(200,180,150,0) 70%);animation:puff .65s ease-out forwards}
+.holes.busy .hole:disabled{opacity:.55;cursor:default}
+@keyframes whack{0%{transform:scale(1)}35%{transform:scale(.86) translateY(3px)}100%{transform:scale(1)}}
+@keyframes hgain{0%{opacity:0;transform:translateY(8px)}25%{opacity:1}100%{opacity:1;transform:translateY(-2px)}}
+@keyframes puff{0%{opacity:0;transform:scale(.4)}30%{opacity:1}100%{opacity:0;transform:scale(1.8) translateY(-8px)}}
+@media (prefers-reduced-motion:reduce){.hole canvas{transition:none}.hole.hit,.hole.miss::after,.hole.win .hgain{animation:none}.hole.win .hgain{opacity:1}}
 .rerr{font-size:12px;color:var(--lose);min-height:0;margin:-6px 0 0}
 .rerr:empty{display:none}
 .racts{display:flex;flex-direction:column;gap:6px}
@@ -594,6 +615,7 @@ body.modal-open{overflow:hidden}
     <div class="rbanner lock" id="raidLock" hidden></div>
     <div id="raidForm" style="display:flex;flex-direction:column;gap:14px">
       <div class="mults" id="raidMults" role="radiogroup" aria-label="Multiplier"></div>
+      <div class="rodds" id="raidOdds"><b id="raidPct">—</b><small>chance</small></div>
       <div class="stake">
         <input type="number" id="stakeNum" inputmode="numeric" step="1" aria-label="Wager in watts">
         <div class="stakeq"><button type="button" class="q" data-q="10">10%</button><button type="button" class="q" data-q="50">50%</button><button type="button" class="q" data-q="100">MAX</button></div>
@@ -602,6 +624,10 @@ body.modal-open{overflow:hidden}
       <div class="rsum" id="raidSum"></div>
       <p class="rerr" id="raidErr" role="alert"></p>
       <div class="racts"><button type="button" class="raidgo" id="raidGo">Raid</button><div class="rleft" id="raidLeft"></div></div>
+    </div>
+    <div class="rholes" id="raidHoles" hidden>
+      <div class="holes" id="holeGrid" role="group" aria-label="Holes"></div>
+      <button type="button" class="pxbtn alt" id="holesBack">Back</button>
     </div>
     <div class="rresult" id="raidResult" hidden>
       <div class="big" id="resBig"></div>

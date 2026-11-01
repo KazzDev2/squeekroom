@@ -82,8 +82,9 @@ const BALANCE = {
   // p = clamp((EDGE / M) x (1 - defense) x tilt, P_MIN, P_MAX), raised to at least 1/M when the target
   // holds at least the attacker's watts, so attacker EV = S x (p x M - 1) does not depend on M (the
   // multiplier only dials variance). Punching up is never -EV; peer raids into strong rooms and
-  // revenge on poorer rooms can be. Stakes stop at the point where the loot cap would cut the loot
-  // roll (only a crit can hit the cap), so no stake is a trap. A loss burns the whole stake: the
+  // revenge on poorer rooms can be. A win pays exactly (M - 1) x stake, and 5% of wins crit for x1.5.
+  // Stakes stop where a crit would hit the loot cap, so the cap never cuts a win and no stake is a
+  // trap. A loss burns the whole stake: the
   // defender gets nothing (a share would let alt dens wager welcome watts into a main), so being
   // raided is -EV. The UI shows odds and loot, never EV: working that out is part of the game.
   RAID: {
@@ -95,13 +96,11 @@ const BALANCE = {
     TILT_MAX_PCT: 175, // reached at ~9.4x the attacker's watts
     P_MIN_PCT: 2,
     P_MAX_PCT: 90,
-    LOOT_U_MIN_PCT: 75, // win: loot = (M - 1) x stake x U, U uniform in [0.75, 1.25], <= defender balance
-    LOOT_U_MAX_PCT: 125,
-    CRIT_CHANCE_PCT: 5,
+    CRIT_CHANCE_PCT: 5, // win: loot = (M - 1) x stake, a crit x CRIT_MULT, <= LOOT_MAX_DEF_PCT of the defender
     CRIT_MULT_PCT: 150,
     LOOT_MAX_DEF_PCT: 25, // one raid takes at most 25% of the defender's balance
     STAKE_MIN: 50, // stake >= max(STAKE_MIN, STAKE_MIN_BAL_PCT of the attacker's balance)
-    STAKE_MIN_BAL_PCT: 5, // stake <= min(balance, cap / ((M - 1) x LOOT_U_MAX)): see stakeBounds()
+    STAKE_MIN_BAL_PCT: 5, // stake <= min(balance, cap / ((M - 1) x CRIT_MULT)): see stakeBounds()
     ELIGIBLE_MIN_PCT: 70, // targets must hold >= 70% of the attacker's balance (punch-up only)...
     REVENGE_WINDOW_MS: 86_400_000, // ...unless they raided the attacker within 24 h (once per provocation)
     RAIDED_BY_MAX: 20,
@@ -957,7 +956,7 @@ function raidChance(attacker, defender, multPct) {
   if (!BALANCE.RAID.MULT_PCT.includes(multPct)) return 0;
   return raidOdds(multPct, raidDefensePct(defender), wealthTilt(attacker.watts, defender.watts), isPunchUp(attacker.watts, defender.watts));
 }
-// One resolution, rolls in a fixed order: win, then loot U, then crit (a loss uses one roll).
+// One resolution, rolls in a fixed order: win, then crit (a loss uses one roll).
 // Loot is capped at LOOT_MAX_DEF_PCT of the defender's balance, crit included, so no single roll can
 // empty a room however big the stake. A loss loses the whole stake, and it all burns.
 // oddsPts (Lucky Whisker) adds percentage points after all other maths, still capped at P_MAX.
@@ -967,24 +966,23 @@ function resolveRaid(attacker, defender, stake, multPct, rng = Math.random, odds
   let p = raidChance(attacker, defender, multPct);
   if (oddsPts > 0 && p > 0) p = Math.min(R.P_MAX_PCT / 100, p + oddsPts / 100);
   if (!(rng() < p)) return { win: false, p, stakeLost: stake };
-  const uPct = R.LOOT_U_MIN_PCT + (R.LOOT_U_MAX_PCT - R.LOOT_U_MIN_PCT) * rng();
   const cap = lootCap(defender.watts);
-  let loot = Math.min(Math.floor(((multPct - 100) * stake * uPct) / 10_000), cap);
+  let loot = Math.min(Math.floor(((multPct - 100) * stake) / 100), cap);
   const crit = rng() < R.CRIT_CHANCE_PCT / 100;
   if (crit) loot = Math.min(Math.floor((loot * R.CRIT_MULT_PCT) / 100), cap);
   return { win: true, p, loot: Math.max(0, loot), crit };
 }
 const lootCap = (defWatts) => Math.floor((Math.max(0, defWatts) * BALANCE.RAID.LOOT_MAX_DEF_PCT) / 100);
 // Stake bounds: min = max(50, 5% of the balance); max = the balance, and with a target and a
-// multiplier also the largest stake whose top loot roll (M - 1) x S x 1.25 fits under the target's
-// loot cap. Past it a crit-free win could not grow while the loss would, so it would be a trap.
+// multiplier also the largest stake whose crit loot (M - 1) x S x 1.5 fits under the target's loot
+// cap. Past it the cap would eat the crit (and then the win itself) while the loss kept growing.
 // limit: which bound sets max ("balance" | "target"). max < min: can't raid (at this multiplier).
 function stakeBounds(watts, defWatts = null, multPct = null) {
   const R = BALANCE.RAID;
   const bal = Math.max(0, Math.floor(watts));
   const min = Math.max(R.STAKE_MIN, Math.ceil((bal * R.STAKE_MIN_BAL_PCT) / 100));
   if (defWatts == null || multPct == null) return { min, max: bal, limit: "balance" };
-  const top = Math.floor((lootCap(defWatts) * 10_000) / ((multPct - 100) * R.LOOT_U_MAX_PCT));
+  const top = Math.floor((lootCap(defWatts) * 10_000) / ((multPct - 100) * R.CRIT_MULT_PCT));
   return top < bal ? { min, max: top, limit: "target" } : { min, max: bal, limit: "balance" };
 }
 // The multiplier as shown (1.5, 2, 3, 5, 10) or as its percentage (150 .. 1000). null if neither.

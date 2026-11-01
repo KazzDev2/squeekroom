@@ -2692,7 +2692,7 @@ $("certShare").onclick = async () => {
 // A failed raid burns the whole wager (the defender gets nothing), and a den raids and can be raided
 // only once it has earned MIN_EARNED watts from the wheel or bed.
 const RAID_DEFAULTS = { EDGE_PCT: 110, MULT_PCT: [150, 200, 300, 500, 1000], DEFENSE_PCT: [0, 5, 10, 15, 20, 25], TILT_EXP: 0.25, TILT_MIN_PCT: 75, TILT_MAX_PCT: 175,
-  P_MIN_PCT: 2, P_MAX_PCT: 90, LOOT_U_MIN_PCT: 75, LOOT_U_MAX_PCT: 125, CRIT_CHANCE_PCT: 5, CRIT_MULT_PCT: 150, LOOT_MAX_DEF_PCT: 25, STAKE_MIN: 50, STAKE_MIN_BAL_PCT: 5,
+  P_MIN_PCT: 2, P_MAX_PCT: 90, CRIT_CHANCE_PCT: 5, CRIT_MULT_PCT: 150, LOOT_MAX_DEF_PCT: 25, STAKE_MIN: 50, STAKE_MIN_BAL_PCT: 5,
   ELIGIBLE_MIN_PCT: 70, REVENGE_WINDOW_MS: 86_400_000, PER_DAY: 10, MIN_EARNED: 5000 };
 const RB = () => ({ ...RAID_DEFAULTS, ...((S.balance && S.balance.RAID) || {}) });
 // p = clamp((EDGE / M) x (1 - d) x clamp((def / me) ^ 0.25, 0.75, 1.75), 0.02, 0.90), M as a percentage,
@@ -2707,19 +2707,17 @@ function raidP(multPct, defTier, myWatts, defWatts) {
   return clamp(p, R.P_MIN_PCT / 100, R.P_MAX_PCT / 100);
 }
 const lootCap = (defWatts) => Math.floor((Math.max(0, defWatts) * RB().LOOT_MAX_DEF_PCT) / 100);
-// [max(50, 5% of my watts), min(my watts, the target's loot cap / ((M - 1) x 1.25))], as the server
+// [max(50, 5% of my watts), min(my watts, the target's loot cap / ((M - 1) x 1.5))], as the server
 // computes it; limit says which bound set max. max < min: no raid at this multiplier.
 function raidStakeBounds(watts, defWatts = null, multPct = null) {
   const R = RB(), bal = Math.max(0, Math.floor(watts));
   const min = Math.max(R.STAKE_MIN, Math.ceil((bal * R.STAKE_MIN_BAL_PCT) / 100));
   if (defWatts == null || multPct == null) return { min, max: bal, limit: "balance" };
-  const top = Math.floor((lootCap(defWatts) * 10_000) / ((multPct - 100) * R.LOOT_U_MAX_PCT));
+  const top = Math.floor((lootCap(defWatts) * 10_000) / ((multPct - 100) * R.CRIT_MULT_PCT));
   return top < bal ? { min, max: top, limit: "target" } : { min, max: bal, limit: "balance" };
 }
-function lootRange(multPct, stake, defWatts) {
-  const R = RB(), cap = lootCap(defWatts), base = (multPct - 100) * stake;
-  return [Math.min(Math.floor((base * R.LOOT_U_MIN_PCT) / 10_000), cap), Math.min(Math.floor((base * R.LOOT_U_MAX_PCT) / 10_000), cap)];
-}
+// a win pays exactly (M - 1) x wager (a rare crit pays more), never past the target's loot cap
+const lootFor = (multPct, stake, defWatts) => Math.min(Math.floor(((multPct - 100) * stake) / 100), lootCap(defWatts));
 const multLabel = (m) => `${+(m / 100).toFixed(2)}×`;
 const pctText = (p) => { const v = p * 100; return `${v < 10 ? +v.toFixed(1) : Math.round(v)}%`; };
 const durText = (ms) => { const m = Math.max(1, Math.ceil(ms / 60_000)); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`; };
@@ -2903,12 +2901,12 @@ function stakeNow(mult = RU.mult) {
   return { ...b, v: clamp(Math.round(RU.stake) || b.min, b.min, Math.max(b.min, b.max)) };
 }
 function openRaid(row) {
-  if (!row || !S.me) return;
+  if (!row || !S.me || S.preview) return;
   if (!RU.open) RU.back = document.activeElement;
   RU.open = true; RU.row = row; RU.result = null; RU.busy = false;
   if (!RU.stake) { const b = raidStakeBounds(S.me.watts); RU.stake = clamp(Math.floor(b.max / 10), b.min, Math.max(b.min, b.max)); }
   $("raidErr").textContent = "";
-  $("raidForm").style.display = "flex";
+  showStage("form");
   $("raidResult").hidden = true;
   $("raidModal").hidden = false;
   document.body.classList.add("modal-open");
@@ -3000,11 +2998,13 @@ function renderRaid(force = false) {
   if (document.activeElement !== num) num.value = String(S0);
   rng2.value = String(S0);
   rng2.disabled = num.disabled = sb.max < sb.min;
-  // what's at stake, one line
-  const m = RU.mult, [lo, hi] = lootRange(m, S0, t.watts);
+  // the chance at the chosen multiplier, big; what's at stake, one line
+  const m = RU.mult, odds = raidPLucky(m, t.roomTier, myW, t.watts);
+  $("raidPct").textContent = pctText(odds);
+  $("raidOdds").setAttribute("aria-label", `${pctText(odds)} chance to win at ${multLabel(m)}`);
   $("raidSum").innerHTML = sb.max < sb.min
     ? `<span><small>win</small><b>—</b></span><span><small>lose</small><b>—</b></span>`
-    : `<span><small>win</small><b class="pos">+${lo === hi ? fmt(hi) : `${fmt(lo)}–${fmt(hi)}`} W</b></span><span><small>lose</small><b class="neg">−${fmt(S0)} W</b></span>`;
+    : `<span><small>win</small><b class="pos">+${fmt(lootFor(m, S0, t.watts))} W</b></span><span><small>lose</small><b class="neg">−${fmt(S0)} W</b></span>`;
   // lock banner + button
   const blk = raidBlock(t, sb), lock = $("raidLock");
   lock.hidden = !blk;
@@ -3029,12 +3029,18 @@ $("stakeNum").addEventListener("change", (e) => { e.target.style.borderColor = "
 $("stakeNum").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } });
 document.querySelectorAll("#raidForm [data-q]").forEach((b) => (b.onclick = () => { const sb = stakeNow(); setStake(Math.max(sb.min, Math.floor((sb.max * Number(b.dataset.q)) / 100))); }));
 $("raidGo").onclick = doRaid;
+$("holesBack").onclick = () => { if (!RU.busy) { showStage("form"); renderRaid(); $("raidGo").focus({ preventScroll: true }); } };
 $("raidClose").onclick = closeRaid;
 $("resClose").onclick = closeRaid;
 $("resBack").onclick = () => { closeRaid(); if (!LB.open) openLb(); };
 $("raidModal").addEventListener("click", (e) => { if (e.target === e.currentTarget && !RU.busy) closeRaid(); });
 function raidKey(e) {
-  if (e.key === "Escape") { e.preventDefault(); if (!RU.busy) closeRaid(); return; }
+  if (e.key === "Escape") { // the holes step back to the form; elsewhere Escape closes
+    e.preventDefault();
+    if (RU.busy) return;
+    if (RU.stage === "holes") { showStage("form"); renderRaid(); $("raidGo").focus({ preventScroll: true }); } else closeRaid();
+    return;
+  }
   if (e.key !== "Tab") return;
   const f = [...$("raidBox").querySelectorAll("button,input")].filter((x) => !x.disabled && x.offsetParent !== null && x.tabIndex >= 0);
   if (!f.length) return;
@@ -3062,16 +3068,82 @@ function raidErrorWords(j) {
     default: return errorWords(j);
   }
 }
-async function doRaid() {
-  if (RU.busy || !RU.open || !S.me) return;
-  const t = raidTarget(), sb = stakeNow(), mult = RU.mult;
+// The raid box shows one stage at a time: "form" (multiplier + wager), "holes" (whack one), or the result.
+function showStage(st) {
+  RU.stage = st;
+  $("raidForm").style.display = st === "form" ? "flex" : "none";
+  $("raidHoles").hidden = st !== "holes";
+}
+// nine holes, built once; a hamster canvas in each pops up on a win (drawn in the player's skin)
+function buildHoles() {
+  const grid = $("holeGrid");
+  if (grid.children.length) return;
+  for (let i = 0; i < 9; i++) {
+    const b = elx("button", "hole");
+    b.type = "button";
+    b.dataset.i = String(i);
+    b.setAttribute("aria-label", `Hole ${i + 1}`);
+    b.innerHTML = '<canvas width="24" height="24" aria-hidden="true"></canvas><span class="hgain" aria-hidden="true"></span>';
+    b.onclick = () => whack(i);
+    grid.appendChild(b);
+  }
+  grid.addEventListener("keydown", (e) => { // arrows move between holes
+    const d = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -3, ArrowDown: 3 }[e.key];
+    if (d == null) return;
+    e.preventDefault();
+    const i = Number(document.activeElement && document.activeElement.dataset.i);
+    if (Number.isInteger(i)) grid.children[clamp(i + d, 0, 8)].focus();
+  });
+}
+function resetHoles() {
+  const skin = (S.me && S.me.skin) || "skin_classic";
+  for (const h of $("holeGrid").children) {
+    h.className = "hole";
+    h.disabled = false;
+    h.querySelector(".hgain").textContent = "";
+    const c = h.querySelector("canvas"), x = c.getContext("2d");
+    x.clearRect(0, 0, 24, 24);
+    if (!sprite(x, "hamster_sit", 0, 0, 0, { skin, remap: (window.SKIN_REMAPS || {})[skin] })) x.drawImage(hamsterFrame("sit", 0, skin), 0, 0);
+  }
+  $("holeGrid").classList.remove("busy");
+}
+// the RAID button: everything checked here first, then the holes
+function doRaid() {
+  if (RU.busy || !RU.open || !S.me || S.preview) return;
+  const t = raidTarget(), sb = stakeNow();
   if (raidBlock(t, sb)) { renderRaid(); return; }
-  RU.busy = true;
   $("raidErr").textContent = "";
-  renderRaid();
+  buildHoles();
+  resetHoles();
+  showStage("holes");
+  $("raidLock").hidden = true;
+  $("holeGrid").children[4].focus({ preventScroll: true });
+}
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+async function whack(i) {
+  if (RU.busy || !RU.open || RU.stage !== "holes") return;
+  const t = raidTarget(), sb = stakeNow(), mult = RU.mult;
+  if (raidBlock(t, sb)) { showStage("form"); renderRaid(); return; }
+  RU.busy = true;
+  const grid = $("holeGrid"), hole = grid.children[i];
+  grid.classList.add("busy");
+  for (const h of grid.children) h.disabled = h !== hole;
+  hole.classList.add("hit");
+  const t0 = performance.now();
   const r = await post("/api/raid", { target: t.publicId, stake: sb.v, mult });
+  await wait(Math.max(0, 380 - (performance.now() - t0))); // let the whack land
+  if (r.ok && r.j && r.j.result) {
+    const res = r.j.result;
+    hole.classList.add(res.win ? "win" : "miss");
+    if (res.win) hole.querySelector(".hgain").textContent = `+${fmt(res.loot)}`;
+    await wait(res.win ? 900 : 650);
+    RU.busy = false;
+    if (RU.open) onRaidResult(r.j, t);
+    else if (r.j.me) applyMe(r.j.me); // closed mid-animation: the result still lands in the den
+    return;
+  }
   RU.busy = false;
-  if (r.ok && r.j && r.j.result) { onRaidResult(r.j, t); return; }
+  showStage("form");
   const j = r.j || {}, e = j.error;
   if (e === "no_raids_left") applyRaidStatus({ open: true, raidsLeft: 0, perDay: S.raid && S.raid.perDay, resetMs: j.resetMs });
   else if (e === "hamster_asleep" || e === "chain_unknown" || e === "chain_stale") { if (S.raid) S.raid.open = false; else applyRaidStatus({ open: false }); }
@@ -3100,7 +3172,7 @@ function onRaidResult(j, t) {
   showRaidResult(res, t, before);
 }
 function showRaidResult(res, t, before) {
-  $("raidForm").style.display = "none";
+  showStage("result");
   $("raidLock").hidden = true;
   const box = $("raidResult"), win = !!res.win;
   box.hidden = false;
@@ -3539,7 +3611,7 @@ addEventListener("keydown", (e) => { // capture phase: it can't be dismissed, an
 
 // debug handle for the browser console / verification
 window.__squeekroom = { S, tut: { TUT, W: TUT_W, H: TUT_H }, ham, wheel, sparks, meter, pops, spawnPop, liveStatus, tintAt, P, checkSpot, enterPlace, select,
-  raid: { LB, RU, FEED, raidP, raidStakeBounds, lootRange, openLb, closeLb, openRaid, closeRaid, loadLb, raidFx, applyFeed },
+  raid: { LB, RU, FEED, raidP, raidStakeBounds, lootFor, openLb, closeLb, openRaid, closeRaid, loadLb, raidFx, applyFeed, doRaid, whack },
   get iso() { return { ISO, LW, LH, SPOT, IWHEEL, IBURROW, fixture, checkFixture, fixtureRect, colTile, colLeft, footY, tileToCol, screenToTile, wallBase, toFlat, isoRect, bedGeom, laneAt, isoSpan, isoFloor }; },
   get selPid() { return selPid; }, get FX() { return FX; },
   renderNow() { const st = liveStatus(); tick10(); render(st); }, // paints one frame even when rAF is paused (hidden tab)
