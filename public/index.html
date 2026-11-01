@@ -65,8 +65,14 @@ h1 .logo{width:40px;height:40px;image-rendering:pixelated;flex:none}
 .demobar button{background:var(--chain);color:#fff;border:0;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:12px}
 .demobar button:disabled{opacity:.5;cursor:default}
 .hint{font-size:11px;color:var(--muted)}
-.main{flex:1;display:grid;grid-template-columns:1fr 320px;min-height:0}
+.main{flex:1;display:grid;grid-template-columns:auto 1fr 320px;min-height:0}
 @media (max-width:860px){body{height:auto}.main{grid-template-columns:1fr;flex:none}}
+.rail{display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px 8px;border-right:1px solid var(--line);background:var(--panel)}
+.railbtn{display:block;width:48px;height:48px;border:2px solid #1d1a14;background:#3d1e0d;box-shadow:2px 2px 0 #1d1a14;transition:transform .08s}
+.railbtn canvas{display:block;width:44px;height:44px;image-rendering:pixelated}
+.railbtn:hover{transform:translate(-1px,-1px);box-shadow:3px 3px 0 #1d1a14}
+.railbtn:active{transform:translate(1px,1px);box-shadow:1px 1px 0 #1d1a14}
+@media (max-width:860px){.rail{flex-direction:row;padding:8px max(16px,env(safe-area-inset-left,0px));border-right:0;border-bottom:1px solid var(--line)}}
 .main>*{min-width:0}
 .stage{position:relative;min-height:380px;background:var(--stage);overflow:hidden;user-select:none}
 .stage canvas{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:block;image-rendering:pixelated;image-rendering:crisp-edges;box-shadow:0 0 0 1px var(--line),0 12px 32px rgba(0,0,0,.35)}
@@ -118,14 +124,6 @@ h1 .logo{width:40px;height:40px;image-rendering:pixelated;flex:none}
 .chip2 .n{position:absolute;right:-4px;top:-5px;background:var(--ink);color:var(--bg);font-size:10px;line-height:1;padding:2px 4px;border-radius:8px;font-weight:600}
 /* shop */
 .shophead{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
-.dropcard{display:flex;align-items:center;gap:10px;padding:8px 10px;text-decoration:none;color:#fff8d0;background:#4a2410;border:2px solid #1d1a14;box-shadow:inset -2px -2px 0 #2a1408,inset 2px 2px 0 #8a4b26,2px 2px 0 #1d1a14;flex-shrink:0}
-.dropcard:hover{background:#5a2d14}
-.dropcard:active{transform:translate(1px,1px);box-shadow:inset -2px -2px 0 #2a1408,inset 2px 2px 0 #8a4b26,1px 1px 0 #1d1a14}
-.dropcard canvas{width:48px;height:48px;image-rendering:pixelated;border:2px solid #1d1a14;background:#3d1e0d;flex-shrink:0}
-.dctext{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
-.dctext b{font-family:var(--display);font-size:13px;letter-spacing:.4px}
-.dctext small{font-family:var(--display);font-size:10px;color:#ffd166;letter-spacing:.2px}
-.dcgo{font-size:14px;color:#ffd166}
 .wallet{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
 .tabs{display:flex;flex-wrap:wrap;gap:4px}
 .tabs button{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:5px 8px;font-size:12px;cursor:pointer;white-space:nowrap}
@@ -517,6 +515,9 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
 </div>
 
 <main class="main">
+  <nav class="rail" aria-label="Games">
+    <a class="railbtn" id="dropGame" href="drop.html" title="Burrow Drop" aria-label="Burrow Drop"><canvas id="dropIcon" width="32" height="32" aria-hidden="true"></canvas></a>
+  </nav>
   <div class="roomcol">
     <section class="stage" id="stage">
       <div class="visitbar" id="visitBar" hidden><span class="vname" id="visitName"></span><button type="button" class="pxbtn" id="visitRaid" hidden>Raid</button><button type="button" class="pxbtn alt" id="visitHome">Back home</button></div>
@@ -552,11 +553,6 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
   </div>
 
   <aside class="panel" id="shop">
-    <a class="dropcard" id="dropCard" href="drop.html">
-      <canvas id="dropIcon" width="32" height="32" aria-hidden="true"></canvas>
-      <span class="dctext"><b>BURROW DROP</b><small id="dropPot">&nbsp;</small></span>
-      <span class="dcgo" aria-hidden="true">▶</span>
-    </a>
     <div class="shophead"><h2>SHOP</h2><span class="wallet" id="wallet"></span></div>
     <div class="tabs" id="tabs" role="tablist" aria-label="Shop categories"></div>
     <div class="cards" id="cards"></div>
