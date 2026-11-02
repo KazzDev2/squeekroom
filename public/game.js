@@ -2731,7 +2731,7 @@ function raidStakeBounds(watts, defWatts = null, multPct = null) {
 // a win takes exactly (M - 1) x wager (rounded up), never past the target's loot cap; a crit's bonus is
 // paid on top by the game
 const lootFor = (multPct, stake, defWatts) => Math.min(Math.ceil(((multPct - 100) * stake) / 100), lootCap(defWatts));
-const wonFor = (res) => res.loot + (res.bonus || 0); // what the attacker got
+const wonFor = (res) => res.loot + (res.bonus || 0) + (res.runBonus || 0); // what the attacker got
 const multLabel = (m) => `${+(m / 100).toFixed(2)}×`;
 const pctText = (p) => { const v = p * 100; return `${v < 10 ? +v.toFixed(1) : Math.round(v)}%`; };
 const durText = (ms) => { const m = Math.max(1, Math.ceil(ms / 60_000)); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`; };
@@ -2749,7 +2749,7 @@ function applyRaidStatus(raid) {
   const per = Number(raid.perDay) || RB().PER_DAY;
   const need = Number(raid.needEarned) || RB().MIN_EARNED;
   S.raid = { left: Number.isFinite(raid.raidsLeft) ? raid.raidsLeft : per, perDay: per, resetAt: Date.now() + Math.max(0, Number(raid.resetMs) || 0),
-    ready: raid.ready !== false, earned: Number(raid.earned) || 0, need, shielded: !!raid.shielded };
+    ready: raid.ready !== false, earned: Number(raid.earned) || 0, need, shielded: !!raid.shielded, runPct: Number(raid.runPct) || 0 };
 }
 const raidsLeftNow = () => (S.raid ? (Date.now() >= S.raid.resetAt ? S.raid.perDay : S.raid.left) : 0);
 const resetIn = () => (S.raid ? Math.max(0, S.raid.resetAt - Date.now()) : 0);
@@ -3093,9 +3093,10 @@ function renderRaid(force = false) {
   const m = RU.mult, odds = raidPLucky(m, t.roomTier, myW, t.watts);
   $("raidPct").textContent = pctText(odds);
   $("raidOdds").setAttribute("aria-label", `${pctText(odds)} chance to win at ${multLabel(m)}`);
+  const runPct = S.raid ? S.raid.runPct : 0, loot = lootFor(m, S0, t.watts);
   $("raidSum").innerHTML = sb.max < sb.min
     ? `<span><small>win</small><b>—</b></span><span><small>lose</small><b>—</b></span>`
-    : `<span><small>win</small><b class="pos">+${fmt(lootFor(m, S0, t.watts))} W</b></span><span><small>lose</small><b class="neg">−${fmt(S0)} W</b></span>`;
+    : `<span><small>win${runPct ? ` <i class="runb">⚡+${runPct}%</i>` : ""}</small><b class="pos">+${fmt(loot + Math.floor((loot * runPct) / 100))} W</b></span><span><small>lose</small><b class="neg">−${fmt(S0)} W</b></span>`;
   // lock banner + button
   const blk = raidBlock(t, sb), lock = $("raidLock");
   lock.hidden = !blk;
@@ -3306,6 +3307,8 @@ function showRaidResult(res, t, before) {
   box.className = "rresult " + (win ? "win" : "loss");
   box.querySelectorAll(".fxp").forEach((n) => n.remove());
   $("resCrit").hidden = !(win && res.crit);
+  $("resRun").hidden = !(win && res.runBonus > 0);
+  if (win && res.runBonus > 0) $("resRun").textContent = `⚡ +${fmt(res.runBonus)} W`;
   const m = res.multPct || RU.mult;
   if (win) {
     $("resBig").textContent = res.revenge ? "Revenge!" : "You won";
@@ -3443,7 +3446,7 @@ function feedLine(e, mine) {
   const parts = [];
   if (e.win) {
     parts.push(atkMe ? name("You") : link(e.atk, e.atkId), " raided ", defMe ? name("you") : link(e.def, e.defId), " ");
-    parts.push(elx("span", "w", atkMe ? `+${fmt(e.amount + (e.bonus || 0))} W` : `−${amt} W`)); // the defender lost amount; a crit's bonus came from the game
+    parts.push(elx("span", "w", atkMe ? `+${fmt(e.amount + (e.bonus || 0))} W` : `−${amt} W`)); // the defender lost amount; the bonus came from the game
     if (e.crit) parts.push(" ", elx("span", "critf", "crit"));
   } else {
     parts.push(atkMe ? name("You") : link(e.atk, e.atkId), " failed on ", defMe ? name("you") : link(e.def, e.defId), " ");
