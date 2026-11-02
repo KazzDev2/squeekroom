@@ -2189,6 +2189,11 @@ const POST_ROUTES = {
     }
     return okMe(p, { result: r.result, feed: r.feed });
   },
+  // STAGING ONLY: this commit lives on the staging branch and must never reach main.
+  "/api/raid/reset": (b, p) => {
+    p.raidsToday = 0;
+    return okMe(p, { raid: raidStatus(state, p) });
+  },
   // {kind: double_wheel|deep_sleep|lucky_whisker|wager_insurance, from: "item"|"watts"}
   "/api/boost": (b, p, token) => {
     const r = useBoost(state, token, b);

@@ -3121,6 +3121,16 @@ $("stakeNum").addEventListener("change", (e) => { e.target.style.borderColor = "
 $("stakeNum").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } });
 document.querySelectorAll("#raidForm [data-q]").forEach((b) => (b.onclick = () => { const sb = stakeNow(); setStake(Math.max(sb.min, Math.floor((sb.max * Number(b.dataset.q)) / 100))); }));
 $("raidGo").onclick = doRaid;
+// STAGING ONLY: this commit lives on the staging branch and must never reach main.
+$("raidReset").onclick = async () => {
+  const r = await post("/api/raid/reset", {});
+  if (!r.ok) { toast(`reset failed: ${r.j.error || r.status}`, "err"); return; }
+  applyRaidStatus(r.j.raid);
+  chipSig = "";
+  renderRaidChip();
+  if (RU.open && !RU.result && RU.stage !== "holes") renderRaid();
+  toast(`${raidsLeftNow()} raids left today`, "ok");
+};
 $("holesBack").onclick = () => { if (!RU.busy) { showStage("form"); renderRaid(); $("raidGo").focus({ preventScroll: true }); } };
 $("raidClose").onclick = () => { if (!RU.busy) closeRaid(); }; // not while a whack is rolling
 $("resClose").onclick = closeRaid;
