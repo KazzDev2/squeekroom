@@ -1180,14 +1180,8 @@ function raidEligibility(attacker, defender, now) {
 }
 // Raids are open only while he RUNS: height observed, chain reading fresh (live mode), not asleep.
 // With a state `st`, asleep() decides (the live reading first); without one, the chain alone.
-function raidWindow(lastAdvanceAt, now = Date.now(), chainReadAt = null, st = null) {
-  if (!Number.isFinite(lastAdvanceAt) || lastAdvanceAt <= 0) return { open: false, reason: "chain_unknown" };
-  if (chainReadAt != null && !(now - chainReadAt <= CHAIN_FRESH_MS)) return { open: false, reason: "chain_stale" };
-  if (st ? asleep(st, now, chainReadAt) : chainIdle(lastAdvanceAt, now, chainReadAt)) return { open: false, reason: "hamster_asleep" };
-  return { open: true, reason: null };
-}
-function raidStatus(st, player, now = Date.now(), chainReadAt = null) {
-  return { open: raidWindow(st.lastAdvanceAt, now, chainReadAt, st).open, raidsLeft: raidsLeft(player, now), perDay: BALANCE.RAID.PER_DAY, resetMs: msToUtcMidnight(now),
+function raidStatus(st, player, now = Date.now()) {
+  return { raidsLeft: raidsLeft(player, now), perDay: BALANCE.RAID.PER_DAY, resetMs: msToUtcMidnight(now),
     ready: raidReady(player), earned: Math.max(0, player.lifetimeWatts | 0), needEarned: BALANCE.RAID.MIN_EARNED, shielded: boughtShieldUp(player, now) };
 }
 
@@ -1224,13 +1218,11 @@ const pushRing = (arr, entry, max) => {
 // target -> target earned enough -> target not shielded -> eligibility/revenge -> multiplier -> stake.
 // Refusals use no raid. Lucky Whisker is spent on any resolved raid; Wager Insurance only on a loss.
 // Mutates st only
-// on success. opts.chainReadAt: live-mode freshness (null in demo); opts.rng: injectable for tests.
-function applyRaid(st, token, body, now = Date.now(), { chainReadAt = null, rng = Math.random } = {}) {
+// on success. opts.rng: injectable for tests.
+function applyRaid(st, token, body, now = Date.now(), { rng = Math.random } = {}) {
   const R = BALANCE.RAID;
   const atk = getPlayer(st, token);
   if (!atk) return fail("unknown_player");
-  const w = raidWindow(st.lastAdvanceAt, now, chainReadAt, st);
-  if (!w.open) return fail(w.reason);
   if (!raidReady(atk)) return { ok: false, error: "not_eligible", reason: "fresh_attacker", needEarned: R.MIN_EARNED, earned: Math.max(0, atk.lifetimeWatts | 0) };
   if (boughtShieldUp(atk, now)) return { ok: false, error: "shielded", until: atk.shield.until };
   if (raidsLeft(atk, now) <= 0) return { ok: false, error: "no_raids_left", resetMs: msToUtcMidnight(now) };
@@ -1302,14 +1294,14 @@ function viewerFlags(viewer, row, now) {
   const raidable = !!viewer && !you && raidReady(viewer) && !boughtShieldUp(viewer, now) && !row.fresh && !row.shielded && (row.watts * 100 >= viewer.watts * BALANCE.RAID.ELIGIBLE_MIN_PCT || revenge);
   return { raidable, revenge, you };
 }
-function leaderboard(st, token, now = Date.now(), { chainReadAt = null } = {}) {
+function leaderboard(st, token, now = Date.now()) {
   const viewer = getPlayer(st, token);
   const c = leaderboardRows(st, now);
   const rows = c.rows.map(({ shieldUntil, ...r }) => {
     const shielded = shieldUntil > now; // cached rows hold the expiry, so a shield ends on time
     return { ...r, shielded, ...viewerFlags(viewer, { ...r, shielded }, now) };
   });
-  return { rows, total: c.total, cachedAt: c.at, raid: viewer ? raidStatus(st, viewer, now, chainReadAt) : null };
+  return { rows, total: c.total, cachedAt: c.at, raid: viewer ? raidStatus(st, viewer, now) : null };
 }
 
 // ---------- den visits ----------
@@ -2075,7 +2067,7 @@ function snapshot(token, ip = null) {
     idle: asleep(state, now, readAt), // asleep (live reading, else the chain): bed income flows, raids are closed
     speedPct: currentSpeedPct(now), // speed bonus on wheel income (100 = none), from the chain's cadence
     golden: state.lastGolden || null, // newest golden block {height, at}: 10x wheel watts for everyone watching
-    raid: viewer ? raidStatus(state, viewer, now, readAt) : null, // this viewer's raid window + cooldown
+    raid: viewer ? raidStatus(state, viewer, now) : null, // this viewer's raids left and what's stopping them
     raidFeed: (Array.isArray(state.raidFeed) ? state.raidFeed : []).slice(-BALANCE.RAID.FEED_SNAPSHOT), // oldest first
     burned: state.burned || 0,
     dropStash: dropStash(state), // Burrow Drop's shared jackpot
@@ -2175,7 +2167,7 @@ const POST_ROUTES = {
   },
   // {target: defender publicId, stake: integer watts, mult: 1.5|2|3|5|10 (or 150..1000)}
   "/api/raid": (b, p, token) => {
-    const r = applyRaid(state, token, b, Date.now(), { chainReadAt: chainReadAt() });
+    const r = applyRaid(state, token, b, Date.now());
     if (!r.ok) {
       const code = RAID_ERR_STATUS[r.error] || 400;
       const { ok, error, ...extra } = r;
@@ -2227,7 +2219,7 @@ POST_ROUTES["/api/username"] = POST_ROUTES["/api/wallet/username"] = (b, p, toke
   if (!r.ok) return err(WALLET_ERR_STATUS[r.error] || 400, r.error);
   return okMe(p, { username: r.username });
 };
-const RAID_ERR_STATUS = { hamster_asleep: 409, chain_unknown: 409, chain_stale: 409, no_raids_left: 429, bad_target: 404, unknown_player: 404, not_eligible: 403, self_target: 400, shielded: 409, target_shielded: 409 };
+const RAID_ERR_STATUS = { no_raids_left: 429, bad_target: 404, unknown_player: 404, not_eligible: 403, self_target: 400, shielded: 409, target_shielded: 409 };
 const DROP_ERR_STATUS = { unknown_player: 404, bad_aim: 400, too_fast: 429, poor: 400 };
 const SHOP_ERR_STATUS = { unknown_player: 404, not_for_sale: 403, boost_active: 409, shield_active: 409, shield_used_today: 429, unknown_crate: 404 };
 const WALLET_ERR_STATUS = { unknown_player: 404, no_nonce: 409, nonce_expired: 410, wallet_taken: 409, username_taken: 409, server_full: 503, too_many_dens: 429, den_exists: 409 };
@@ -2283,7 +2275,7 @@ async function handle(req, res) {
       return json(res, 200, body);
     }
     if (url.pathname === "/api/leaderboard" && req.method === "GET") {
-      return json(res, 200, leaderboard(state, url.searchParams.get("token"), Date.now(), { chainReadAt: chainReadAt() }));
+      return json(res, 200, leaderboard(state, url.searchParams.get("token"), Date.now()));
     }
     const devRoute = DEMO ? DEV_ROUTES[url.pathname] : undefined;
     if (!DEMO && url.pathname.startsWith("/api/dev/")) security.devProbe(url.pathname, clientIp(req));
@@ -2352,7 +2344,7 @@ module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certElig
 // Extra helpers for tests (the plan's six names above stay the primary surface).
 Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
-  raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidWindow, raidStatus, applyRaid,
+  raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS, viewerFlags, denView, visitDen, randomDen, allowVisit, VISIT_LIMIT,
   WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername, usernameProblem, createDen, purgeNameless, runMigrations,
   REPLAY_NIGHT, REPLAY_NONSTOP_NIGHT, REPLAY_API_SINK, REPLAY_MIN_SLEEP_MS, replaySchedule, replayLocate, replayCumulativeBlocks, cumulativeBlocks: replayCumulativeBlocks,

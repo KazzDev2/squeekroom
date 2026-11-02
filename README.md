@@ -82,7 +82,7 @@ Each room is ~1–2 KB, and the whole state is rewritten as one JSON file. That'
 
 ## Raids ("chaos mode")
 
-Raids only work while the hamster is RUNNING (the same chain signal that drives accrual). Each player gets 10 raids per UTC day; a room can be raided any number of times.
+Raids are open all the time, whether he runs or sleeps. Each player gets 10 raids per UTC day; a room can be raided any number of times.
 
 - Wager: stake `S` at 1.5×, 2×, 3×, 5× or 10×. The raid screen shows the odds and the loot range, never the EV.
 - Stake bounds: at least `max(50, 5% of your balance)`, so every raid matters; at most your balance, and at most `cap / (M−1)`, the stake whose loot still fits under the target's loot cap. Past that point the cap would eat the win while the loss kept growing, so the game doesn't offer it. Against a small target the high multipliers can be out of reach.
