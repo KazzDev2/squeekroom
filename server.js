@@ -149,9 +149,10 @@ const BALANCE = {
   // about 0.06 of that at its usual size. Past roughly 18x COST in the stash a well-aimed drop pays back
   // more than it costs until someone wins it: that's the pull. The pot is player-funded (only the
   // STASH_START seed is new watts), so overall the game still takes in more than it pays out.
+  // Each Bounty win is kept in state.drop.wins (newest last, WINS_MAX of them) and posted in the raid feed.
   DROP: {
     PAY: DropSim.PAY, // for the guide
-    COST: 500, STASH_START: 6, STASH_FEED_PCT: 5, GOLDEN_ONE_IN: 8, CRATE_ONE_IN: 10, MIN_GAP_MS: 1500,
+    COST: 500, STASH_START: 6, STASH_FEED_PCT: 5, WINS_MAX: 50, GOLDEN_ONE_IN: 8, CRATE_ONE_IN: 10, MIN_GAP_MS: 1500,
     PRIZE_PCT: { common: 55, uncommon: 26, rare: 12, epic: 5, legendary: 2 },
     DUP_WATTS: { common: 10, uncommon: 40, rare: 150, epic: 500, legendary: 1500 },
   },
@@ -608,6 +609,7 @@ function purgeNameless(st) {
   if (gone.size) {
     for (const p of Object.values(st.players)) if (Array.isArray(p.raidedBy)) p.raidedBy = p.raidedBy.filter((e) => e && !gone.has(e.pid));
     if (Array.isArray(st.raidFeed)) st.raidFeed = st.raidFeed.filter((e) => e && !gone.has(e.atkId) && !gone.has(e.defId));
+    if (st.drop && Array.isArray(st.drop.wins)) st.drop.wins = st.drop.wins.filter((e) => e && !gone.has(e.pid));
   }
   PID_INDEX.delete(st);
   invalidateLeaderboard(st);
@@ -856,6 +858,11 @@ function dropStash(st) {
 }
 // body {aim, wager}: one drop. Everything pays in proportion to the wager, except the Bounty, which pays
 // the whole pot whatever you wagered. Returns the seed (the browser replays the same path) and every payout.
+// The newest Bounty win as players see it, or null before anyone has won it.
+function lastBountyWin(st) {
+  const w = st.drop && Array.isArray(st.drop.wins) ? st.drop.wins[st.drop.wins.length - 1] : null;
+  return w ? { name: w.name, amount: w.amount, at: w.at } : null;
+}
 function playDrop(st, token, body, now = Date.now(), { rng = Math.random, seed = null } = {}) {
   const p = getPlayer(st, token);
   if (!p) return fail("unknown_player");
@@ -874,7 +881,14 @@ function playDrop(st, token, body, now = Date.now(), { rng = Math.random, seed =
   dropStash(st);
   st.drop.stash += Math.round((wager * B.STASH_FEED_PCT) / 100);
   let land = 0, stashWon = 0;
-  if (r.slotId === "stash") { land = stashWon = st.drop.stash; st.drop.stash = B.COST * B.STASH_START; }
+  if (r.slotId === "stash") {
+    land = stashWon = st.drop.stash;
+    st.drop.stash = B.COST * B.STASH_START;
+    if (!Array.isArray(st.drop.wins)) st.drop.wins = [];
+    pushRing(st.drop.wins, { at: now, name: displayName(p), pid: p.publicId, amount: stashWon }, B.WINS_MAX);
+    if (!Array.isArray(st.raidFeed)) st.raidFeed = [];
+    pushRing(st.raidFeed, { at: now, kind: "bounty", atk: displayName(p), atkId: p.publicId, def: null, defId: null, win: true, amount: stashWon, crit: false, bonus: 0 }, BALANCE.RAID.FEED_MAX);
+  }
   else land = Math.round(wager * P[r.slotId]);
   let seeds = 0, chain = 0, lastF = -1e9;
   for (const e of r.events) {
@@ -908,6 +922,7 @@ function playDrop(st, token, body, now = Date.now(), { rng = Math.random, seed =
     result: { seed: s, aim, wager, board, slot: r.slot, slotId: r.slotId, land, stashWon, seeds, crate, prize, total: out },
     board: p.drop.board,
     stash: st.drop.stash,
+    lastWin: lastBountyWin(st),
   };
 }
 
@@ -2085,6 +2100,7 @@ function snapshot(token, ip = null) {
     raidFeed: (Array.isArray(state.raidFeed) ? state.raidFeed : []).slice(-BALANCE.RAID.FEED_SNAPSHOT), // oldest first
     burned: state.burned || 0,
     dropStash: dropStash(state), // Burrow Drop's shared jackpot
+    dropLast: lastBountyWin(state), // who won it last
     lastError: state.lastError,
     apiError: state.apiError || null,
     players: playerCount,
@@ -2205,7 +2221,7 @@ const POST_ROUTES = {
   "/api/drop": (b, p, token) => {
     const r = playDrop(state, token, b);
     if (!r.ok) { const { ok, error, ...extra } = r; return err(DROP_ERR_STATUS[error] || 400, error, extra); }
-    return okMe(p, { result: r.result, board: r.board, stash: r.stash });
+    return okMe(p, { result: r.result, board: r.board, stash: r.stash, lastWin: r.lastWin });
   },
   // {id}: open a lucky crate
   "/api/crate": (b, p, token) => {
