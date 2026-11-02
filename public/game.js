@@ -2860,7 +2860,7 @@ function renderLb() {
   const targets = d ? d.rows.filter(rowRaidable).length : 0;
   st.innerHTML = words + (me && d && cls ? ` · ${targets} target${targets === 1 ? "" : "s"}` : "");
   const age = LB.at ? Math.round((Date.now() - LB.at) / 1000) : null;
-  $("lbMeta").textContent = !d ? (LB.err ? "can't reach the server" : "loading…") : `${fmt(d.total)} den${d.total === 1 ? "" : "s"} · ${LB.err ? `couldn't refresh, showing ${age}s old` : age < 3 ? "just updated" : `updated ${age}s ago`}`;
+  $("lbMeta").textContent = !d ? (LB.err ? "can't reach the server" : "loading…") : `${fmt(d.total)} den${d.total === 1 ? "" : "s"} · ${fmt(d.online || 0)} online · ${LB.err ? `couldn't refresh, showing ${age}s old` : age < 3 ? "just updated" : `updated ${age}s ago`}`;
   const sig = d ? `${LB.at}|${me ? me.watts : ""}|${raidPhase()}` : "none";
   if (sig === LB.sig) return;
   LB.sig = sig;
@@ -2876,6 +2876,7 @@ function renderLb() {
     row.appendChild(elx("span", "rk", `#${r.rank}`));
     const img = elx("img", "mat"); img.src = matSwatchUrl(r.roomTier); img.alt = ""; row.appendChild(img);
     const who = elx("span", "who"), nm = elx("span", "nm", rowName(r));
+    if (r.online) { const dot = elx("span", "ondot"); dot.title = "Online"; nm.prepend(dot); }
     if (r.verified) nm.appendChild(verifiedBadge());
     if (you) nm.appendChild(elx("span", "tag you", "YOU"));
     if (r.revenge) nm.appendChild(elx("span", "tag rev", "REVENGE"));
@@ -2889,7 +2890,7 @@ function renderLb() {
     } else if (!you) wt.appendChild(elx("small", null, r.fresh ? "new den" : r.shielded ? "shielded" : raidPhase() === "fresh" || raidPhase() === "shielded" ? "" : "too small"));
     row.title = raidable ? `Raid ${rowName(r)}${r.revenge ? " (revenge)" : ""}` : you ? "Your den"
       : r.fresh ? `New den. It can't be raided until it earns ${fmt(raidNeed())} W.` : r.shielded ? "Behind a Raid Shield for now." : raidPhase() === "fresh" ? freshWords() : raidPhase() === "shielded" ? shieldedWords() : `Under 70% of your watts (${fmt(minTarget())} W). You can only raid up.`;
-    row.setAttribute("aria-label", `Rank ${r.rank}, ${rowName(r)}${r.verified ? " (wallet verified)" : ""}${you ? " (you)" : ""}, ${roomMaterial(r.roomTier | 0)} den, ${fmt(r.watts)} watts${raidable ? ", raidable" : ""}${r.revenge ? ", revenge" : ""}`);
+    row.setAttribute("aria-label", `Rank ${r.rank}, ${rowName(r)}${r.verified ? " (wallet verified)" : ""}${you ? " (you)" : ""}${r.online ? ", online" : ""}, ${roomMaterial(r.roomTier | 0)} den, ${fmt(r.watts)} watts${raidable ? ", raidable" : ""}${r.revenge ? ", revenge" : ""}`);
     row.appendChild(wt);
     li.appendChild(row);
     const vb = elx("button", "lbvisit", "👁");

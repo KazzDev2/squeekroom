@@ -1303,15 +1303,17 @@ function applyRaid(st, token, body, now = Date.now(), { rng = Math.random, readA
 
 // Every player by current balance (top LEADERBOARD_MAX), projected once per LEADERBOARD_CACHE_MS
 // (a raid invalidates it). Per-viewer flags are added on top of the cached rows.
+// Online: a visible game tab pinging (the watching heartbeat) or a recent Burrow Drop, which has no heartbeat of its own.
+const isOnline = (p, now) => now - Math.max(p.lastHeartbeat || 0, (p.drop && p.drop.lastAt) || 0) <= BALANCE.HEARTBEAT_WINDOW_MS;
 function leaderboardRows(st, now) {
   const R = BALANCE.RAID;
   const c = LB_CACHE.get(st);
   if (c && now >= c.at && now - c.at < R.LEADERBOARD_CACHE_MS) return c;
   const all = Object.values(st.players).filter((p) => p && p.publicId);
   all.sort((a, b) => b.watts - a.watts || b.lifetimeWatts - a.lifetimeWatts || (a.publicId < b.publicId ? -1 : a.publicId > b.publicId ? 1 : 0));
-  const rows = all.slice(0, R.LEADERBOARD_MAX).map((p, i) => ({ rank: i + 1, publicId: p.publicId, nick: p.nick, name: displayName(p), verified: !!p.wallet, watts: p.watts, lifetimeWatts: p.lifetimeWatts, roomTier: p.roomTier | 0, fresh: !raidReady(p),
+  const rows = all.slice(0, R.LEADERBOARD_MAX).map((p, i) => ({ rank: i + 1, publicId: p.publicId, nick: p.nick, name: displayName(p), verified: !!p.wallet, watts: p.watts, lifetimeWatts: p.lifetimeWatts, roomTier: p.roomTier | 0, fresh: !raidReady(p), online: isOnline(p, now),
     shieldUntil: p.shield && p.shield.until > now ? p.shield.until : 0 }));
-  const out = { at: now, rows, total: all.length };
+  const out = { at: now, rows, total: all.length, online: all.filter((p) => isOnline(p, now)).length };
   LB_CACHE.set(st, out);
   return out;
 }
@@ -1330,7 +1332,7 @@ function leaderboard(st, token, now = Date.now()) {
     const shielded = shieldUntil > now; // cached rows hold the expiry, so a shield ends on time
     return { ...r, shielded, ...viewerFlags(viewer, { ...r, shielded }, now) };
   });
-  return { rows, total: c.total, cachedAt: c.at, raid: viewer ? raidStatus(st, viewer, now) : null };
+  return { rows, total: c.total, online: c.online, cachedAt: c.at, raid: viewer ? raidStatus(st, viewer, now) : null };
 }
 
 // ---------- den visits ----------

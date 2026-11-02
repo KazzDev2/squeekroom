@@ -55,7 +55,7 @@ All rooms live in one JSON file, so the host needs a persistent disk mounted at 
   - `POST /api/nick {token, nick}` your room's name (20 chars).
   - `POST /api/heartbeat {token}` the page sends this while it is visible; rate-limited to one stamp per 20 s.
   - `POST /api/claim-commemorative {token}` see below. Errors: `not_eligible` (+ `lifetimeWatts`, `activeDays`, `needLifetimeWatts`, `needActiveDays`).
-  - `POST /api/raid {token, target, stake, mult}` see Raids below. `GET /api/leaderboard?token=…` watts-ranked rooms with per-viewer `raidable`/`revenge` flags (10 s cache).
+  - `POST /api/raid {token, target, stake, mult}` see Raids below. `GET /api/leaderboard?token=…` watts-ranked rooms with per-viewer `raidable`/`revenge` flags and an `online` flag per den plus an `online` count (a heartbeat or a Burrow Drop in the last 90 s; 10 s cache).
   - `POST /api/wallet/nonce {token}` → a single-use 10-minute sign-in message (it tells you to use a burner); `POST /api/wallet/verify {token, address, signature}` verifies the EIP-191 personal_sign server-side (pure-JS keccak + secp256k1 in `lib/ethsig.js`, zero deps) and binds the address (one room per wallet); `POST /api/wallet/username {token, username}` wallet-gated, `[A-Za-z0-9_]{3,16}`, unique. Verified names show on the leaderboard and raid feed with a check.
   - `POST /api/dev/advance {n}`, `/api/dev/grant {token, watts, lifetime?, activeDays?}`, `/api/dev/night {}`, `/api/dev/sleep {}` (winds the chain's sleep clock back 11 minutes so he counts as asleep and beds start earning) demo only.
 - Accrual, run for every room whenever the settled height advances (and on catch-up after downtime):
