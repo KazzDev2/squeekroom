@@ -263,6 +263,7 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
 .lbhead .wallet{display:block;margin-top:2px}
 .lbx{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:2px 8px;cursor:pointer;font-size:13px}
 .lbx:hover{border-color:var(--ink)}
+.lbprize{font-size:13px;font-weight:600;border:1.5px solid var(--amber);border-radius:8px;padding:8px 10px;background:color-mix(in srgb,var(--amber) 18%,var(--bg));line-height:1.4}
 .lbstate{font-size:12px;border-radius:8px;padding:8px 10px;background:var(--bg);color:var(--muted);line-height:1.4}
 .lbstate.open{background:color-mix(in srgb,var(--raid) 10%,var(--bg));color:var(--ink)}
 .lbstate b{color:var(--ink)}
@@ -667,6 +668,7 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
     <div><h2 id="lbTitle">LEADERBOARD</h2><span class="wallet" id="lbMeta"></span></div>
     <button type="button" class="lbx" id="lbClose" aria-label="Close the leaderboard">✕</button>
   </div>
+  <div class="lbprize">🏆 #1 at the end wins 0.01 ETH</div>
   <div class="lbstate" id="lbState"></div>
   <button type="button" class="pxbtn alt lbrandom" id="lbRandom">Random den</button>
   <ol class="lbrows" id="lbRows"></ol>
