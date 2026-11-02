@@ -41,6 +41,11 @@ const PRIZE_SPOTS = [
   ["legendary", 28, 176], ["legendary", 196, 152],
 ].map(([tier, x, y]) => ({ tier, x, y, r: 7 }));
 
+// A bigger wager makes the prize easier to hit: its target grows, the board never changes (so a wager
+// can't re-roll a board). Fixed steps, no logs, so server and browser always agree.
+const PRIZE_R = [[10_000, 11], [5000, 10], [2500, 9], [1000, 8]];
+const prizeRadius = (wager) => { for (const [w, r] of PRIZE_R) if (wager >= w) return r; return 7; };
+
 function rng32(seed) { // mulberry32
   let a = seed >>> 0;
   return () => {
@@ -84,7 +89,7 @@ const dividers = [];
 const slotAt = (x) => { let edge = LEFT; for (let i = 0; i < SLOTS.length; i++) { edge += SLOTS[i].w; if (x < edge) return i; } return SLOTS.length - 1; };
 
 // ---------- one drop ----------
-function simulate(dropX, seed, { crate = -1, prize = -1 } = {}) {
+function simulate(dropX, seed, { crate = -1, prize = -1, prizeR = 7 } = {}) {
   const r = rng32(seed);
   let x = Math.min(RIGHT - BALL_R - 1, Math.max(LEFT + BALL_R + 1, dropX)) + (r() - 0.5) * 3; // a hidden wobble:
   let y = RAIL_Y, vx = (r() - 0.5) * 0.4, vy = 0.2, ang = 0; // the same aim never lands quite the same
@@ -143,7 +148,7 @@ function simulate(dropX, seed, { crate = -1, prize = -1 } = {}) {
         if (vn < 0) { crateOn = false; events.push({ f, kind: "crate", i: crate }); }
       }
       if (prizeOn) {
-        const c = PRIZE_SPOTS[prize], vn = circle(c.x, c.y, c.r, 0.4);
+        const c = PRIZE_SPOTS[prize], vn = circle(c.x, c.y, prizeR, 0.4);
         if (vn < 0) { prizeOn = false; events.push({ f, kind: "prize", i: prize }); }
       }
       for (const dx of dividers) segment(dx, DIV_TOP, dx, H, 0.35);
@@ -173,6 +178,6 @@ return {
   W, H, BALL_R, RAIL_Y, LEFT, RIGHT, DIV_TOP, FLOOR, PAY,
   WHEEL, ACORNS, SLOTS, roots, pebbles, seeds, crateSpots, dividers, PRIZE_SPOTS,
   AIM_MIN: LEFT + BALL_R + 1, AIM_MAX: RIGHT - BALL_R - 1,
-  rng32, simulate, slotAt,
+  rng32, simulate, slotAt, prizeRadius,
 };
 });

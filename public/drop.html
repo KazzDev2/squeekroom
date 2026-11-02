@@ -40,7 +40,11 @@ h1 img{width:30px;height:30px}
 .stat.stash b{color:var(--gold)}
 .gold{font-family:var(--display);font-size:10px;color:#1d1a14;background:#ffd166;border:1.5px solid #1d1a14;border-radius:4px;padding:1px 6px;align-self:center}
 canvas#board{display:block;width:min(100%, calc((100vh - 190px) * 240 / 360));min-width:240px;aspect-ratio:240/360;height:auto;image-rendering:pixelated;border:3px solid var(--ink);border-radius:8px;box-shadow:4px 4px 0 var(--ink);background:#3d1e0d;touch-action:none;cursor:crosshair}
-#dropBtn{margin-top:14px;font-family:var(--display);font-size:15px;letter-spacing:.4px;color:#1d1a14;background:var(--squeek);border:2px solid #1d1a14;border-radius:8px;padding:10px 26px;box-shadow:3px 3px 0 #1d1a14;cursor:pointer}
+.wager{width:100%;display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:6px;margin-top:12px}
+.wager button{font-family:var(--display);font-size:11px;letter-spacing:.3px;color:var(--ink);background:var(--panel);border:1.5px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer;min-width:44px}
+.wager button.on{background:var(--squeek);color:#1d1a14;border-color:#1d1a14}
+.wager input{font-family:var(--display);font-size:12px;width:96px;color:var(--ink);background:var(--panel);border:1.5px solid var(--line);border-radius:6px;padding:6px 8px;text-align:right}
+#dropBtn{margin-top:10px;font-family:var(--display);font-size:15px;letter-spacing:.4px;color:#1d1a14;background:var(--squeek);border:2px solid #1d1a14;border-radius:8px;padding:10px 26px;box-shadow:3px 3px 0 #1d1a14;cursor:pointer}
 #dropBtn:hover:not(:disabled){background:#ffb84a}
 #dropBtn:active:not(:disabled){transform:translate(2px,2px);box-shadow:1px 1px 0 #1d1a14}
 #dropBtn:disabled{opacity:.55;cursor:default}
@@ -58,6 +62,10 @@ canvas#board{display:block;width:min(100%, calc((100vh - 190px) * 240 / 360));mi
   <div class="stat stash" style="text-align:right"><small>BOUNTY</small><b id="stash">…</b></div>
 </div>
 <canvas id="board" width="240" height="360" role="img" aria-label="Burrow Drop board"></canvas>
+<div class="wager" id="wagerRow" role="group" aria-label="Wager">
+  <button type="button" data-w="500">500</button><button type="button" data-w="1000">1K</button><button type="button" data-w="5000">5K</button><button type="button" data-w="10000">10K</button><button type="button" data-pct="25">25%</button>
+  <input id="wagerIn" type="number" inputmode="numeric" min="500" step="1" value="500" aria-label="Wager in Watts">
+</div>
 <button type="button" id="dropBtn">Drop · 500 W</button>
 </main>
 <script src="sprites.js"></script>

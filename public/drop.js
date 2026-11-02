@@ -9,7 +9,7 @@ const $ = (id) => document.getElementById(id);
 const cv = $("board"), g = cv.getContext("2d");
 g.imageSmoothingEnabled = false;
 const OUT = PX.OUTLINE;
-let COST = 500; // BALANCE.DROP.COST, from /api/config
+let COST = 500; // the smallest wager: BALANCE.DROP.COST, from /api/config
 const TOKEN = (() => { try { return localStorage.getItem("sr_token") || ""; } catch { return ""; } })();
 const CATALOG = new Map();
 const RARITY = { common: "#d1d5db", uncommon: "#4ade80", rare: "#60a5fa", epic: "#c084fc", legendary: "#ffd166" };
@@ -22,7 +22,7 @@ const SND = window.SqueekSound, sfx = (name, o) => { if (SND) SND.sfx(name, o); 
 
 const st = {
   watts: 0, shownWatts: 0, stash: 0, shownStash: 0,
-  look: null, prevLook: null, lookT: 1, hamLook: null,
+  look: null, prevLook: null, lookT: 1, hamLook: null, wager: 500,
   aim: W / 2, mode: "load", sim: null, i: 0, done: 0, // load | noden | aim | wait | fall | done
   golden: false, crate: -1, prize: null, seedOn: D.seeds.map(() => true), res: null, next: null, msg: "", msgUntil: 0,
   flash: new Map(), rootWob: D.roots.map(() => 0), squash: D.ACORNS.map(() => 0), wheelFlash: 0, slotFlash: -1, slotT: 0,
@@ -346,15 +346,16 @@ function drawPrize(t) {
   const sp = D.PRIZE_SPOTS[st.prize.spot], it = CATALOG.get(st.prize.item);
   if (!sp || !it) return;
   const col = RARITY[it.rarity] || "#ffffff", bob = still ? 0 : Math.round(Math.sin(t * 2.5) * 1.2), y = sp.y + bob;
+  const R = D.prizeRadius(st.mode === "fall" && st.res ? st.res.wager : st.wager); // a bigger wager, a bigger target
   g.globalAlpha = 0.28 + 0.14 * Math.sin(t * 4);
-  disc(g, sp.x, y, 11.5, col);
+  disc(g, sp.x, y, R + 4.5, col);
   g.globalAlpha = 1;
-  disc(g, sp.x, y, 9.5, OUT);
-  disc(g, sp.x, y, 8.5, "#3a2a1a");
+  disc(g, sp.x, y, R + 2.5, OUT);
+  disc(g, sp.x, y, R + 1.5, "#3a2a1a");
   drawIcon(it, sp.x, y, 16, t);
   if (it.rarity === "legendary" || it.rarity === "epic") { // a twinkle orbits the good stuff
     const a = t * 3, n = it.rarity === "legendary" ? 3 : 1;
-    for (let k = 0; k < n; k++) { const b = a + (k * Math.PI * 2) / n, x = Math.round(sp.x + Math.cos(b) * 12), yy = Math.round(y + Math.sin(b) * 12); g.fillStyle = "#fff8d0"; g.fillRect(x, yy - 1, 1, 3); g.fillRect(x - 1, yy, 3, 1); }
+    for (let k = 0; k < n; k++) { const b = a + (k * Math.PI * 2) / n, x = Math.round(sp.x + Math.cos(b) * (R + 5)), yy = Math.round(y + Math.sin(b) * (R + 5)); g.fillStyle = "#fff8d0"; g.fillRect(x, yy - 1, 1, 3); g.fillRect(x - 1, yy, 3, 1); }
   }
 }
 // Squeektoshi curled into a ball: the body turns, the light stays top-left
@@ -420,21 +421,22 @@ async function load() {
   if (st.mode === "load" || st.mode === "noden") { // first numbers: no count-up, and tickHud only redraws changes
     st.mode = "aim"; st.shownWatts = st.watts; st.shownStash = st.stash;
     $("watts").textContent = fmt(st.watts); $("stash").textContent = fmt(st.stash);
+    if (st.wager > st.watts) setWager(COST); // a remembered wager they can't cover any more
   }
   if (st.mode === "aim" && me.drop) setBoard(me.drop.board);
   renderHud();
 }
 function say(msg, ms = 1800) { st.msg = msg; st.msgUntil = performance.now() + ms; renderHud(); setTimeout(renderHud, ms + 30); }
-const DROP_WORDS = { poor: "Not enough watts", too_fast: "One at a time", unknown_player: "No den yet", offline: "You're offline" };
+const DROP_WORDS = { poor: "Not enough Watts", bad_wager: "Wager at least 500 W", too_fast: "One at a time", unknown_player: "No den yet", offline: "You're offline" };
 
 // ---------- a drop ----------
 async function drop() {
   if (st.mode === "noden") { location.href = "/"; return; }
   if (st.mode !== "aim") return;
-  if (st.watts < COST) { say("Not enough watts"); return; }
+  if (st.watts < st.wager) { say("Not enough Watts"); return; }
   st.mode = "wait"; renderHud();
   sfx("drop");
-  const r = await api("/api/drop", { aim: st.aim });
+  const r = await api("/api/drop", { aim: st.aim, wager: st.wager });
   if (!r.ok || !r.j.result) {
     st.mode = "aim";
     say(DROP_WORDS[r.j.error] || "That didn't work");
@@ -444,15 +446,15 @@ async function drop() {
   }
   const R = r.j.result;
   st.res = R;
-  st.next = { board: r.j.board, watts: r.j.me ? r.j.me.watts : st.watts - COST + R.total, stash: r.j.stash };
-  st.watts -= COST; // what's left while he falls; the winnings land at the end
+  st.next = { board: r.j.board, watts: r.j.me ? r.j.me.watts : st.watts - R.wager + R.total, stash: r.j.stash };
+  st.watts -= R.wager; // what's left while he falls; the winnings land at the end
   setBoard(R.board); // the board this drop was played on (it was already showing)
-  st.sim = D.simulate(R.aim, R.seed, { crate: R.board.crate, prize: R.board.prize ? R.board.prize.spot : -1 });
+  st.sim = D.simulate(R.aim, R.seed, { crate: R.board.crate, prize: R.board.prize ? R.board.prize.spot : -1, prizeR: D.prizeRadius(R.wager) });
   st.found = null; st.won = null; st.fly = null; st.reveal = null;
   st.mode = "fall"; st.i = 0; st.chain = 0; st.lastSeedF = -999; st.trail = []; st.banner = null; st.slotFlash = -1;
   renderHud();
 }
-function seedPay(chain) { return Math.round((COST * PAY.SEED_PCT * Math.min(chain, PAY.COMBO_MAX) * (st.golden ? 2 : 1)) / 100); }
+function seedPay(chain) { return Math.round((st.res.wager * PAY.SEED_PCT * Math.min(chain, PAY.COMBO_MAX) * (st.golden ? 2 : 1)) / 100); }
 function crateWords(c) {
   if (!c) return null;
   if (c.kind === "watts") return { str: `+${fmt(c.watts)}W`, col: "#ffd166" };
@@ -516,11 +518,26 @@ function finish() {
   renderHud();
 }
 
+// ---------- the wager ----------
+const WAGER_KEY = "sd_drop_wager";
+function setWager(v, typing = false) {
+  const n = Math.floor(Number(v));
+  st.wager = Number.isSafeInteger(n) && n >= COST ? n : COST;
+  try { localStorage.setItem(WAGER_KEY, String(st.wager)); } catch {}
+  if (!typing) $("wagerIn").value = String(st.wager);
+  for (const b of document.querySelectorAll("#wagerRow button")) b.classList.toggle("on", !b.dataset.pct && wagerOf(b) === st.wager); // a percentage moves with the balance: it just sets the amount
+  renderHud();
+}
+const wagerOf = (b) => (b.dataset.pct ? Math.max(COST, Math.floor((st.watts * Number(b.dataset.pct)) / 100)) : Number(b.dataset.w));
+for (const b of document.querySelectorAll("#wagerRow button")) b.addEventListener("click", () => { setWager(wagerOf(b)); sfx("click"); });
+$("wagerIn").addEventListener("input", () => setWager($("wagerIn").value, true));
+$("wagerIn").addEventListener("change", () => setWager($("wagerIn").value));
+
 // ---------- hud ----------
 function renderHud() {
   const b = $("dropBtn"), msg = st.msg && performance.now() < st.msgUntil ? st.msg : "";
   b.disabled = !["aim", "noden"].includes(st.mode) || !!msg;
-  b.textContent = msg || (st.mode === "noden" ? "Make your den first" : st.mode === "load" ? "Opening…" : `Drop · ${fmt(COST)} W`);
+  b.textContent = msg || (st.mode === "noden" ? "Make your den first" : st.mode === "load" ? "Opening…" : `Drop · ${fmt(st.wager)} W`);
   $("golden").hidden = !st.golden;
 }
 function tickHud(dt) {
@@ -696,6 +713,7 @@ cv.addEventListener("pointermove", (e) => { if (st.mode === "aim" && (e.pointerT
 addEventListener("pointerup", () => { touching = false; });
 $("dropBtn").addEventListener("click", drop);
 addEventListener("keydown", (e) => {
+  if (document.activeElement === $("wagerIn")) { if (e.key === "Enter") $("wagerIn").blur(); return; } // typing a wager, not playing
   if (e.key === "ArrowLeft" || e.key === "ArrowRight") { if (st.mode === "aim") st.aim = clamp(st.aim + (e.key === "ArrowLeft" ? -3 : 3), AIM_MIN, AIM_MAX); e.preventDefault(); }
   else if (e.key === " " || e.key === "Enter") { if (document.activeElement !== $("dropBtn")) { drop(); e.preventDefault(); } }
 });
@@ -704,7 +722,10 @@ renderHud();
 if (SND) { SND.music("drop"); SND.button($("soundBtn")); }
 requestAnimationFrame(frame);
 fetch("/api/config").then((r) => r.json()).then((cfg) => {
-  if (cfg.balance && cfg.balance.DROP) COST = cfg.balance.DROP.COST;
+  if (cfg.balance && cfg.balance.DROP) { COST = cfg.balance.DROP.COST; $("wagerIn").min = String(COST); }
+  let saved = null;
+  try { saved = localStorage.getItem(WAGER_KEY); } catch {}
+  setWager(saved || COST);
   for (const it of cfg.catalog || []) CATALOG.set(it.id, it);
 }).catch(() => {}).finally(() => { load(); });
 setInterval(() => { if (!document.hidden && (st.mode === "aim" || st.mode === "noden")) load(); }, 10_000); // the shared stash moves
