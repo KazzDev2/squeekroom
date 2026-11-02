@@ -519,18 +519,18 @@ function finish() {
 }
 
 // ---------- the wager ----------
-// The slider is logarithmic: far left is the minimum, far right the whole balance, and small wagers stay
-// easy to pick even with millions. In between it lands on round numbers (two significant digits).
+// The slider is linear: far left is the minimum, far right the whole balance, equal steps in between,
+// landing on round numbers (the largest power of ten that fits in one step).
 const SLIDER_MAX = 1000;
 const wagerMax = () => Math.max(COST, Math.floor(st.watts));
 function sliderToWager(v) {
   const max = wagerMax();
   if (v <= 0 || max <= COST) return COST;
   if (v >= SLIDER_MAX) return max;
-  const w = COST * Math.pow(max / COST, v / SLIDER_MAX), unit = Math.pow(10, Math.floor(Math.log10(w)) - 1);
-  return clamp(Math.round(w / unit) * unit, COST, max);
+  const step = (max - COST) / SLIDER_MAX, unit = Math.pow(10, Math.floor(Math.log10(Math.max(1, step))));
+  return clamp(Math.round((COST + step * v) / unit) * unit, COST, max);
 }
-const wagerToSlider = (w) => (wagerMax() <= COST ? 0 : clamp(Math.round((SLIDER_MAX * Math.log(w / COST)) / Math.log(wagerMax() / COST)), 0, SLIDER_MAX));
+const wagerToSlider = (w) => (wagerMax() <= COST ? 0 : clamp(Math.round((SLIDER_MAX * (w - COST)) / (wagerMax() - COST)), 0, SLIDER_MAX));
 function setWager(v, from = "") { // from: the control being used, which keeps its own value
   const n = Math.floor(Number(v));
   st.wager = Number.isSafeInteger(n) && n >= COST ? n : COST;
