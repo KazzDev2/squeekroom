@@ -632,25 +632,17 @@ function renderHud() {
   const h = st.h;
   $("status").textContent = { active: "ACTIVE", stale: "STALE", offline: "offline", connecting: "connecting…", none: "no reading" }[st.key]
     || (h && h.coreStatus && h.coreStatus !== "IDLE" && h.coreStatus !== "UNKNOWN" ? h.coreStatus.replace(/_/g, " ") : "IDLE");
-  $("source").textContent = st.key === "offline" ? "server unreachable" : !h ? " " : S.demo ? "demo hamster" : !S.replay ? "live from api.squeekchain.com" : S.nonstop ? "simulated · always running" : "via game server";
+  $("source").textContent = st.key === "offline" ? "server unreachable" : !h ? "" : S.demo ? "demo hamster" : !S.replay ? "" : S.nonstop ? "simulated · always running" : "via game server";
   $("speed").textContent = st.active && st.speed > 0 ? `${(st.speed / 1000).toFixed(2)} m/s` : "—";
   $("block").textContent = S.height != null ? S.height.toLocaleString("en-US") : "—";
   if (S.chain && typeof S.chain.blockProgress === "number") $("prog").style.width = clamp((S.chain.blockProgress / 1e9) * 100, 0, 100).toFixed(1) + "%";
   const me = S.me;
   if (me) {
-    $("tier").textContent = `T${me.wheelTier} · ${(me.multPct / 100).toFixed(2)}×`;
     const goal = (S.balance && S.balance.CERT_LIFETIME_WATTS) || 500_000, days = (S.balance && S.balance.CERT_ACTIVE_DAYS) || 7;
     const pct = clamp((me.lifetimeWatts / goal) * 100, 0, 100);
     $("lifeLine").textContent = `lifetime ${fmt(me.lifetimeWatts)} W · ${pct < 10 ? pct.toFixed(1) : Math.floor(pct)}% of ${fmt(goal)} · day ${Math.min(me.activeDays, days)}/${days}`;
     $("lifeProg").style.width = pct.toFixed(2) + "%";
     renderCertHud(me);
-    const watching = S.watching || me.watching;
-    const bonus = Math.max(me.bonusPct || 0, (S.balance && S.balance.LIVE_BONUS_PCT) || 120) - 100; // me.bonusPct lags the first heartbeat
-    const speed = Math.round((S.speedPct || 100) - 100); // he's settling blocks fast: wheel watts x speedPct
-    // hidden while idle: the trailing window keeps the pct up for a few minutes after a run, but no blocks settle then
-    const speedChip = speed > 0 && !S.idle ? `<span class="chip on" title="Blocks are coming fast: wheel watts +${speed}%">⚡ +${speed}%</span>` : "";
-    $("watchLine").innerHTML = watching || speedChip ? `${watching ? `watching<span class="chip on">+${bonus}%</span>` : ""}${speedChip}` : "&nbsp;";
-    renderBedLine(me, watching ? 100 + bonus : 100);
     renderFxChips(me);
   }
   renderRaidChip();
@@ -665,16 +657,6 @@ function renderHud() {
     $("nightInfo").textContent = `night running · ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} left`;
     nb.disabled = true;
   } else { $("nightInfo").textContent = ""; nb.disabled = false; }
-}
-// bed T{n} · mult; while he sleeps (by the chain) also the live rate it is paying right now
-function renderBedLine(me, bonusPct) {
-  const el = $("bedLine");
-  const mult = (me.bedMultPct || 100) / 100;
-  let html = `bed T${me.bedTier | 0} · ${mult.toFixed(2)}×`;
-  const deep = boostOn("deep_sleep") ? (boostCfg("deep_sleep").PCT || 100) / 100 : 1; // Deep Sleep
-  if (S.idle) html += `<span class="chip on">${+((me.bedWattsPerMin || 0) * bonusPct / 100 * deep).toFixed(2)} W/min</span>`;
-  el.innerHTML = html;
-  el.title = S.idle ? "He's asleep, so your bed is earning" : "Your bed earns while he sleeps, online or not";
 }
 function stepMeter() {
   const now = performance.now();

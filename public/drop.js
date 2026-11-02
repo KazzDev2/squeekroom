@@ -506,7 +506,7 @@ function finish() {
   const lines = [];
   if (st.found) lines.push({ str: `CRATE ${st.found.str}`, col: st.found.col });
   if (st.won) lines.push(st.won.dup ? { str: `${st.won.it.name.toUpperCase()} AGAIN +${fmt(st.won.dup)}W`, col: "#eef0f5" } : { str: `NEW ${st.won.it.name.toUpperCase()}`, col: RARITY[st.won.it.rarity] });
-  st.banner = Object.assign(id === "stash" ? { a: "JACKPOT", b: `+${fmt(R.total)} W`, col: "#ffd166", t: 0 }
+  st.banner = Object.assign(id === "stash" ? { a: "BOUNTY!", b: `+${fmt(R.total)} W`, col: "#ffd166", t: 0 }
     : id === "dead" ? { a: "DEAD END", b: R.total ? `+${fmt(R.total)} W` : "", col: "#9ca3af", t: 0 }
     : { a: id === "pantry" ? "PANTRY" : "NEST", b: `+${fmt(R.total)} W`, col: id === "pantry" ? "#ffd166" : "#eef0f5", t: 0 }, { lines });
   st.mode = "done"; st.done = id === "stash" ? 3.2 : st.won && !st.won.dup ? 2.6 : 1.7;
@@ -669,7 +669,7 @@ function draw(t) {
   }
   if (st.banner) {
     const b = st.banner; b.t += 1 / 60;
-    const s = Math.min(1, b.t * 6), jack = b.a === "JACKPOT";
+    const s = Math.min(1, b.t * 6), jack = b.a === "BOUNTY!";
     if (!jack || Math.floor(b.t * 6) % 2 === 0 || b.t > 1.2) {
       const extra = b.lines.length * 9, top = DIV_TOP - 46 - Math.max(0, extra - 10);
       strip(g, W / 2, top, 170, 34 + extra);

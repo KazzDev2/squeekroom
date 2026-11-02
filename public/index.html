@@ -34,6 +34,28 @@ h1 .logo{width:40px;height:40px;image-rendering:pixelated;flex:none}
 .strip .lbl{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
 .strip .val{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 .strip .sub{font-size:11px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+.strip .sub:empty{display:none}
+/* phones: name and watts on top, three live numbers in a row, then the buttons on an even grid */
+@media (max-width:860px){
+  .strip{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:8px;align-items:center;padding-top:8px;padding-bottom:10px}
+  .strip h1{grid-column:span 6;order:1;font-size:14px;gap:6px;min-width:0;white-space:nowrap}
+  .strip h1 .logo{width:32px;height:32px}
+  .strip .meter{grid-column:span 6;order:2;align-items:flex-end;text-align:right}
+  .strip .meter .big{font-size:20px}
+  .strip .ststatus{grid-column:span 4;order:3}
+  .strip .stspeed{grid-column:span 3;order:4}
+  .strip .stblock{grid-column:span 5;order:5}
+  .strip .ststatus,.strip .stspeed,.strip .stblock{border-top:1px solid var(--line);padding-top:7px;align-self:stretch}
+  .strip .stspeed .sub{display:none}
+  .strip .lbl{font-size:9px;letter-spacing:.08em}
+  .strip .fxstat{grid-column:span 12;order:6;flex-direction:row;align-items:center;gap:8px}
+  .strip #helpBtn{grid-column:span 5;order:7;justify-content:center;text-align:center}
+  .strip #guideLink{grid-column:span 4;order:8;justify-content:center}
+  .strip #soundBtn{grid-column:span 3;order:9;width:100%;height:100%}
+  .strip .raidchip{grid-column:span 7;order:10;max-width:none;justify-content:center;min-height:30px}
+  .strip .walletbtn{grid-column:span 5;order:11;justify-content:center;width:100%;min-height:30px;overflow:hidden;text-overflow:ellipsis}
+  .strip .fxstat[hidden],.strip .raidchip[hidden],.strip .walletbtn[hidden]{display:none}
+}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--muted);margin-right:6px;vertical-align:middle}
 .dot.on{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 25%,transparent);animation:pulse 1.2s infinite}
 .dot.stale{background:var(--warn)}
@@ -487,13 +509,13 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
 <body>
 <header class="strip">
   <h1><img class="logo" src="logo.svg" alt="" width="40" height="40">SQUEEK DEN</h1>
-  <div class="stat" title="Live reading of the real hamster">
+  <div class="stat ststatus" title="Live reading of the real hamster">
     <span class="lbl">Squeektoshi</span>
     <span class="val"><span class="dot" id="dot"></span><span id="status">connecting…</span></span>
-    <span class="sub" id="source">&nbsp;</span>
+    <span class="sub" id="source"></span>
   </div>
-  <div class="stat"><span class="lbl">Speed</span><span class="val" id="speed">—</span><span class="sub">record 1.60 m/s</span></div>
-  <div class="stat"><span class="lbl">Squeek block</span><span class="val" id="block">—</span><div class="bar"><i id="prog"></i></div></div>
+  <div class="stat stspeed"><span class="lbl">Speed</span><span class="val" id="speed">—</span><span class="sub">record 1.60 m/s</span></div>
+  <div class="stat stblock"><span class="lbl">Squeek block</span><span class="val" id="block">—</span><div class="bar"><i id="prog"></i></div></div>
   <div class="stat meter" id="meter">
     <span class="lbl">Watts</span>
     <span class="val big"><span id="watts">—</span><small>W</small><span class="gain" id="gain"></span></span>
@@ -502,9 +524,6 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
       <span class="bar thin"><i id="lifeProg"></i></span>
     </button>
     <button type="button" class="certbtn" id="certBtn" hidden>Claim your certificate</button>
-  </div>
-  <div class="stat"><span class="lbl">Wheel</span><span class="val" id="tier">—</span><span class="sub" id="watchLine">&nbsp;</span>
-    <span class="sub" id="bedLine" title="Your bed earns while he sleeps, online or not">&nbsp;</span>
   </div>
   <div class="stat fxstat" id="fxStat" hidden><span class="lbl">Boosts</span><span class="sub fxline" id="fxLine">&nbsp;</span></div>
   <button type="button" class="helpbtn" id="helpBtn" aria-haspopup="dialog" aria-controls="tut">How to play</button>

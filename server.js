@@ -140,7 +140,7 @@ const BALANCE = {
     TABLE_PCT: { watts: 60, boost: 25, shield: 10, decor: 5 } },
   // Burrow Drop (public/drop.html): pay COST, aim, and the server rolls the drop (public/drop_sim.js:
   // the same deterministic physics the browser replays from the seed). Chambers and seeds pay per
-  // DropSim.PAY; the shared stash starts at STASH_START x COST and grows STASH_FEED_PCT of every drop
+  // DropSim.PAY; the shared stash (players see it as the Bounty) starts at STASH_START x COST and grows STASH_FEED_PCT of every drop
   // with no cap (the owner's call: a big pot draws everyone in). Every board shows one drop-only prize (PRIZE_PCT by rarity; rarer ones
   // sit in harder spots); hitting it wins it, or DUP_WATTS if the den already has one. Some boards are
   // golden (seeds x2) or have a lucky crate wedged on a root (the usual crate table).
@@ -149,6 +149,7 @@ const BALANCE = {
   // more than it costs until someone wins it: that's the pull. The pot is player-funded (only the
   // STASH_START seed is new watts), so overall the game still takes in more than it pays out.
   DROP: {
+    PAY: DropSim.PAY, // for the guide
     COST: 500, STASH_START: 6, STASH_FEED_PCT: 5, GOLDEN_ONE_IN: 8, CRATE_ONE_IN: 10, MIN_GAP_MS: 1500,
     PRIZE_PCT: { common: 55, uncommon: 26, rare: 12, epic: 5, legendary: 2 },
     DUP_WATTS: { common: 10, uncommon: 40, rare: 150, epic: 500, legendary: 1500 },
@@ -2266,7 +2267,7 @@ const DEV_ROUTES = {
   },
 };
 
-const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".json": "application/json", ".ogg": "audio/ogg", ".mp3": "audio/mpeg" };
+const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".json": "application/json", ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".gif": "image/gif" };
 
 async function handle(req, res) {
   const url = new URL(req.url, "http://x");

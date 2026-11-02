@@ -118,6 +118,10 @@ All numbers live in `BALANCE.BOOSTS`, `SHIELD`, `CRATES` and `GOLDEN` and reach 
 - The wheel covers 3 floor tiles and the bed 2, along their facing (`fixtureTiles`); old saves are repaired on load (`repairFixtures`), furniture never moves.
 - `public/guide.html` explains the game in a few short sections; every number on it comes from `/api/config`.
 
+## Burrow Drop
+
+`public/drop.html`, opened from the Burrow badge under the raids box. POST /api/drop {aim} rolls on the server with the den's real watts (`BALANCE.DROP`) and answers with a seed; the page replays the same path with `public/drop_sim.js`, the deterministic physics both sides share. Chambers and seeds pay per `DropSim.PAY`. Every board (server-decided, kept in `p.drop.board`) shows one drop-only prize (catalog `drop: true` + `rarity`, art in `sprites_drop.js`); rarer ones appear less often and sit in harder spots. The Bounty (`state.drop.stash` in the code) is one shared pot with no cap: it starts at 3,000 W, grows 25 W per drop and pays all of it to whoever lands in the middle slot. The board's look follows the hamster: garden while he runs, moonlit while he sleeps, cozy with no fresh reading, crystal on golden boards.
+
 ## Sound
 
 `public/sound.js`: effects are synthesized live with WebAudio; the music is two CC0 (public domain) tracks from OpenGameArt, in `public/music/`: "Chill lofi inspired" by omfgdude in the den and "Pixel Sprinter" (loop) by Zane Little Music in Burrow Drop. Sound starts on the first click; the speaker button cycles music + effects, effects only, off. A browser that can't play a track's format gets effects only.
