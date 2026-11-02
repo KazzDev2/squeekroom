@@ -3413,7 +3413,7 @@ function drawRaidFx() {
   }
 }
 
-// ----- raid feed (snapshot.raidFeed, oldest first; shown newest first) -----
+// ----- raid feed (snapshot.raidFeed, oldest first; shown newest first; Bounty wins from Burrow Drop too) -----
 const FEED = { seen: new Set(), init: false, fresh: new Set(), sig: "", collapsed: null };
 const feedKey = (e) => `${e.at}|${e.atkId}|${e.defId}`;
 FEED.collapsed = ls.get("sr_feed") != null ? ls.get("sr_feed") === "1" : matchMedia("(max-width:860px)").matches;
@@ -3454,7 +3454,9 @@ function feedLine(e, mine) {
     return b;
   };
   const parts = [];
-  if (e.win) {
+  if (e.kind === "bounty") {
+    parts.push(atkMe ? name("You") : link(e.atk, e.atkId), " won the Bounty ", elx("span", "w", `+${amt} W`));
+  } else if (e.win) {
     parts.push(atkMe ? name("You") : link(e.atk, e.atkId), " raided ", defMe ? name("you") : link(e.def, e.defId), " ");
     parts.push(elx("span", "w", atkMe ? `+${fmt(e.amount + (e.bonus || 0))} W` : `−${amt} W`)); // the defender lost amount; the bonus came from the game
     if (e.crit) parts.push(" ", elx("span", "critf", "crit"));

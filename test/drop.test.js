@@ -112,6 +112,34 @@ test("drop: the stash grows with every drop (no cap) and pays out everything in 
   assert.equal(st.drop.stash, B.COST * B.STASH_START);
 });
 
+test("drop: a Bounty win is saved and posted in the feed; other drops aren't", () => {
+  const board = { golden: false, crate: -1, prize: null };
+  const miss = findSeed(120, { crate: -1, prize: -1 }, (r) => r.slotId !== "stash");
+  let aim = 0, hit = 0;
+  for (const a of [140, 100, 120, 160, 80]) { try { hit = findSeed(a, { crate: -1, prize: -1 }, (r) => r.slotId === "stash"); aim = a; break; } catch {} }
+  const { st, p } = dropWorld(1e7, board);
+  p.username = "Winner";
+  const m = S.playDrop(st, TK, { aim: 120 }, T0, { seed: miss });
+  assert.equal(m.lastWin, null, "nobody has won it yet");
+  assert.equal((st.drop.wins || []).length, 0);
+  assert.equal((st.raidFeed || []).length, 0);
+
+  p.drop.board = board;
+  const r = S.playDrop(st, TK, { aim }, T0 + 2000, { seed: hit });
+  const amount = r.result.stashWon;
+  assert.deepEqual(st.drop.wins, [{ at: T0 + 2000, name: "Winner", pid: p.publicId, amount }]);
+  assert.deepEqual(r.lastWin, { name: "Winner", amount, at: T0 + 2000 });
+  const feed = st.raidFeed[st.raidFeed.length - 1];
+  assert.deepEqual([feed.kind, feed.atk, feed.atkId, feed.defId, feed.amount, feed.win], ["bounty", "Winner", p.publicId, null, amount, true]);
+
+  st.drop.wins = Array.from({ length: B.WINS_MAX }, (_, i) => ({ at: i, name: "old", pid: "x", amount: 1 }));
+  p.drop.board = board;
+  p.drop.lastAt = 0;
+  const again = S.playDrop(st, TK, { aim }, T0 + 4000, { seed: hit });
+  assert.equal(st.drop.wins.length, B.WINS_MAX, "only the newest are kept");
+  assert.equal(again.lastWin.at, T0 + 4000);
+});
+
 test("drop: refusals move nothing (bad aim, too fast, too poor)", () => {
   const { st, p } = dropWorld(100_000);
   for (const aim of [undefined, "50", NaN, Infinity, null]) assert.equal(S.playDrop(st, TK, { aim }, T0).error, "bad_aim");

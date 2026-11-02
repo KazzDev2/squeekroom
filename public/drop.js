@@ -409,10 +409,17 @@ function setBoard(b) {
   updateLook();
   renderHud();
 }
+function showLastWin(w) {
+  $("lastBounty").hidden = !w;
+  if (!w) return;
+  $("lastName").textContent = w.name;
+  $("lastAmt").textContent = `+${fmt(w.amount)} W`;
+}
 async function load() {
   const r = await api(`/api/state?token=${encodeURIComponent(TOKEN)}`);
   if (!r.ok) { say("Can't reach the server", 4000); return; }
   if (Number.isFinite(r.j.dropStash)) st.stash = r.j.dropStash;
+  if (st.mode !== "fall" && st.mode !== "done") showLastWin(r.j.dropLast); // your own win shows when you land
   st.hamLook = hamLookFrom(r.j);
   if (st.mode !== "fall") updateLook(); // never mid-drop
   const me = r.j.me;
@@ -446,7 +453,7 @@ async function drop() {
   }
   const R = r.j.result;
   st.res = R;
-  st.next = { board: r.j.board, watts: r.j.me ? r.j.me.watts : st.watts - R.wager + R.total, stash: r.j.stash };
+  st.next = { board: r.j.board, watts: r.j.me ? r.j.me.watts : st.watts - R.wager + R.total, stash: r.j.stash, lastWin: r.j.lastWin };
   st.watts -= R.wager; // what's left while he falls; the winnings land at the end
   setBoard(R.board); // the board this drop was played on (it was already showing)
   st.sim = D.simulate(R.aim, R.seed, { crate: R.board.crate, prize: R.board.prize ? R.board.prize.spot : -1, prizeR: D.prizeRadius(R.wager) });
@@ -508,6 +515,7 @@ function finish() {
   if (id === "stash") { coinShower(40); st.shake = 0.5; sfx("jackpot"); }
   st.watts = N.watts;
   st.stash = N.stash;
+  showLastWin(N.lastWin);
   const lines = [];
   if (st.found) lines.push({ str: `CRATE ${st.found.str}`, col: st.found.col });
   if (st.won) lines.push(st.won.dup ? { str: `${st.won.it.name.toUpperCase()} AGAIN +${fmt(st.won.dup)}W`, col: "#eef0f5" } : { str: `NEW ${st.won.it.name.toUpperCase()}`, col: RARITY[st.won.it.rarity] });

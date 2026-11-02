@@ -38,6 +38,10 @@ h1 img{width:30px;height:30px}
 .stat small{font-size:9px;color:var(--muted);letter-spacing:.4px}
 .stat b{font-size:16px;font-weight:700}
 .stat.stash b{color:var(--gold)}
+.lastb{width:100%;margin:-2px 0 8px;font-size:12px;text-align:right;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lastb[hidden]{display:none}
+.lastb b{color:var(--ink)}
+.lastb span{color:var(--gold);font-weight:700}
 .gold{font-family:var(--display);font-size:10px;color:#1d1a14;background:#ffd166;border:1.5px solid #1d1a14;border-radius:4px;padding:1px 6px;align-self:center}
 canvas#board{display:block;width:min(100%, calc((100vh - 190px) * 240 / 360));min-width:240px;aspect-ratio:240/360;height:auto;image-rendering:pixelated;border:3px solid var(--ink);border-radius:8px;box-shadow:4px 4px 0 var(--ink);background:#3d1e0d;touch-action:none;cursor:crosshair}
 .wager{width:100%;max-width:360px;display:flex;align-items:center;gap:10px;margin-top:12px}
@@ -60,6 +64,7 @@ canvas#board{display:block;width:min(100%, calc((100vh - 190px) * 240 / 360));mi
   <span class="gold" id="golden" hidden>GOLDEN BOARD</span>
   <div class="stat stash" style="text-align:right"><small>BOUNTY</small><b id="stash">…</b></div>
 </div>
+<div class="lastb" id="lastBounty" hidden>Last Bounty: <b id="lastName"></b> <span id="lastAmt"></span></div>
 <canvas id="board" width="240" height="360" role="img" aria-label="Burrow Drop board"></canvas>
 <div class="wager" id="wagerRow" role="group" aria-label="Wager">
   <input id="wagerRange" type="range" min="0" max="1000" step="1" value="0" aria-label="Wager">
