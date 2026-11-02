@@ -3169,7 +3169,22 @@ function showStage(st) {
   $("raidForm").style.display = st === "form" ? "flex" : "none";
   $("raidHoles").hidden = st !== "holes";
 }
-// nine holes, built once; a hamster canvas in each pops up on a win (drawn in the player's skin)
+// the hammer, upright: head on top, handle down (the swing pivots at the handle's end)
+function drawHammer(x) {
+  const r = (a, b, w, h, col) => { x.fillStyle = col; x.fillRect(a, b, w, h); };
+  r(10, 9, 4, 14, OUTLINE); r(11, 9, 2, 13, "#c98b4e"); r(12, 9, 1, 13, "#8a5a2e");
+  r(4, 1, 16, 10, OUTLINE); r(5, 2, 14, 8, "#9ca3af"); r(5, 2, 14, 2, "#e5e7eb"); r(5, 8, 14, 2, "#6b7280"); r(8, 2, 1, 8, "#4b5563"); r(15, 2, 1, 8, "#4b5563");
+}
+// more hammers the worse the odds: of the nine holes, always at least one and always one to spare
+const hammerCount = (p) => clamp(Math.round((1 - p) * 9), 1, 8);
+function showHammers(n) {
+  const row = $("hammerRow");
+  row.innerHTML = "";
+  row.setAttribute("aria-label", `${n} hammer${n === 1 ? "" : "s"}`);
+  for (let k = 0; k < n; k++) { const c = document.createElement("canvas"); c.width = c.height = 24; drawHammer(c.getContext("2d")); row.appendChild(c); }
+  RU.hammers = n;
+}
+// nine holes, built once; a hamster canvas in each (drawn in the player's skin) peeks when he hides there
 function buildHoles() {
   const grid = $("holeGrid");
   if (grid.children.length) return;
@@ -3178,7 +3193,8 @@ function buildHoles() {
     b.type = "button";
     b.dataset.i = String(i);
     b.setAttribute("aria-label", `Hole ${i + 1}`);
-    b.innerHTML = '<canvas width="24" height="24" aria-hidden="true"></canvas><span class="hgain" aria-hidden="true"></span>';
+    b.innerHTML = '<canvas width="24" height="24" aria-hidden="true"></canvas><canvas class="hhammer" width="24" height="24" aria-hidden="true"></canvas><span class="hgain" aria-hidden="true"></span>';
+    drawHammer(b.querySelector(".hhammer").getContext("2d"));
     b.onclick = () => whack(i);
     grid.appendChild(b);
   }
@@ -3210,11 +3226,31 @@ function doRaid() {
   $("raidErr").textContent = "";
   buildHoles();
   resetHoles();
+  showHammers(hammerCount(raidPLucky(RU.mult, t.roomTier, S.me.watts, t.watts)));
   showStage("holes");
   $("raidLock").hidden = true;
   $("holeGrid").children[4].focus({ preventScroll: true });
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+// The hammers come down. A win: all on other holes. A loss: his hole is one of them, and it's the last.
+async function swingHammers(i, win) {
+  const grid = $("holeGrid"), row = $("hammerRow").children, n = RU.hammers || 1;
+  const others = [...Array(9).keys()].filter((k) => k !== i).sort(() => Math.random() - 0.5);
+  const order = win ? others.slice(0, n) : [...others.slice(0, n - 1), i];
+  for (let k = 0; k < order.length; k++) {
+    const hole = grid.children[order[k]], onHim = order[k] === i;
+    if (onHim && k) await wait(180); // a beat before the one that gets him
+    if (row[k]) row[k].classList.add("used");
+    hole.classList.add("swing");
+    setTimeout(() => { // the moment it lands (55% of the swing)
+      hole.classList.add("hit");
+      sfx("whack");
+      if (onHim) hole.classList.add("squash", "miss");
+    }, 195);
+    await wait(130);
+  }
+  await wait(280);
+}
 async function whack(i) {
   if (RU.busy || !RU.open || RU.stage !== "holes") return;
   const t = raidTarget(), sb = stakeNow(), mult = RU.mult;
@@ -3224,16 +3260,16 @@ async function whack(i) {
   const grid = $("holeGrid"), hole = grid.children[i];
   grid.classList.add("busy");
   for (const h of grid.children) h.disabled = h !== hole;
-  hole.classList.add("hit");
-  sfx("whack");
+  hole.classList.add("pick"); // he hides here
   const t0 = performance.now();
   const r = await post("/api/raid", { target: t.publicId, stake: sb.v, mult });
-  await wait(Math.max(0, 380 - (performance.now() - t0))); // let the whack land
+  await wait(Math.max(0, 380 - (performance.now() - t0))); // let him settle in
   if (seq !== RU.seq) { if (r.ok && r.j && r.j.me) applyMe(r.j.me); return; }
   if (r.ok && r.j && r.j.result) {
     const res = r.j.result;
-    hole.classList.add(res.win ? "win" : "miss");
-    if (res.win) hole.querySelector(".hgain").textContent = `+${fmt(wonFor(res))}`;
+    await swingHammers(i, res.win);
+    if (seq !== RU.seq) { if (r.j.me) applyMe(r.j.me); return; }
+    if (res.win) { hole.classList.add("win"); hole.querySelector(".hgain").textContent = `+${fmt(wonFor(res))}`; }
     await wait(res.win ? 900 : 650);
     if (seq !== RU.seq) { if (r.j.me) applyMe(r.j.me); return; }
     RU.busy = false;
