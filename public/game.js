@@ -1915,7 +1915,7 @@ function buildCards() {
   updateCards();
 }
 // Tier ladders (bought strictly in order; buying sets me[field]). Same order rules as the server.
-const DEFAULT_MULT = [100, 125, 160, 200, 260, 350];
+const DEFAULT_MULT = [100, 125, 160, 200];
 const TIERED = {
   wheel: { field: "wheelTier", mults: "WHEEL_MULT_PCT", unit: "watts per block", done: "Installed" },
   bed: { field: "bedTier", mults: "BED_MULT_PCT", unit: "bed watts while he sleeps", done: "Installed" },
@@ -2703,7 +2703,7 @@ $("certShare").onclick = async () => {
 // client mirrors the maths so each option shows its odds and loot. EV is never shown on purpose.
 // A failed raid burns the whole wager (the defender gets nothing), and a den raids and can be raided
 // only once it has earned MIN_EARNED watts from the wheel or bed.
-const RAID_DEFAULTS = { EDGE_PCT: 110, MULT_PCT: [150, 200, 300, 500, 1000], DEFENSE_PCT: [0, 5, 10, 15, 20, 25], TILT_EXP: 0.25, TILT_MIN_PCT: 75, TILT_MAX_PCT: 175,
+const RAID_DEFAULTS = { EDGE_PCT: 110, MULT_PCT: [150, 200, 300, 500, 1000], DEFENSE_PCT: [0, 5, 10, 15, 15, 15], TILT_EXP: 0.25, TILT_MIN_PCT: 75, TILT_MAX_PCT: 175,
   P_MIN_PCT: 2, P_MAX_PCT: 90, CRIT_CHANCE_PCT: 5, CRIT_MULT_PCT: 150, LOOT_MAX_DEF_PCT: 25, STAKE_MIN: 50, STAKE_MIN_BAL_PCT: 5,
   ELIGIBLE_MIN_PCT: 70, REVENGE_WINDOW_MS: 86_400_000, PER_DAY: 10, MIN_EARNED: 5000 };
 const RB = () => ({ ...RAID_DEFAULTS, ...((S.balance && S.balance.RAID) || {}) });

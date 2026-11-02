@@ -88,7 +88,7 @@ function tutArrowUp(c, x, y, col) {
   c.fillStyle = OUTLINE; c.fillRect(x - 1, y + 2, 3, 6); for (let r = 0; r < 4; r++) c.fillRect(x - r - 1, y + r, 2 * r + 3, 1);
   c.fillStyle = col; c.fillRect(x, y + 3, 1, 5); for (let r = 1; r < 3; r++) c.fillRect(x - r, y + r, 2 * r + 1, 1);
 }
-const TUT_MULT = ["1X", "1.25X", "1.6X", "2X", "2.6X", "3.5X"];
+const TUT_MULT = ["1X", "1.25X", "1.6X", "2X"];
 const TUT_CURSOR = ["1.....", "11....", "121...", "1221..", "12221.", "122221", "12211.", "11.121", "....11"];
 function tutCursor(c, x, y) { // a little pointer, tip at (x, y)
   for (let r = 0; r < TUT_CURSOR.length; r++) for (let k = 0; k < 6; k++) {
@@ -138,14 +138,14 @@ const TUT = [
   { title: "Upgrade", text: "A better wheel and a better bed make more Watts. Spend the rest on decorating your den.",
     draw(c, t) {
       tutBg(c, false);
-      const step = t / 1.1, tier = Math.floor(step) % 6, ph = step % 1, f = Math.floor(t * 14) % 4;
+      const step = t / 1.1, tier = Math.floor(step) % TUT_MULT.length, ph = step % 1, f = Math.floor(t * 14) % 4;
       tutWheel(c, 24, 30, t * (1.2 + tier * 0.35), tier);
       tutHam(c, "run", f, 48, 74 - (f % 2));
       tutBed(c, tier, 142);
       for (const x of [48, 142]) {
         tutText(c, TUT_MULT[tier], x, 14, tier ? "#ffd166" : "#eef0f5");
         if (tier && ph < 0.6) { c.globalAlpha = 1 - ph / 0.6; tutArrowUp(c, x, Math.round(24 - ph * 10), "#22c55e"); c.globalAlpha = 1; }
-        for (let k = 0; k < 5; k++) { c.fillStyle = OUTLINE; c.fillRect(x - 12 + k * 5, 6, 4, 4); c.fillStyle = k < tier ? "#22c55e" : "#4b5563"; c.fillRect(x - 11 + k * 5, 7, 2, 2); }
+        for (let k = 0; k < 3; k++) { c.fillStyle = OUTLINE; c.fillRect(x - 7 + k * 5, 6, 4, 4); c.fillStyle = k < tier ? "#22c55e" : "#4b5563"; c.fillRect(x - 6 + k * 5, 7, 2, 2); }
       }
     } },
   { title: "Raid richer dens", text: "Once your den has earned 5,000 W, wager Watts while he runs to rob a den worth at least 0.7x yours. The richer the target, the better your odds.",
