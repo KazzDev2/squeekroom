@@ -152,3 +152,77 @@ test("drop: prizes are never sold and never free", () => {
   }
   for (const t of S.RARITIES) assert.ok(D.PRIZE_SPOTS.some((s) => s.tier === t), `a spot for ${t}`);
 });
+
+// ---------- wagers ----------
+test("drop wager: chambers and seeds scale, 5% feeds the Bounty, the browser replays it", () => {
+  const board = { golden: false, crate: -1, prize: null };
+  const seed = findSeed(100, { crate: -1, prize: -1 }, (r) => r.slotId === "pantry" && r.seeds >= 2);
+  const small = dropWorld(1e7, board), big = dropWorld(1e7, board);
+  const a = S.playDrop(small.st, TK, { aim: 100, wager: 500 }, T0, { seed }).result;
+  const b = S.playDrop(big.st, TK, { aim: 100, wager: 5000 }, T0, { seed }).result;
+  assert.deepEqual([a.wager, b.wager], [500, 5000]);
+  assert.equal(b.slot, a.slot, "no prize on the board: the same path");
+  assert.equal(b.land, a.land * 10);
+  assert.equal(b.seeds, a.seeds * 10);
+  assert.equal(big.p.watts, 1e7 - 5000 + b.total);
+  assert.equal(big.st.drop.stash, B.COST * B.STASH_START + 250);
+  assert.equal(D.simulate(b.aim, b.seed, { crate: -1, prize: -1, prizeR: D.prizeRadius(b.wager) }).slot, b.slot);
+});
+
+test("drop wager: no wager means the minimum; bad or unaffordable wagers move nothing", () => {
+  const { st, p } = dropWorld(2000);
+  for (const wager of [499, 0, -500, 1000.5, "1000", null, NaN, Infinity]) assert.equal(S.playDrop(st, TK, { aim: 100, wager }, T0).error, "bad_wager", String(wager));
+  assert.deepEqual(S.playDrop(st, TK, { aim: 100, wager: 2001 }, T0), { ok: false, error: "poor", need: 1 });
+  assert.equal(p.watts, 2000);
+  assert.equal(st.drop, undefined, "nothing fed the Bounty");
+  assert.equal(S.playDrop(st, TK, { aim: 100 }, T0).result.wager, B.COST);
+  const all = dropWorld(2000);
+  assert.equal(S.playDrop(all.st, TK, { aim: 100, wager: 2000 }, T0).result.wager, 2000, "all in is allowed");
+});
+
+test("drop wager: the Bounty pays the whole pot, whatever the wager", () => {
+  const board = { golden: false, crate: -1, prize: null };
+  let aim = 0, hit = 0;
+  for (const a of [140, 100, 120, 160, 80]) { try { hit = findSeed(a, { crate: -1, prize: -1 }, (r) => r.slotId === "stash"); aim = a; break; } catch {} }
+  for (const wager of [500, 40_000]) {
+    const { st } = dropWorld(1e6, board);
+    st.drop = { stash: 9000 };
+    const r = S.playDrop(st, TK, { aim, wager }, T0, { seed: hit }).result;
+    assert.equal(r.stashWon, 9000 + Math.round(wager * 0.05));
+    assert.equal(st.drop.stash, B.COST * B.STASH_START);
+  }
+});
+
+test("drop wager: a bigger wager grows the prize target and never changes the board", () => {
+  assert.deepEqual([500, 999, 1000, 2500, 5000, 10_000, 1e7].map(D.prizeRadius), [7, 7, 8, 9, 10, 11, 11]);
+  const spot = D.PRIZE_SPOTS.findIndex((s) => s.tier === "legendary"), board = { golden: false, crate: -1, prize: { item: "fur_crystal_geode", spot } };
+  // a drop that only the big target catches
+  let aim = 0, seed = 0;
+  outer: for (let a = D.AIM_MIN; a < D.AIM_MAX; a += 6) for (let s = 1; s < 1500; s++) if (D.simulate(a, s, { crate: -1, prize: spot, prizeR: 11 }).prizeHit && !D.simulate(a, s, { crate: -1, prize: spot, prizeR: 7 }).prizeHit) { aim = a; seed = s; break outer; }
+  assert.ok(seed, "found one");
+  const low = dropWorld(1e6, board), high = dropWorld(1e6, board);
+  const lo = S.playDrop(low.st, TK, { aim, wager: 500 }, T0, { seed, rng: () => 0.99 }), hi = S.playDrop(high.st, TK, { aim, wager: 10_000 }, T0, { seed, rng: () => 0.99 });
+  assert.equal(lo.result.prize, null);
+  assert.equal(hi.result.prize.item, "fur_crystal_geode");
+  assert.deepEqual(lo.result.board, hi.result.board, "the same board either way");
+  assert.ok(D.simulate(hi.result.aim, hi.result.seed, { crate: -1, prize: spot, prizeR: D.prizeRadius(hi.result.wager) }).prizeHit, "the browser replays the win");
+});
+
+test("drop wager: duplicates and crate watts scale, and a big wager still pays back less than it costs", () => {
+  const spot = D.PRIZE_SPOTS.findIndex((s) => s.tier === "common"), board = { golden: false, crate: -1, prize: { item: "fur_seed_sack", spot } };
+  let aim = 0, seed = 0;
+  outer: for (let a = D.AIM_MIN; a < D.AIM_MAX; a += 6) for (let s = 1; s < 400; s++) if (D.simulate(a, s, { crate: -1, prize: spot, prizeR: D.prizeRadius(5000) }).prizeHit) { aim = a; seed = s; break outer; }
+  const w = dropWorld(1e6, board);
+  w.p.owned.fur_seed_sack = 1;
+  assert.equal(S.playDrop(w.st, TK, { aim, wager: 5000 }, T0, { seed }).result.prize.dup, B.DUP_WATTS.common * 10);
+  const cs = findSeed(60, { crate: 0, prize: -1 }, (r) => r.crateHit), c = dropWorld(1e6, { golden: false, crate: 0, prize: null });
+  const cr = S.playDrop(c.st, TK, { aim: 60, wager: 5000 }, T0, { seed: cs, rng: () => 0.01 }).result;
+  assert.equal(cr.crate.kind, "watts");
+  assert.ok(cr.crate.watts >= S.BALANCE.CRATES.WATTS_MIN * 10);
+  // the house still wins on a big wager, with every prize owned, away from the Bounty
+  const { st, p } = dropWorld(1e12);
+  for (const it of S.DROP_ITEMS) p.owned[it.id] = 1;
+  let inW = 0, out = 0, t = T0;
+  for (let k = 0; k < 800; k++) { t += B.MIN_GAP_MS; const r = S.playDrop(st, TK, { aim: D.AIM_MIN + (k % 23) * ((D.AIM_MAX - D.AIM_MIN) / 22), wager: 10_000 }, t).result; inW += r.wager; out += r.total - r.stashWon; }
+  assert.ok(out / inW < 1, `returns ${(out / inW).toFixed(3)}`);
+});

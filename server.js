@@ -138,11 +138,11 @@ const BALANCE = {
   // Keyed off settled blocks and watching only: nothing here rewards making him run.
   CRATES: { CHANCE_PCT: 1, PER_DAY: 5, MAX_UNOPENED: 3, ROLLS_MAX: 50, WATTS_MIN: 200, WATTS_MAX: 800, DUP_WATTS: 800,
     TABLE_PCT: { watts: 60, boost: 25, shield: 10, decor: 5 } },
-  // Burrow Drop (public/drop.html): pay COST, aim, and the server rolls the drop (public/drop_sim.js:
+  // Burrow Drop (public/drop.html): wager COST or more (up to your balance), aim, and the server rolls the drop (public/drop_sim.js:
   // the same deterministic physics the browser replays from the seed). Chambers and seeds pay per
-  // DropSim.PAY; the shared stash (players see it as the Bounty) starts at STASH_START x COST and grows STASH_FEED_PCT of every drop
+  // DropSim.PAY x the wager; the shared stash (players see it as the Bounty) starts at STASH_START x COST and grows STASH_FEED_PCT of every wager
   // with no cap (the owner's call: a big pot draws everyone in). Every board shows one drop-only prize (PRIZE_PCT by rarity; rarer ones
-  // sit in harder spots); hitting it wins it, or DUP_WATTS if the den already has one. Some boards are
+  // sit in harder spots, and a bigger wager grows the target: DropSim.prizeRadius); hitting it wins it, or DUP_WATTS (at COST, scaled by the wager) if the den already has one. Some boards are
   // golden (seeds x2) or have a lucky crate wedged on a root (the usual crate table).
   // Tuned on simulated drops (watts only, no items): about 0.86 back per drop on average; the stash is
   // about 0.06 of that at its usual size. Past roughly 18x COST in the stash a well-aimed drop pays back
@@ -846,51 +846,58 @@ function dropStash(st) {
   if (!Number.isFinite(st.drop.stash)) st.drop.stash = B.COST * B.STASH_START;
   return st.drop.stash;
 }
-// body {aim}: one drop. Returns the seed (the browser replays the same path) and every payout.
+// body {aim, wager}: one drop. Everything pays in proportion to the wager, except the Bounty, which pays
+// the whole pot whatever you wagered. Returns the seed (the browser replays the same path) and every payout.
 function playDrop(st, token, body, now = Date.now(), { rng = Math.random, seed = null } = {}) {
   const p = getPlayer(st, token);
   if (!p) return fail("unknown_player");
   const B = BALANCE.DROP, b = body && typeof body === "object" ? body : {};
   if (typeof b.aim !== "number" || !Number.isFinite(b.aim)) return fail("bad_aim");
   const aim = Math.min(DropSim.AIM_MAX, Math.max(DropSim.AIM_MIN, b.aim));
+  const wager = b.wager === undefined ? B.COST : b.wager;
+  if (!Number.isSafeInteger(wager) || wager < B.COST) return { ok: false, error: "bad_wager", min: B.COST };
   const board = dropBoard(p, rng);
   if (now - (p.drop.lastAt || 0) < B.MIN_GAP_MS) return fail("too_fast");
-  if (!(p.watts >= B.COST)) return { ok: false, error: "poor", need: B.COST - p.watts };
+  if (!(p.watts >= wager)) return { ok: false, error: "poor", need: wager - p.watts };
   const s = seed != null ? seed >>> 0 : crypto.randomBytes(4).readUInt32LE(0);
-  const r = DropSim.simulate(aim, s, { crate: board.crate, prize: board.prize ? board.prize.spot : -1 });
+  const r = DropSim.simulate(aim, s, { crate: board.crate, prize: board.prize ? board.prize.spot : -1, prizeR: DropSim.prizeRadius(wager) });
   const P = DropSim.PAY;
-  p.watts -= B.COST;
+  p.watts -= wager;
   dropStash(st);
-  st.drop.stash += Math.round((B.COST * B.STASH_FEED_PCT) / 100);
+  st.drop.stash += Math.round((wager * B.STASH_FEED_PCT) / 100);
   let land = 0, stashWon = 0;
   if (r.slotId === "stash") { land = stashWon = st.drop.stash; st.drop.stash = B.COST * B.STASH_START; }
-  else land = Math.round(B.COST * P[r.slotId]);
+  else land = Math.round(wager * P[r.slotId]);
   let seeds = 0, chain = 0, lastF = -1e9;
   for (const e of r.events) {
     if (e.kind !== "seed") continue;
     chain = e.f - lastF < P.COMBO_FRAMES ? chain + 1 : 1;
     lastF = e.f;
-    seeds += Math.round((B.COST * P.SEED_PCT * Math.min(chain, P.COMBO_MAX) * (board.golden ? 2 : 1)) / 100);
+    seeds += Math.round((wager * P.SEED_PCT * Math.min(chain, P.COMBO_MAX) * (board.golden ? 2 : 1)) / 100);
   }
-  const crate = r.crateHit ? giveCrate(p, rollCrateContents(p, rng)) : null;
+  let crate = null;
+  if (r.crateHit) {
+    const c = rollCrateContents(p, rng);
+    crate = giveCrate(p, c.kind === "watts" ? { ...c, watts: Math.round((c.watts * wager) / B.COST) } : c);
+  }
   let prize = null;
   if (r.prizeHit && board.prize) {
     const it = CATALOG_BY_ID.get(board.prize.item), have = !!(p.owned && p.owned[it.id]);
-    const dup = have ? B.DUP_WATTS[it.rarity] | 0 : 0;
+    const dup = have ? Math.round(((B.DUP_WATTS[it.rarity] | 0) * wager) / B.COST) : 0;
     if (have) p.watts += dup; else p.owned[it.id] = 1;
     prize = { item: it.id, rarity: it.rarity, dup };
   }
   p.watts += land + seeds;
   const out = land + seeds + (prize ? prize.dup : 0) + (crate && crate.kind === "watts" ? crate.watts : 0);
   st.drop.played = (st.drop.played | 0) + 1; // house numbers, to check the tuning on real play
-  st.drop.in = (st.drop.in || 0) + B.COST;
+  st.drop.in = (st.drop.in || 0) + wager;
   st.drop.out = (st.drop.out || 0) + out;
   p.drop.n = (p.drop.n | 0) + 1;
   p.drop.lastAt = now;
   p.drop.board = newDropBoard(rng);
   return {
     ok: true,
-    result: { seed: s, aim, board, slot: r.slot, slotId: r.slotId, land, stashWon, seeds, crate, prize, total: out },
+    result: { seed: s, aim, wager, board, slot: r.slot, slotId: r.slotId, land, stashWon, seeds, crate, prize, total: out },
     board: p.drop.board,
     stash: st.drop.stash,
   };
@@ -2220,7 +2227,7 @@ POST_ROUTES["/api/username"] = POST_ROUTES["/api/wallet/username"] = (b, p, toke
   return okMe(p, { username: r.username });
 };
 const RAID_ERR_STATUS = { no_raids_left: 429, bad_target: 404, unknown_player: 404, not_eligible: 403, self_target: 400, shielded: 409, target_shielded: 409 };
-const DROP_ERR_STATUS = { unknown_player: 404, bad_aim: 400, too_fast: 429, poor: 400 };
+const DROP_ERR_STATUS = { unknown_player: 404, bad_aim: 400, bad_wager: 400, too_fast: 429, poor: 400 };
 const SHOP_ERR_STATUS = { unknown_player: 404, not_for_sale: 403, boost_active: 409, shield_active: 409, shield_used_today: 429, unknown_crate: 404 };
 const WALLET_ERR_STATUS = { unknown_player: 404, no_nonce: 409, nonce_expired: 410, wallet_taken: 409, username_taken: 409, server_full: 503, too_many_dens: 429, den_exists: 409 };
 const DEV_ROUTES = {
