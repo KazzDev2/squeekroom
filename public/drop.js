@@ -421,9 +421,9 @@ async function load() {
   if (st.mode === "load" || st.mode === "noden") { // first numbers: no count-up, and tickHud only redraws changes
     st.mode = "aim"; st.shownWatts = st.watts; st.shownStash = st.stash;
     $("watts").textContent = fmt(st.watts); $("stash").textContent = fmt(st.stash);
-    if (st.wager > st.watts) setWager(COST); // a remembered wager they can't cover any more
   }
   if (st.mode === "aim" && me.drop) setBoard(me.drop.board);
+  if (st.mode === "aim") syncWager();
   renderHud();
 }
 function say(msg, ms = 1800) { st.msg = msg; st.msgUntil = performance.now() + ms; renderHud(); setTimeout(renderHud, ms + 30); }
@@ -519,19 +519,30 @@ function finish() {
 }
 
 // ---------- the wager ----------
-const WAGER_KEY = "sd_drop_wager";
-function setWager(v, typing = false) {
+// The slider is logarithmic: far left is the minimum, far right the whole balance, and small wagers stay
+// easy to pick even with millions. In between it lands on round numbers (two significant digits).
+const SLIDER_MAX = 1000;
+const wagerMax = () => Math.max(COST, Math.floor(st.watts));
+function sliderToWager(v) {
+  const max = wagerMax();
+  if (v <= 0 || max <= COST) return COST;
+  if (v >= SLIDER_MAX) return max;
+  const w = COST * Math.pow(max / COST, v / SLIDER_MAX), unit = Math.pow(10, Math.floor(Math.log10(w)) - 1);
+  return clamp(Math.round(w / unit) * unit, COST, max);
+}
+const wagerToSlider = (w) => (wagerMax() <= COST ? 0 : clamp(Math.round((SLIDER_MAX * Math.log(w / COST)) / Math.log(wagerMax() / COST)), 0, SLIDER_MAX));
+function setWager(v, from = "") { // from: the control being used, which keeps its own value
   const n = Math.floor(Number(v));
   st.wager = Number.isSafeInteger(n) && n >= COST ? n : COST;
-  try { localStorage.setItem(WAGER_KEY, String(st.wager)); } catch {}
-  if (!typing) $("wagerIn").value = String(st.wager);
-  for (const b of document.querySelectorAll("#wagerRow button")) b.classList.toggle("on", !b.dataset.pct && wagerOf(b) === st.wager); // a percentage moves with the balance: it just sets the amount
+  if (from !== "typing") $("wagerIn").value = String(st.wager);
+  if (from !== "slider") $("wagerRange").value = String(wagerToSlider(st.wager));
   renderHud();
 }
-const wagerOf = (b) => (b.dataset.pct ? Math.max(COST, Math.floor((st.watts * Number(b.dataset.pct)) / 100)) : Number(b.dataset.w));
-for (const b of document.querySelectorAll("#wagerRow button")) b.addEventListener("click", () => { setWager(wagerOf(b)); sfx("click"); });
-$("wagerIn").addEventListener("input", () => setWager($("wagerIn").value, true));
-$("wagerIn").addEventListener("change", () => setWager($("wagerIn").value));
+// the balance moved: keep the wager affordable and the slider honest
+function syncWager() { setWager(Math.min(st.wager, wagerMax()), document.activeElement === $("wagerIn") ? "typing" : document.activeElement === $("wagerRange") ? "slider" : ""); }
+$("wagerRange").addEventListener("input", () => setWager(sliderToWager(Number($("wagerRange").value)), "slider"));
+$("wagerIn").addEventListener("input", () => setWager($("wagerIn").value, "typing"));
+$("wagerIn").addEventListener("change", () => setWager(Math.min(Math.floor(Number($("wagerIn").value)) || COST, wagerMax())));
 
 // ---------- hud ----------
 function renderHud() {
@@ -571,7 +582,7 @@ function step(dt) {
     if (st.i >= n - 1) finish();
   } else if (st.mode === "done") {
     st.done -= dt;
-    if (st.done <= 0) { st.mode = "aim"; st.sim = null; setBoard(st.next.board); st.next = null; }
+    if (st.done <= 0) { st.mode = "aim"; st.sim = null; setBoard(st.next.board); st.next = null; syncWager(); }
   }
   for (const [k, v] of st.flash) { if (v - dt <= 0) st.flash.delete(k); else st.flash.set(k, v - dt); }
   st.rootWob = st.rootWob.map((w) => Math.max(0, w - dt * 3));
@@ -713,7 +724,7 @@ cv.addEventListener("pointermove", (e) => { if (st.mode === "aim" && (e.pointerT
 addEventListener("pointerup", () => { touching = false; });
 $("dropBtn").addEventListener("click", drop);
 addEventListener("keydown", (e) => {
-  if (document.activeElement === $("wagerIn")) { if (e.key === "Enter") $("wagerIn").blur(); return; } // typing a wager, not playing
+  if (document.activeElement === $("wagerIn") || document.activeElement === $("wagerRange")) { if (e.key === "Enter") document.activeElement.blur(); return; } // setting a wager, not playing
   if (e.key === "ArrowLeft" || e.key === "ArrowRight") { if (st.mode === "aim") st.aim = clamp(st.aim + (e.key === "ArrowLeft" ? -3 : 3), AIM_MIN, AIM_MAX); e.preventDefault(); }
   else if (e.key === " " || e.key === "Enter") { if (document.activeElement !== $("dropBtn")) { drop(); e.preventDefault(); } }
 });
@@ -723,9 +734,7 @@ if (SND) { SND.music("drop"); SND.button($("soundBtn")); }
 requestAnimationFrame(frame);
 fetch("/api/config").then((r) => r.json()).then((cfg) => {
   if (cfg.balance && cfg.balance.DROP) { COST = cfg.balance.DROP.COST; $("wagerIn").min = String(COST); }
-  let saved = null;
-  try { saved = localStorage.getItem(WAGER_KEY); } catch {}
-  setWager(saved || COST);
+  setWager(COST);
   for (const it of cfg.catalog || []) CATALOG.set(it.id, it);
 }).catch(() => {}).finally(() => { load(); });
 setInterval(() => { if (!document.hidden && (st.mode === "aim" || st.mode === "noden")) load(); }, 10_000); // the shared stash moves
