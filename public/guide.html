@@ -32,7 +32,8 @@ ul{margin:0;padding-left:20px}
 li{margin:4px 0}
 li ul{margin-top:4px}
 p{margin:4px 0}
-b[data-g]{font-weight:inherit}
+b[data-g]{font-weight:600}
+footer{color:var(--muted);font-size:12px;text-align:center;margin-top:20px}
 .scenes{display:flex;flex-wrap:wrap;justify-content:center;gap:12px;margin:4px 0 12px}
 .scenes figure{flex:1 1 240px;max-width:300px;margin:0}
 .scene{display:block;width:100%;height:auto;aspect-ratio:192/108;image-rendering:pixelated;border:2px solid var(--ink);border-radius:6px;background:#2a2620}
@@ -56,7 +57,7 @@ b[data-g]{font-weight:inherit}
     <li>Every block pays <b data-g="perBlock">10 W</b> on a basic wheel. Wheel upgrades raise that, up to <b data-g="wheelMax">3.5×</b>.</li>
     <li>When he sleeps, your bed earns instead, about <b data-g="bedHalf">half</b> as fast. Bed upgrades go up to <b data-g="bedMax">3.5×</b> too.</li>
     <li>Keep the tab open: watching adds <b data-g="live">+20%</b>.</li>
-    <li>When blocks come in fast, the wheel pays up to <b data-g="speed">+50%</b>.</li>
+    <li>When blocks come in fast, the wheel pays up to <b data-g="speed">+50%</b> more.</li>
     <li>New dens start with <b data-g="welcome">10,000 W</b>.</li>
   </ul>
 </section>
@@ -66,7 +67,7 @@ b[data-g]{font-weight:inherit}
   <div class="scenes"><figure><canvas class="scene" data-scene="2" width="192" height="108" role="img" aria-label="The wheel and bed upgrading tier by tier"></canvas><figcaption data-title="2"></figcaption></figure></div>
   <ul>
     <li>Spend Watts on furniture, rugs, wall decor, wallpaper, floors and skins. Drag things to move them; <b>F</b> turns them around.</li>
-    <li>A better den material (stone, iron, silver, gold, diamond) makes raids on you up to <b data-g="defense">25%</b> less likely to land.</li>
+    <li>Den material (stone, iron, silver, gold, diamond) makes raids on you fail more often, up to <b data-g="defense">25%</b> less likely to land.</li>
   </ul>
 </section>
 
@@ -75,13 +76,13 @@ b[data-g]{font-weight:inherit}
   <div class="scenes"><figure><canvas class="scene" data-scene="3" width="192" height="108" role="img" aria-label="Squeektoshi carrying Watts home from a richer den"></canvas><figcaption data-title="3"></figcaption></figure><figure><canvas class="scene" data-scene="4" width="192" height="108" role="img" aria-label="The top den's walls turning raids away"></canvas><figcaption data-title="4"></figcaption></figure></div>
   <ul>
     <li>Raids only open while Squeektoshi runs. You get <b data-g="perDay">10</b> a day; they come back at 00:00 UTC.</li>
-    <li>A den can raid, and be raided, once it has earned <b data-g="minEarned">5,000 W</b> from the wheel or bed.</li>
+    <li>Your den can raid, and be raided, once it has earned <b data-g="minEarned">5,000 W</b> from the wheel or bed.</li>
     <li>You can raid dens holding at least <b data-g="eligible">70%</b> of your Watts, or anyone who raided you in the last <b data-g="revenge">24 hours</b>.</li>
     <li>Pick a multiplier (<b data-g="mults">1.5× to 10×</b>) and a wager. The raid screen shows your chance. Higher multipliers pay more and land less often.</li>
-    <li>Win and you take (multiplier − 1) × your wager from them, up to <b data-g="lootCap">25%</b> of what they hold. On a crit (<b data-g="crit">5%</b> of wins) the game adds half again on top, and the other den doesn't pay for it.</li>
-    <li>Lose and your whole wager burns. The other den gets none of it.</li>
-    <li>Raiding someone richer than you is the better bet, so the richest dens can expect the most raids.</li>
-    <li>After a raid on you lands, nobody can raid you for <b data-g="bruise">10 minutes</b>.</li>
+    <li>Win and you take (multiplier − 1) × your wager from them, up to <b data-g="lootCap">25%</b> of what they hold. Now and then (<b data-g="crit">5%</b> of wins) a raid crits: the game adds half again on top, so it never costs them more.</li>
+    <li>Lose and your whole wager burns. Nobody gets it.</li>
+    <li>Raiding someone richer than you is the better bet. Being near the top makes you everyone's favourite target.</li>
+    <li>After someone raids you successfully, you get <b data-g="bruise">10 minutes</b> of peace.</li>
   </ul>
 </section>
 
@@ -90,15 +91,15 @@ b[data-g]{font-weight:inherit}
   <div class="scenes"><figure><canvas class="scene" data-scene="5" width="192" height="108" role="img" aria-label="A crate drops into the den, gets tapped, and pops open"></canvas><figcaption data-title="5"></figcaption></figure></div>
   <ul>
     <li>While you're watching, every block has a <b data-g="crateChance">1%</b> chance to drop a parcel on your floor. Tap it to open.</li>
-    <li>You can get up to <b data-g="cratesDay">5</b> a day and have <b data-g="cratesWaiting">3</b> waiting at once.</li>
-    <li>Most crates hold Watts (<b data-g="crateWatts">200–800 W</b>). Some hold a boost or a Raid Shield token, and once in a while something you can't buy anywhere.</li>
-    <li>Boosts and shield tokens wait in Your things. Tap one to see what it does, then tap it again to use it.
+    <li>Up to <b data-g="cratesDay">5</b> a day, and <b data-g="cratesWaiting">3</b> waiting at once.</li>
+    <li>Most hold Watts (<b data-g="crateWatts">200–800 W</b>). Some hold a boost or a Raid Shield token, and once in a while something you can't buy anywhere.</li>
+    <li>Boosts and shield tokens wait in Your things. Tap one to see what it does, tap it again to use it.
       <ul>
         <li>Double Wheel: <b data-g="dw">2× wheel Watts for 1 hour</b>.</li>
         <li>Deep Sleep: <b data-g="ds">+50% bed income for 8 hours</b>.</li>
         <li>Lucky Whisker: <b data-g="lw">+10 points on your next raid</b>.</li>
         <li>Wager Insurance: your next failed raid gives back <b data-g="wi">half</b> the wager.</li>
-        <li>Raid Shield: for <b data-g="shield">3 hours</b> nobody can raid you and you can't raid. You can use one a day.</li>
+        <li>Raid Shield: <b data-g="shield">3 hours</b> where nobody can raid you, and you can't raid either. Once a day.</li>
       </ul>
     </li>
   </ul>
@@ -116,10 +117,9 @@ b[data-g]{font-weight:inherit}
   <ul>
     <li>Tap the Burrow badge in your den. A drop costs <b data-g="dropCost">500 W</b>: aim, let go, and he bounces down into a chamber. Dead End pays <b data-g="payDead">0.2×</b>, Nest <b data-g="payNest">0.6×</b> and Pantry <b data-g="payPantry">1.4×</b>.</li>
     <li>Seeds on the roots pay a little, and more when you grab them in a row. Golden boards pay them double.</li>
-    <li>Every board shows one prize you can't get anywhere else, and hitting it wins it. If you already have it, you get Watts instead.</li>
-    <li>Prizes run from common through uncommon, rare and epic to legendary. Rarer ones turn up less often and sit in harder spots.</li>
+    <li>Every board shows one prize you can't get anywhere else. Hit it and it's yours. Rarer prizes turn up less often and sit in harder spots: common, uncommon, rare, epic, legendary. If you already have it, you get Watts instead.</li>
     <li>The Bounty is one pot shared by everyone. Every drop adds <b data-g="bountyFeed">25 W</b> to it. Land in the narrow slot in the middle and you take all of it, then it starts again at <b data-g="bountyStart">3,000 W</b>.</li>
-    <li>The burrow is a garden while he runs and moonlit while he sleeps. Golden boards are a crystal cave.</li>
+    <li>The burrow changes with Squeektoshi: a garden while he runs, moonlight while he sleeps, a crystal cave on golden boards.</li>
   </ul>
 </section>
 
@@ -128,6 +128,7 @@ b[data-g]{font-weight:inherit}
   <p>Tap 👁 next to a den on the leaderboard, a name in the raid feed, or Random den to look around someone else's place. If they're a fair target, you can raid them from there.</p>
 </section>
 
+<footer>Numbers on this page come straight from the game.</footer>
 </main>
 <script src="sprites.js"></script>
 <script src="sprites_crate.js"></script>
