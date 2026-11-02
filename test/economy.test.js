@@ -669,6 +669,48 @@ test("raid EV identity: p x M is the same for every multiplier (M only dials var
   near(evs[0], 1.1 * 0.9 * Math.pow(1.2, 0.25));
 });
 
+test("runningNow: needs a recent settled block on a fresh chain read, and no reading saying he stopped", () => {
+  const st = { lastAdvanceAt: T0 - 1000 };
+  assert.equal(S.runningNow(st, T0), true);
+  assert.equal(S.runningNow(st, T0, T0 - 1000), true);
+  assert.equal(S.runningNow(st, T0, 0), false); // the chain read is stale
+  assert.equal(S.runningNow({ lastAdvanceAt: null }, T0), false); // no block seen yet
+  assert.equal(S.runningNow({ lastAdvanceAt: T0 - BALANCE.IDLE_AFTER_MS }, T0), false); // no block for too long
+  const reading = (coreStatus) => ({ coreStatus, updatedAt: new Date(T0).toISOString() });
+  assert.equal(S.runningNow({ lastAdvanceAt: T0 - 1000, hamster: reading("IDLE") }, T0), false); // the blocks say yes, the reading says he stopped
+  assert.equal(S.runningNow({ lastAdvanceAt: T0 - BALANCE.IDLE_AFTER_MS - 1000, hamster: reading("ACTIVE") }, T0), false); // a reading alone never pays
+  assert.equal(S.runningNow({ lastAdvanceAt: T0 - 1000, hamster: reading("ACTIVE") }, T0), true);
+});
+
+test("raid: a win while he's running pays 10% more, minted; the defender and a loss don't change", () => {
+  assert.equal(RA.RUN_BONUS_PCT, 10);
+  const st = raidWorld();
+  const a = st.players[TA], d = st.players[TB], aw = a.watts, dw = d.watts;
+  const body = { target: pidOf(TB), stake: 1000, mult: 3 };
+  st.lastAdvanceAt = T0 - 1000;
+  assert.equal(S.raidStatus(st, a, T0, T0).runPct, 10);
+  const r = S.applyRaid(st, TA, body, T0, { rng: seq(WIN, 0.99), readAt: T0 });
+  assert.deepEqual([r.result.loot, r.result.bonus, r.result.runBonus], [2000, 0, 200]);
+  assert.deepEqual([a.watts, d.watts, st.minted, r.feed.amount, r.feed.bonus], [aw + 2200, dw - 2000, 200, 2000, 200]);
+
+  const crit = raidWorld(); // a crit and the run bonus both come off the loot; they don't multiply
+  crit.lastAdvanceAt = T0 - 1000;
+  const c = S.applyRaid(crit, TA, body, T0, { rng: seq(WIN, 0.01), readAt: T0 });
+  assert.deepEqual([c.result.loot, c.result.bonus, c.result.runBonus, crit.minted], [2000, 1000, 200, 1200]);
+
+  const asleep = raidWorld(); // asleep: no bonus
+  asleep.lastAdvanceAt = T0 - BALANCE.IDLE_AFTER_MS - 60_000;
+  assert.equal(S.raidStatus(asleep, asleep.players[TA], T0, T0).runPct, 0);
+  const z = S.applyRaid(asleep, TA, body, T0, { rng: seq(WIN, 0.99), readAt: T0 });
+  assert.deepEqual([z.result.runBonus, asleep.players[TA].watts - aw], [0, 2000]);
+  assert.equal(asleep.minted || 0, 0);
+
+  const lost = raidWorld(); // a loss burns the same whether he's running or not
+  lost.lastAdvanceAt = T0 - 1000;
+  const l = S.applyRaid(lost, TA, body, T0, { rng: seq(LOSE), readAt: T0 });
+  assert.deepEqual([l.result.win, l.result.runBonus, lost.players[TA].watts, lost.minted || 0], [false, undefined, aw - 1000, 0]);
+});
+
 test("resolveRaid: a loss uses one roll and loses the whole stake", () => {
   const a = fresh({ watts: 10_000 }), d = fresh({ watts: 10_000 });
   const rng = seq(LOSE);
@@ -924,7 +966,7 @@ test("raid allowance: 10 per attacker per UTC day, being raided is unlimited", (
   for (let n = 0; n < RA.PER_DAY; n++) assert.ok(raid(st, TA, TB, 500, 2, at(day + n)).ok, `raid ${n}`);
   const r = raid(st, TA, TB, 500, 2, at(day + 20));
   assert.deepEqual([r.ok, r.error, r.resetMs], [false, "no_raids_left", 14 * 3600_000 - 20]);
-  assert.deepEqual(S.raidStatus(st, st.players[TA], day + 60_000), { raidsLeft: 0, perDay: RA.PER_DAY, resetMs: 14 * 3600_000 - 60_000, ready: true, earned: RA.MIN_EARNED, needEarned: RA.MIN_EARNED, shielded: false });
+  assert.deepEqual(S.raidStatus(st, st.players[TA], day + 60_000), { raidsLeft: 0, perDay: RA.PER_DAY, resetMs: 14 * 3600_000 - 60_000, runPct: 0, ready: true, earned: RA.MIN_EARNED, needEarned: RA.MIN_EARNED, shielded: false });
   // others can still raid the same room
   for (let n = 0; n < 3; n++) assert.ok(raid(st, TC, TB, 100, 2, at(day + 100 + n)).ok);
   // the count resets at 00:00 UTC
@@ -945,7 +987,7 @@ test("raids are open all the time: while he sleeps, and with no chain reading at
   const st = raidWorld();
   st.lastAdvanceAt = T0 - BALANCE.IDLE_AFTER_MS - 60_000; // long asleep
   assert.equal(S.chainIdle(st.lastAdvanceAt, T0), true);
-  assert.deepEqual(S.raidStatus(st, st.players[TA], T0), { raidsLeft: RA.PER_DAY, perDay: RA.PER_DAY, resetMs: 86_400_000 - (T0 % 86_400_000), ready: true, earned: RA.MIN_EARNED, needEarned: RA.MIN_EARNED, shielded: false });
+  assert.deepEqual(S.raidStatus(st, st.players[TA], T0), { raidsLeft: RA.PER_DAY, perDay: RA.PER_DAY, resetMs: 86_400_000 - (T0 % 86_400_000), runPct: 0, ready: true, earned: RA.MIN_EARNED, needEarned: RA.MIN_EARNED, shielded: false });
   const body = { target: pidOf(TB), stake: 500, mult: 2 };
   assert.ok(S.applyRaid(st, TA, body, T0, { rng: seq(LOSE) }).ok);
   st.lastAdvanceAt = null; // no chain seen yet
@@ -1043,7 +1085,7 @@ test("leaderboard: by balance, shape, per-viewer raidable/you flags, 10 s cache,
   assert.deepEqual(lb.rows.map((r) => r.nick), ["def", "atk", "poor"]);
   assert.deepEqual(lb.rows[1], { rank: 2, publicId: pidOf(TA), nick: "atk", name: "atk", verified: false, watts: 10_000, lifetimeWatts: 9000, roomTier: 2, fresh: false, shielded: false, raidable: false, revenge: false, you: true });
   assert.deepEqual(lb.rows.map((r) => r.raidable), [true, false, true]); // 8k >= 70% of 10k
-  assert.deepEqual(lb.raid, { raidsLeft: RA.PER_DAY, perDay: RA.PER_DAY, resetMs: 86_400_000 - (T0 % 86_400_000), ready: true, earned: 9000, needEarned: RA.MIN_EARNED, shielded: false });
+  assert.deepEqual(lb.raid, { raidsLeft: RA.PER_DAY, perDay: RA.PER_DAY, resetMs: 86_400_000 - (T0 % 86_400_000), runPct: 0, ready: true, earned: 9000, needEarned: RA.MIN_EARNED, shielded: false });
   assert.equal(lb.total, 3);
   assert.ok(!JSON.stringify(lb).includes(TA), "leaderboard must not leak tokens");
   // the richest room has no targets; the poorest can hit everyone

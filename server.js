@@ -100,6 +100,7 @@ const BALANCE = {
     P_MAX_PCT: 90,
     CRIT_CHANCE_PCT: 5, // win: loot = ceil((M - 1) x stake) <= LOOT_MAX_DEF_PCT of the defender; a crit adds
     CRIT_MULT_PCT: 150, // loot x (CRIT_MULT - 100)% on top, paid by the game, not the defender
+    RUN_BONUS_PCT: 10, // a win while he's running (runningNow): loot x this % on top, also paid by the game
     LOOT_MAX_DEF_PCT: 25, // one raid takes at most 25% of the defender's balance
     STAKE_MIN: 50, // stake >= max(STAKE_MIN, STAKE_MIN_BAL_PCT of the attacker's balance)
     STAKE_MIN_BAL_PCT: 5, // stake <= min(balance, cap / (M - 1)): see stakeBounds()
@@ -682,6 +683,13 @@ function asleep(st, now = Date.now(), chainReadAt = null) {
   if (statusFresh(h, now)) return h.coreStatus !== "ACTIVE" && !(now - (st.lastStatusActiveAt || 0) < STATUS_PAUSE_MS);
   return chainIdle(st.lastAdvanceAt, now, chainReadAt);
 }
+// Running right now, for anything that pays: a settled block recently, on a fresh read of the chain, and
+// the live reading doesn't say he stopped. A status reading alone never counts (see the speed bonus).
+function runningNow(st, now = Date.now(), readAt = null) {
+  if (!Number.isFinite(st.lastAdvanceAt) || st.lastAdvanceAt <= 0) return false;
+  if (readAt != null && !(now - readAt <= CHAIN_FRESH_MS)) return false;
+  return now - st.lastAdvanceAt < BALANCE.IDLE_AFTER_MS && !asleep(st, now, readAt);
+}
 
 // ---------- bed income ----------
 // While he sleeps the poller credits every room for real elapsed time (never an amount from a
@@ -1131,13 +1139,13 @@ function raidChance(attacker, defender, multPct) {
   if (!BALANCE.RAID.MULT_PCT.includes(multPct)) return 0;
   return raidOdds(multPct, raidDefensePct(defender), wealthTilt(attacker.watts, defender.watts), isPunchUp(attacker.watts, defender.watts));
 }
-// One resolution, rolls in a fixed order: win, then crit (a loss uses one roll).
+// One resolution, rolls in a fixed order: win, then crit (a loss uses one roll). runPct adds runBonus = loot x runPct%, also paid by the game.
 // loot (taken from the defender) is ceil((M - 1) x stake), capped at LOOT_MAX_DEF_PCT of their balance,
 // so no single raid can empty a room. A crit adds bonus = loot x (CRIT_MULT - 100)%, paid by the game.
 // A loss loses the whole stake, and it all burns.
 // oddsPts (Lucky Whisker) adds percentage points after all other maths, still capped at P_MAX.
 // Pure: returns the outcome, mutates nothing.
-function resolveRaid(attacker, defender, stake, multPct, rng = Math.random, oddsPts = 0) {
+function resolveRaid(attacker, defender, stake, multPct, rng = Math.random, oddsPts = 0, runPct = 0) {
   const R = BALANCE.RAID;
   let p = raidChance(attacker, defender, multPct);
   if (oddsPts > 0 && p > 0) p = Math.min(R.P_MAX_PCT / 100, p + oddsPts / 100);
@@ -1145,7 +1153,7 @@ function resolveRaid(attacker, defender, stake, multPct, rng = Math.random, odds
   const loot = Math.max(0, Math.min(Math.ceil(((multPct - 100) * stake) / 100), lootCap(defender.watts)));
   const crit = rng() < R.CRIT_CHANCE_PCT / 100;
   const bonus = crit ? Math.floor((loot * (R.CRIT_MULT_PCT - 100)) / 100) : 0;
-  return { win: true, p, loot, crit, bonus };
+  return { win: true, p, loot, crit, bonus, runBonus: Math.floor((loot * runPct) / 100) };
 }
 const lootCap = (defWatts) => Math.floor((Math.max(0, defWatts) * BALANCE.RAID.LOOT_MAX_DEF_PCT) / 100);
 // Stake bounds: min = max(50, 5% of the balance); max = the balance, and with a target and a
@@ -1185,10 +1193,9 @@ function raidEligibility(attacker, defender, now) {
   const revenge = pendingRevenge(attacker, defender.publicId, now);
   return revenge ? { ok: true, revenge } : { ok: false, error: "not_eligible" };
 }
-// Raids are open only while he RUNS: height observed, chain reading fresh (live mode), not asleep.
-// With a state `st`, asleep() decides (the live reading first); without one, the chain alone.
-function raidStatus(st, player, now = Date.now()) {
-  return { raidsLeft: raidsLeft(player, now), perDay: BALANCE.RAID.PER_DAY, resetMs: msToUtcMidnight(now),
+const raidRunPct = (st, now, readAt) => (runningNow(st, now, readAt) ? BALANCE.RAID.RUN_BONUS_PCT : 0);
+function raidStatus(st, player, now = Date.now(), readAt = chainReadAt()) {
+  return { raidsLeft: raidsLeft(player, now), perDay: BALANCE.RAID.PER_DAY, resetMs: msToUtcMidnight(now), runPct: raidRunPct(st, now, readAt),
     ready: raidReady(player), earned: Math.max(0, player.lifetimeWatts | 0), needEarned: BALANCE.RAID.MIN_EARNED, shielded: boughtShieldUp(player, now) };
 }
 
@@ -1226,7 +1233,7 @@ const pushRing = (arr, entry, max) => {
 // Refusals use no raid. Lucky Whisker is spent on any resolved raid; Wager Insurance only on a loss.
 // Mutates st only
 // on success. opts.rng: injectable for tests.
-function applyRaid(st, token, body, now = Date.now(), { rng = Math.random } = {}) {
+function applyRaid(st, token, body, now = Date.now(), { rng = Math.random, readAt = chainReadAt() } = {}) {
   const R = BALANCE.RAID;
   const atk = getPlayer(st, token);
   if (!atk) return fail("unknown_player");
@@ -1250,12 +1257,12 @@ function applyRaid(st, token, body, now = Date.now(), { rng = Math.random } = {}
 
   // the whisker is only spent when it can help: odds already at P_MAX leave it armed for the next raid
   const lucky = boostActive(atk, "lucky_whisker", now) && raidChance(atk, def, multPct) < R.P_MAX_PCT / 100;
-  const r = resolveRaid(atk, def, stake, multPct, rng, lucky ? BALANCE.BOOSTS.lucky_whisker.ODDS_PTS : 0);
+  const r = resolveRaid(atk, def, stake, multPct, rng, lucky ? BALANCE.BOOSTS.lucky_whisker.ODDS_PTS : 0, raidRunPct(st, now, readAt));
   if (lucky) { atk.effects.lucky_whisker = false; r.lucky = true; }
   if (r.win) {
     def.watts -= r.loot;
-    atk.watts += r.loot + r.bonus;
-    if (r.bonus > 0) st.minted = (Number.isFinite(st.minted) ? st.minted : 0) + r.bonus; // supply accounting
+    atk.watts += r.loot + r.bonus + r.runBonus;
+    if (r.bonus + r.runBonus > 0) st.minted = (Number.isFinite(st.minted) ? st.minted : 0) + r.bonus + r.runBonus; // supply accounting
     def.shield = { until: now + BALANCE.SHIELD.BRUISE_MS, kind: "bruise" }; // a bruise: a few minutes of peace
   } else {
     const insured = boostActive(atk, "wager_insurance", now);
@@ -1272,7 +1279,7 @@ function applyRaid(st, token, body, now = Date.now(), { rng = Math.random } = {}
   if (!Array.isArray(def.raidedBy)) def.raidedBy = [];
   def.raidedBy = def.raidedBy.filter((e) => e && now - e.at < R.REVENGE_WINDOW_MS);
   pushRing(def.raidedBy, { pid: atk.publicId, at: now, avenged: false }, R.RAIDED_BY_MAX);
-  const feed = { at: now, atk: displayName(atk), atkId: atk.publicId, def: displayName(def), defId: def.publicId, win: r.win, amount: r.win ? r.loot : stake - (r.refund || 0), crit: r.win ? r.crit : false, bonus: r.win ? r.bonus : 0 }; // amount: what the defender lost (a loss: what burned); bonus: a crit's extra, from the game
+  const feed = { at: now, atk: displayName(atk), atkId: atk.publicId, def: displayName(def), defId: def.publicId, win: r.win, amount: r.win ? r.loot : stake - (r.refund || 0), crit: r.win ? r.crit : false, bonus: r.win ? r.bonus + r.runBonus : 0 }; // amount: what the defender lost (a loss: what burned); bonus: the crit's and run's extra, from the game
   if (!Array.isArray(st.raidFeed)) st.raidFeed = [];
   pushRing(st.raidFeed, feed, R.FEED_MAX);
   invalidateLeaderboard(st);
@@ -1359,7 +1366,7 @@ let state = {
   born: null,
   certSerial: 0,
   burned: 0, // watts destroyed by lost raid stakes (supply accounting)
-  minted: 0, // watts created by raid crit bonuses (supply accounting)
+  minted: 0, // watts created by raid crit and run bonuses (supply accounting)
   lastGolden: null, // newest golden block {height, at}
   raidFeed: [], // last BALANCE.RAID.FEED_MAX raids, oldest first
   players: {},
@@ -2071,7 +2078,7 @@ function snapshot(token, ip = null) {
     night: night ? { startedAt: night.startedAt, endsAt: night.endsAt } : null,
     chain: state.chain || null,
     hamster: state.hamster,
-    idle: asleep(state, now, readAt), // asleep (live reading, else the chain): bed income flows, raids are closed
+    idle: asleep(state, now, readAt), // asleep (live reading, else the chain): bed income flows
     speedPct: currentSpeedPct(now), // speed bonus on wheel income (100 = none), from the chain's cadence
     golden: state.lastGolden || null, // newest golden block {height, at}: 10x wheel watts for everyone watching
     raid: viewer ? raidStatus(state, viewer, now) : null, // this viewer's raids left and what's stopping them
@@ -2351,7 +2358,7 @@ module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certElig
 // Extra helpers for tests (the plan's six names above stay the primary surface).
 Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
-  raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidStatus, applyRaid,
+  runningNow, raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS, viewerFlags, denView, visitDen, randomDen, allowVisit, VISIT_LIMIT,
   WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername, usernameProblem, createDen, purgeNameless, runMigrations,
   REPLAY_NIGHT, REPLAY_NONSTOP_NIGHT, REPLAY_API_SINK, REPLAY_MIN_SLEEP_MS, replaySchedule, replayLocate, replayCumulativeBlocks, cumulativeBlocks: replayCumulativeBlocks,
