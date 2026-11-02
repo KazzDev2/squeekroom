@@ -58,7 +58,7 @@ const TOKEN_RE = /^[A-Za-z0-9_-]{16,64}$/;
 // ---------- balance (all tuning lives here) ----------
 const BALANCE = {
   BASE_WATTS_PER_BLOCK: 10,
-  WHEEL_MULT_PCT: [100, 125, 160, 200, 260, 350], // tier 0..5
+  WHEEL_MULT_PCT: [100, 125, 160, 200], // tier 0..3: upgrades stop here so late watts go to the den
   LIVE_BONUS_PCT: 120,
   HEARTBEAT_WINDOW_MS: 90_000,
   HEARTBEAT_MIN_INTERVAL_MS: 20_000,
@@ -72,7 +72,7 @@ const BALANCE = {
   // multiplier x watching bonus, online or not. Credited from the poller by elapsed time (exact
   // integers via a carry). Replay at 3x: 37.2 W/min at tier 0 (awake ~74), live: 20 W/min.
   BED_AWAKE_PCT: 50,
-  BED_MULT_PCT: [100, 125, 160, 200, 260, 350], // bedTier 0..5
+  BED_MULT_PCT: [100, 125, 160, 200], // bedTier 0..3
   BED_TICK_MAX_MS: 60_000, // one poller tick credits at most this much time (no catch-up after downtime)
   // Speed bonus: wheel income x speedPct/100, where speedPct = clamp(100 x blocks/min over the last
   // WINDOW_MS / baseline, 100, MAX_PCT). Baseline: BASE_BPM live; in replay, the schedule's mean
@@ -92,7 +92,7 @@ const BALANCE = {
   RAID: {
     EDGE_PCT: 110,
     MULT_PCT: [150, 200, 300, 500, 1000], // M = 1.5, 2, 3, 5, 10 ("Heist")
-    DEFENSE_PCT: [0, 5, 10, 15, 20, 25], // by the DEFENDER's roomTier 0..5
+    DEFENSE_PCT: [0, 5, 10, 15, 15, 15], // by the DEFENDER's roomTier 0..5: Gold and Diamond are looks only
     TILT_EXP: 0.25, // tilt = (defenderWatts / attackerWatts) ^ TILT_EXP, clamped below
     TILT_MIN_PCT: 75,
     TILT_MAX_PCT: 175, // reached at ~9.4x the attacker's watts
@@ -213,14 +213,10 @@ const CATALOG = [
   wheel(1, "Oiled Bearings", 10_000),
   wheel(2, "Copper Dynamo", 36_000),
   wheel(3, "Flywheel Hub", 100_000),
-  wheel(4, "Superconductor Rim", 280_000),
-  wheel(5, "Squeektoshi Prime Wheel", 800_000),
   // beds (strictly in order; raise the income while he sleeps). Tier 0 is the free straw mat.
   bed(1, "Teacup Nest", 6_000),
   bed(2, "Memory Foam Pad", 20_000),
   bed(3, "Canopy Bed", 60_000),
-  bed(4, "Heated Bunk", 160_000),
-  bed(5, "Zero-G Pod", 400_000),
   // room material (strictly in order). Tier 0 is wood.
   roomMat(1, "Stone", 20_000),
   roomMat(2, "Iron", 60_000),
@@ -472,6 +468,8 @@ const LEGACY_FIELDS = ["lastSpinAt", "manualDay", "manualMsToday", "manualFrac"]
 function patchPlayer(p, token) {
   if (!p.publicId && typeof token === "string") p.publicId = publicIdFor(token);
   if (!Number.isInteger(p.bedTier)) p.bedTier = 0;
+  p.bedTier = Math.min(p.bedTier, BALANCE.BED_MULT_PCT.length - 1); // the top tiers were removed before anyone reached them
+  if (Number.isInteger(p.wheelTier)) p.wheelTier = Math.min(p.wheelTier, BALANCE.WHEEL_MULT_PCT.length - 1);
   if (!Number.isFinite(p.bedFrac)) p.bedFrac = 0;
   if (!Number.isInteger(p.roomTier)) p.roomTier = 0;
   if (!Number.isFinite(p.lifetimeWatts)) p.lifetimeWatts = 0; // raidReady() reads it

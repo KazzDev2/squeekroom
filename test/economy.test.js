@@ -17,7 +17,7 @@ test("module exports the plan's six names", () => {
   for (const k of ["BALANCE", "CATALOG", "accrue", "canBuy", "validatePlacement", "certEligible"]) assert.ok(k in S, k);
 });
 
-test("catalog: unique ids, schema, defaults free, wheel tiers 1..5", () => {
+test("catalog: unique ids, schema, defaults free, wheel tiers 1..3", () => {
   const ids = new Set(CATALOG.map((i) => i.id));
   assert.equal(ids.size, CATALOG.length);
   for (const i of CATALOG) {
@@ -28,9 +28,9 @@ test("catalog: unique ids, schema, defaults free, wheel tiers 1..5", () => {
   const free = CATALOG.filter((i) => i.price === 0 && !i.crate && !i.drop).map((i) => i.id).sort();
   assert.deepEqual(free, ["fl_pine", "fl_straw", "skin_classic", "wp_dirt", "wp_plain"]);
   const wheels = CATALOG.filter((i) => i.cat === "wheel");
-  assert.deepEqual(wheels.map((w) => w.tier), [1, 2, 3, 4, 5]);
-  assert.deepEqual(wheels.map((w) => w.price), [10000, 36000, 100000, 280000, 800000]);
-  assert.deepEqual(wheels.map((w) => w.multPct), [125, 160, 200, 260, 350]);
+  assert.deepEqual(wheels.map((w) => w.tier), [1, 2, 3]);
+  assert.deepEqual(wheels.map((w) => w.price), [10000, 36000, 100000]);
+  assert.deepEqual(wheels.map((w) => w.multPct), [125, 160, 200]);
   const seed = S.CATALOG_BY_ID.get("fur_seed_bowl");
   assert.equal(seed.price, 1200);
   assert.equal(seed.w, 1);
@@ -58,7 +58,7 @@ test("accrual: delta x 10 x tier multiplier", () => {
   assert.equal(accrue(p, 10, T0), 100);
   assert.equal(p.watts, W0 + 100);
   assert.equal(p.lifetimeWatts, 100);
-  for (const [tier, per10] of [[1, 125], [2, 160], [3, 200], [4, 260], [5, 350]]) {
+  for (const [tier, per10] of [[1, 125], [2, 160], [3, 200]]) {
     const q = fresh({ wheelTier: tier });
     assert.equal(accrue(q, 10, T0), per10, `tier ${tier}`);
   }
@@ -78,8 +78,8 @@ test("accrual: live bonus 1.2x only while heartbeat is within 90 s", () => {
 test("accrual: always integers (rounded)", () => {
   const p = fresh({ wheelTier: 1 });
   assert.equal(accrue(p, 1, T0), 13); // 12.5 -> 13
-  const q = fresh({ wheelTier: 4, lastHeartbeat: T0 });
-  assert.equal(accrue(q, 1, T0), 31); // 31.2 -> 31
+  const q = fresh({ wheelTier: 1, lastHeartbeat: T0 });
+  assert.equal(accrue(q, 1, T0), 15); // 15.0 at the 1.25x tier, watching
   for (let i = 0; i < 50; i++) accrue(q, i + 1, T0);
   assert.ok(Number.isInteger(q.watts) && Number.isInteger(q.lifetimeWatts));
 });
@@ -159,14 +159,15 @@ test("buy: deducts server-side price, placeables stack", () => {
 test("buy: wheel tiers strictly in order", () => {
   const p = fresh({ watts: 1_000_000 });
   assert.equal(canBuy(p, "wheel_t2").error, "wrong_tier");
-  assert.equal(canBuy(p, "wheel_t5").error, "wrong_tier");
+  assert.equal(canBuy(p, "wheel_t3").error, "wrong_tier");
   assert.ok(S.applyBuy(p, "wheel_t1").ok);
   assert.equal(p.wheelTier, 1);
   assert.equal(canBuy(p, "wheel_t1").error, "already_owned");
   assert.ok(S.applyBuy(p, "wheel_t2").ok);
   assert.equal(p.wheelTier, 2);
   assert.equal(p.watts, 1_000_000 - 10_000 - 36_000);
-  assert.equal(canBuy(p, "wheel_t4").error, "wrong_tier");
+  assert.ok(S.applyBuy(p, "wheel_t3").ok);
+  assert.equal(canBuy(p, "wheel_t4").error, "unknown_item"); // upgrades stop at T3
 });
 
 test("buy: skins, wallpapers, floors are single-copy; defaults already owned", () => {
@@ -354,25 +355,25 @@ test("chainIdle: asleep after IDLE_AFTER_MS without a settled block; stale reads
 // ---------- bed income ----------
 test("bed: balance constants", () => {
   assert.equal(BALANCE.BED_AWAKE_PCT, 50);
-  assert.deepEqual(BALANCE.BED_MULT_PCT, [100, 125, 160, 200, 260, 350]);
+  assert.deepEqual(BALANCE.BED_MULT_PCT, [100, 125, 160, 200]);
   assert.equal(BALANCE.BED_TICK_MAX_MS, 60_000);
   assert.equal(S.bedWattsPerMin(fresh()), 20); // 50% of 10 W/block x the 4 blocks/min live baseline
-  assert.equal(S.bedWattsPerMin(fresh({ bedTier: 5 })), 70);
+  assert.equal(S.bedWattsPerMin(fresh({ bedTier: 3 })), 40);
   assert.equal(S.bedMultPct(fresh({ bedTier: 3 })), 200);
 });
 
 test("bed: 20 W/min (live baseline) x bed multiplier x watching bonus", () => {
   const ten = 10 * 60_000;
   assert.equal(S.bedCredit(fresh(), ten, T0), 200);
-  for (const [tier, per10] of [[1, 250], [2, 320], [3, 400], [4, 520], [5, 700]]) {
+  for (const [tier, per10] of [[1, 250], [2, 320], [3, 400]]) {
     const p = fresh({ bedTier: tier });
     assert.equal(S.bedCredit(p, ten, T0), per10, `tier ${tier}`);
     assert.equal(p.lifetimeWatts, per10);
   }
   const w = fresh({ lastHeartbeat: T0 - 30_000 }); // watching: 1.2x
   assert.equal(S.bedCredit(w, ten, T0), 240);
-  const w5 = fresh({ bedTier: 5, lastHeartbeat: T0 });
-  assert.equal(S.bedCredit(w5, ten, T0), 840); // 20 x 3.5 x 1.2 x 10
+  const w3 = fresh({ bedTier: 3, lastHeartbeat: T0 });
+  assert.equal(S.bedCredit(w3, ten, T0), 480); // 20 x 2 x 1.2 x 10
   assert.equal(S.bedCredit(fresh(), 0, T0), 0);
   assert.equal(S.bedCredit(fresh(), -5, T0), 0);
 });
@@ -385,7 +386,7 @@ test("bed: fractional carry is exact (integers only, nothing lost)", () => {
   assert.equal(p.bedFrac, 0);
   assert.equal(p.watts, W0 + 1);
   assert.equal(p.activeDays, 1);
-  for (let tier = 0; tier <= 5; tier++) {
+  for (let tier = 0; tier <= 3; tier++) {
     const q = fresh({ bedTier: tier, lastHeartbeat: tier % 2 ? T0 : 0 });
     let ms = 0;
     for (let i = 0; i < 500; i++) {
@@ -425,11 +426,11 @@ test("accrueBed: every player while asleep, 60 s cap per tick, nothing while awa
 });
 
 // ---------- bed + room ladders ----------
-test("catalog: bed and room ladders (tiers 1..5, not placeable); teacup bed stays a cosmetic", () => {
+test("catalog: bed tiers 1..3 and room tiers 1..5 (not placeable); teacup bed stays a cosmetic", () => {
   const beds = CATALOG.filter((i) => i.cat === "bed");
-  assert.deepEqual(beds.map((b) => b.id), ["bed_t1", "bed_t2", "bed_t3", "bed_t4", "bed_t5"]);
-  assert.deepEqual(beds.map((b) => b.price), [6000, 20000, 60000, 160000, 400000]);
-  assert.deepEqual(beds.map((b) => b.multPct), [125, 160, 200, 260, 350]);
+  assert.deepEqual(beds.map((b) => b.id), ["bed_t1", "bed_t2", "bed_t3"]);
+  assert.deepEqual(beds.map((b) => b.price), [6000, 20000, 60000]);
+  assert.deepEqual(beds.map((b) => b.multPct), [125, 160, 200]);
   const rooms = CATALOG.filter((i) => i.cat === "room");
   assert.deepEqual(rooms.map((r) => r.tier), [1, 2, 3, 4, 5]);
   assert.deepEqual(rooms.map((r) => r.price), [20000, 60000, 160000, 400000, 900000]);
@@ -444,7 +445,7 @@ test("buy: bed tiers strictly in order, set bedTier, single copy", () => {
   const p = fresh({ watts: 1_000_000 });
   assert.equal(p.bedTier, 0);
   assert.equal(canBuy(p, "bed_t2").error, "wrong_tier");
-  assert.equal(canBuy(p, "bed_t5").error, "wrong_tier");
+  assert.equal(canBuy(p, "bed_t3").error, "wrong_tier");
   assert.ok(S.applyBuy(p, "bed_t1").ok);
   assert.equal(p.bedTier, 1);
   assert.equal(p.owned.bed_t1, 1);
@@ -452,7 +453,7 @@ test("buy: bed tiers strictly in order, set bedTier, single copy", () => {
   assert.ok(S.applyBuy(p, "bed_t2").ok);
   assert.equal(p.bedTier, 2);
   assert.equal(canBuy(p, "bed_t1").error, "already_owned");
-  assert.equal(canBuy(p, "bed_t4").error, "wrong_tier");
+  assert.equal(canBuy(p, "bed_t4").error, "unknown_item"); // upgrades stop at T3
   assert.equal(p.watts, 1_000_000 - 6000 - 20000);
   assert.equal(p.wheelTier, 0); // ladders are independent
   assert.equal(p.roomTier, 0);
@@ -576,7 +577,7 @@ const raid = (st, token, target, stake, mult, now = T0, rng = seq(LOSE)) => S.ap
 test("raid: balance knobs", () => {
   assert.equal(RA.EDGE_PCT, 110);
   assert.deepEqual(RA.MULT_PCT, [150, 200, 300, 500, 1000]);
-  assert.deepEqual(RA.DEFENSE_PCT, [0, 5, 10, 15, 20, 25]);
+  assert.deepEqual(RA.DEFENSE_PCT, [0, 5, 10, 15, 15, 15]); // Gold and Diamond are looks only
   assert.equal(RA.DEF_SHARE_PCT, undefined); // failed raids pay the defender nothing
   assert.equal(RA.MIN_EARNED, 5000);
   assert.deepEqual([RA.TILT_EXP, RA.TILT_MIN_PCT, RA.TILT_MAX_PCT, RA.P_MIN_PCT, RA.P_MAX_PCT], [0.25, 75, 175, 2, 90]);
@@ -600,7 +601,7 @@ test("raidChance: defense ladder by the defender's room tier", () => {
   const tilt = S.wealthTilt(10_000, 8000); // a poorer target: no punch-up floor
   for (let tier = 0; tier <= 5; tier++) {
     const d = fresh({ watts: 8000, roomTier: tier });
-    near(S.raidChance(a, d, 200), 0.55 * (1 - [0, 0.05, 0.1, 0.15, 0.2, 0.25][tier]) * tilt, `tier ${tier}`);
+    near(S.raidChance(a, d, 200), 0.55 * (1 - [0, 0.05, 0.1, 0.15, 0.15, 0.15][tier]) * tilt, `tier ${tier}`);
   }
 });
 
@@ -618,7 +619,7 @@ test("raidChance: punching up (target >= your watts) never drops below 1/M", () 
   // a diamond room at equal wealth: the floor wins at every multiplier
   for (const m of RA.MULT_PCT) near(S.raidChance(a, fresh({ watts: 10_000, roomTier: 5 }), m), 100 / m);
   // revenge on a much poorer diamond room stays below 1/M
-  near(S.raidChance(a, fresh({ watts: 100, roomTier: 5 }), 200), 0.55 * 0.75 * 0.75);
+  near(S.raidChance(a, fresh({ watts: 100, roomTier: 5 }), 200), 0.55 * 0.85 * 0.75);
   // a rich wood target is already above the floor: unchanged
   near(S.raidChance(a, fresh({ watts: 20_000 }), 300), (1.1 / 3) * Math.pow(2, 0.25));
   // raidOdds without the flag is the plain formula
@@ -648,9 +649,9 @@ test("raidChance: clamped to [0.02, 0.90]", () => {
   near(S.raidOdds(150, 0, 1.2), 0.88);
   assert.equal(S.raidOdds(1000, 90, 0.75), 0.02); // 0.00825 raw
   assert.equal(S.raidChance(fresh({ watts: 100 }), fresh({ watts: 1e9 }), 150), 0.9);
-  // with the shipped knobs the floor is never reached: min p = 0.11 x 0.75 x 0.75
+  // with the shipped knobs the floor is never reached: min p = 0.11 x 0.85 x 0.75
   const worst = S.raidChance(fresh({ watts: 1e9 }), fresh({ watts: 1, roomTier: 5 }), 1000);
-  near(worst, 0.11 * 0.75 * 0.75);
+  near(worst, 0.11 * 0.85 * 0.75);
   assert.ok(worst > 0.02);
 });
 
@@ -2543,4 +2544,16 @@ test("visits: per-address rate limit", () => {
   assert.equal(ok, S.VISIT_LIMIT.MAX);
   assert.equal(S.allowVisit(ip, T0 + S.VISIT_LIMIT.WINDOW_MS), true); // a new window
   assert.equal(S.allowVisit(null, T0), true);
+});
+
+test("upgrade cap: wheel and bed stop at T3, Gold and Diamond dens add no defence, older dens are pulled back", () => {
+  assert.equal(BALANCE.WHEEL_MULT_PCT.at(-1), 200);
+  assert.equal(BALANCE.BED_MULT_PCT.at(-1), 200);
+  assert.ok(CATALOG.some((i) => i.id === "room_t5"), "Diamond is still on sale");
+  const def = (t) => BALANCE.RAID.DEFENSE_PCT[t];
+  assert.deepEqual([def(3), def(4), def(5)], [15, 15, 15]);
+  const old = Object.assign(fresh(), { wheelTier: 5, bedTier: 4 });
+  S.patchPlayer(old, TOKEN);
+  assert.deepEqual([old.wheelTier, old.bedTier], [3, 3]);
+  assert.ok(accrue(old, 1, T0) > 0, "still earns");
 });
