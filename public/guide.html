@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Squeek Den guide</title>
-<meta name="description" content="How Squeek Den works: watts, your den, raids, lucky crates and golden blocks.">
+<meta name="description" content="How Squeek Den works: Watts, your den, raids, lucky crates, golden blocks and Burrow Drop.">
 <link rel="icon" type="image/svg+xml" href="logo.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -37,6 +37,8 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:20px}
 .scenes{display:flex;flex-wrap:wrap;justify-content:center;gap:12px;margin:4px 0 12px}
 .scenes figure{flex:1 1 240px;max-width:300px;margin:0}
 .scene{display:block;width:100%;height:auto;aspect-ratio:192/108;image-rendering:pixelated;border:2px solid var(--ink);border-radius:6px;background:#2a2620}
+.clip{display:flex;justify-content:center;margin:4px 0 12px}
+.clip img{display:block;width:100%;max-width:300px;height:auto;image-rendering:pixelated;border:2px solid var(--ink);border-radius:6px}
 .scenes figcaption{font-family:var(--display);font-size:11px;letter-spacing:.3px;color:var(--muted);text-align:center;margin-top:4px}
 </style>
 </head>
@@ -46,11 +48,11 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:20px}
   <h1><img src="logo.svg" alt="" width="36" height="36">SQUEEK DEN GUIDE</h1>
   <a class="back" href="/">Back to your den</a>
 </header>
-<p class="lead">Squeektoshi is a real hamster. When he runs, his wheel settles Squeek blocks on the chain, and every block pays every den in watts, whether you're watching or not.</p>
+<p class="lead">Squeektoshi is a real hamster. When he runs, his wheel settles Squeek blocks on the chain, and every block pays every den in Watts, whether you're watching or not.</p>
 
 <section>
-  <h2>Earning watts</h2>
-  <div class="scenes"><figure><canvas class="scene" data-scene="0" width="192" height="108" role="img" aria-label="Squeektoshi running in his wheel while watts pop up"></canvas><figcaption data-title="0"></figcaption></figure><figure><canvas class="scene" data-scene="1" width="192" height="108" role="img" aria-label="Squeektoshi asleep in his bed at night, still earning"></canvas><figcaption data-title="1"></figcaption></figure></div>
+  <h2>Earning Watts</h2>
+  <div class="scenes"><figure><canvas class="scene" data-scene="0" width="192" height="108" role="img" aria-label="Squeektoshi running in his wheel while Watts pop up"></canvas><figcaption data-title="0"></figcaption></figure><figure><canvas class="scene" data-scene="1" width="192" height="108" role="img" aria-label="Squeektoshi asleep in his bed at night, still earning"></canvas><figcaption data-title="1"></figcaption></figure></div>
   <ul>
     <li>Every block pays <b data-g="perBlock">10 W</b> on a basic wheel. Wheel upgrades raise that, up to <b data-g="wheelMax">3.5×</b>.</li>
     <li>When he sleeps, your bed earns instead, about <b data-g="bedHalf">half</b> as fast. Bed upgrades go up to <b data-g="bedMax">3.5×</b> too.</li>
@@ -64,18 +66,18 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:20px}
   <h2>Your den</h2>
   <div class="scenes"><figure><canvas class="scene" data-scene="2" width="192" height="108" role="img" aria-label="The wheel and bed upgrading tier by tier"></canvas><figcaption data-title="2"></figcaption></figure></div>
   <ul>
-    <li>Spend watts on furniture, rugs, wall decor, wallpaper, floors and skins. Drag things to move them; <b>F</b> turns them around.</li>
+    <li>Spend Watts on furniture, rugs, wall decor, wallpaper, floors and skins. Drag things to move them; <b>F</b> turns them around.</li>
     <li>Den material (stone, iron, silver, gold, diamond) makes raids on you fail more often, up to <b data-g="defense">25%</b> less likely to land.</li>
   </ul>
 </section>
 
 <section>
   <h2>Raids</h2>
-  <div class="scenes"><figure><canvas class="scene" data-scene="3" width="192" height="108" role="img" aria-label="Squeektoshi carrying watts home from a richer den"></canvas><figcaption data-title="3"></figcaption></figure><figure><canvas class="scene" data-scene="4" width="192" height="108" role="img" aria-label="The top den's walls turning raids away"></canvas><figcaption data-title="4"></figcaption></figure></div>
+  <div class="scenes"><figure><canvas class="scene" data-scene="3" width="192" height="108" role="img" aria-label="Squeektoshi carrying Watts home from a richer den"></canvas><figcaption data-title="3"></figcaption></figure><figure><canvas class="scene" data-scene="4" width="192" height="108" role="img" aria-label="The top den's walls turning raids away"></canvas><figcaption data-title="4"></figcaption></figure></div>
   <ul>
     <li>Raids only open while Squeektoshi runs. You get <b data-g="perDay">10</b> a day; they come back at 00:00 UTC.</li>
     <li>Your den can raid, and be raided, once it has earned <b data-g="minEarned">5,000 W</b> from the wheel or bed.</li>
-    <li>You can raid dens holding at least <b data-g="eligible">70%</b> of your watts, or anyone who raided you in the last <b data-g="revenge">24 hours</b>.</li>
+    <li>You can raid dens holding at least <b data-g="eligible">70%</b> of your Watts, or anyone who raided you in the last <b data-g="revenge">24 hours</b>.</li>
     <li>Pick a multiplier (<b data-g="mults">1.5× to 10×</b>) and a wager. The raid screen shows your chance. Higher multipliers pay more and land less often.</li>
     <li>Win and you take (multiplier − 1) × your wager from them, up to <b data-g="lootCap">25%</b> of what they hold. Now and then (<b data-g="crit">5%</b> of wins) a raid crits: the game adds half again on top, so it never costs them more.</li>
     <li>Lose and your whole wager burns. Nobody gets it.</li>
@@ -90,10 +92,10 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:20px}
   <ul>
     <li>While you're watching, every block has a <b data-g="crateChance">1%</b> chance to drop a parcel on your floor. Tap it to open.</li>
     <li>Up to <b data-g="cratesDay">5</b> a day, and <b data-g="cratesWaiting">3</b> waiting at once.</li>
-    <li>Most hold watts (<b data-g="crateWatts">200–800 W</b>). Some hold a boost or a Raid Shield token, and once in a while something you can't buy anywhere.</li>
+    <li>Most hold Watts (<b data-g="crateWatts">200–800 W</b>). Some hold a boost or a Raid Shield token, and once in a while something you can't buy anywhere.</li>
     <li>Boosts and shield tokens wait in Your things. Tap one to see what it does, tap it again to use it.
       <ul>
-        <li>Double Wheel: <b data-g="dw">2× wheel watts for 1 hour</b>.</li>
+        <li>Double Wheel: <b data-g="dw">2× wheel Watts for 1 hour</b>.</li>
         <li>Deep Sleep: <b data-g="ds">+50% bed income for 8 hours</b>.</li>
         <li>Lucky Whisker: <b data-g="lw">+10 points on your next raid</b>.</li>
         <li>Wager Insurance: your next failed raid gives back <b data-g="wi">half</b> the wager.</li>
@@ -105,8 +107,20 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:20px}
 
 <section>
   <h2>Golden blocks</h2>
-  <div class="scenes"><figure><canvas class="scene" data-scene="6" width="192" height="108" role="img" aria-label="A golden block lands and pays ten times the watts"></canvas><figcaption data-title="6"></figcaption></figure></div>
-  <p>About 1 block in <b data-g="goldenOneIn">150</b> is golden. It pays <b data-g="goldenMult">10×</b> wheel watts to everyone watching when it lands.</p>
+  <div class="scenes"><figure><canvas class="scene" data-scene="6" width="192" height="108" role="img" aria-label="A golden block lands and pays ten times the Watts"></canvas><figcaption data-title="6"></figcaption></figure></div>
+  <p>About 1 block in <b data-g="goldenOneIn">150</b> is golden. It pays <b data-g="goldenMult">10×</b> wheel Watts to everyone watching when it lands.</p>
+</section>
+
+<section>
+  <h2>Burrow Drop</h2>
+  <div class="clip"><img src="burrow_drop.gif" alt="Squeektoshi bouncing down the burrow, winning prizes and the Bounty" width="300" height="420" loading="lazy"></div>
+  <ul>
+    <li>Tap the Burrow badge in your den. A drop costs <b data-g="dropCost">500 W</b>: aim, let go, and he bounces down into a chamber. Dead End pays <b data-g="payDead">0.2×</b>, Nest <b data-g="payNest">0.6×</b> and Pantry <b data-g="payPantry">1.4×</b>.</li>
+    <li>Seeds on the roots pay a little, and more when you grab them in a row. Golden boards pay them double.</li>
+    <li>Every board shows one prize you can't get anywhere else. Hit it and it's yours. Rarer prizes turn up less often and sit in harder spots: common, uncommon, rare, epic, legendary. If you already have it, you get Watts instead.</li>
+    <li>The Bounty is one pot shared by everyone. Every drop adds <b data-g="bountyFeed">25 W</b> to it. Land in the narrow slot in the middle and you take all of it, then it starts again at <b data-g="bountyStart">3,000 W</b>.</li>
+    <li>The burrow changes with Squeektoshi: a garden while he runs, moonlight while he sleeps, a crystal cave on golden boards.</li>
+  </ul>
 </section>
 
 <section>
