@@ -251,7 +251,7 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
 .raidchip{font-family:var(--display);font-size:11px;letter-spacing:.3px;line-height:1.2;border:0;border-radius:8px;padding:6px 10px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:6px;background:var(--dk-card);color:var(--dk-ink)}
 .raidchip[hidden]{display:none}
 .raidchip .cd{font-family:var(--mono);font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;opacity:.85}
-.raidchip.open{background:var(--raid);color:#fff;animation:raidpulse 1.6s ease-in-out infinite}
+.raidchip.open{background:var(--raid);color:#fff}
 .raidchip.spent,.raidchip.locked{background:var(--dk-card);color:var(--dk-mute);animation:none}
 .raidchip:focus-visible{outline:2px solid var(--chain);outline-offset:2px}
 @keyframes raidpulse{50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--raid) 30%,transparent)}}
@@ -602,7 +602,7 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
     <details><summary>How watts work</summary>
       <p style="margin-top:6px">Each Squeek block pays every room Watts. When Squeektoshi is asleep, you earn at roughly half the rate. Keep this tab open for +20%.</p>
       <p style="margin-top:6px">Upgrade your wheel &amp; bed to increase Watts production.</p>
-      <p style="margin-top:6px">Wager your Watts to raid and rob from dens that are at least 0.7x your balance. You can only raid others when Squeektoshi is running.</p>
+      <p style="margin-top:6px">Wager your Watts to raid and rob from dens that are at least 0.7x your balance.</p>
       <p style="margin-top:6px">A den can raid, and be raided, once it has earned 5,000 W from the wheel or bed. A failed raid burns the whole wager.</p>
       <p style="margin-top:6px">Raiding becomes more +EV as you raid a much richer player.</p>
       <p style="margin-top:6px">Being raided is always -EV, being high up on the leaderboard makes you a juicy target.</p>
@@ -669,7 +669,7 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
   <div class="lbstate" id="lbState"></div>
   <button type="button" class="pxbtn alt lbrandom" id="lbRandom">Random den</button>
   <ol class="lbrows" id="lbRows"></ol>
-  <p class="lbnote">You can raid dens with at least 70% of your watts, or anyone who raided you in the last 24 hours. 10 raids a day, only while Squeektoshi runs.</p>
+  <p class="lbnote">You can raid dens with at least 70% of your watts, or anyone who raided you in the last 24 hours. 10 raids a day.</p>
 </aside>
 
 <!-- Raid: pick a multiplier and a wager, then roll once on the server. -->

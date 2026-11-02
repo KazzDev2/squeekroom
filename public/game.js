@@ -2748,7 +2748,7 @@ function applyRaidStatus(raid) {
   if (!raid || typeof raid !== "object") { S.raid = null; return; }
   const per = Number(raid.perDay) || RB().PER_DAY;
   const need = Number(raid.needEarned) || RB().MIN_EARNED;
-  S.raid = { open: !!raid.open, left: Number.isFinite(raid.raidsLeft) ? raid.raidsLeft : per, perDay: per, resetAt: Date.now() + Math.max(0, Number(raid.resetMs) || 0),
+  S.raid = { left: Number.isFinite(raid.raidsLeft) ? raid.raidsLeft : per, perDay: per, resetAt: Date.now() + Math.max(0, Number(raid.resetMs) || 0),
     ready: raid.ready !== false, earned: Number(raid.earned) || 0, need, shielded: !!raid.shielded };
 }
 const raidsLeftNow = () => (S.raid ? (Date.now() >= S.raid.resetAt ? S.raid.perDay : S.raid.left) : 0);
@@ -2757,26 +2757,24 @@ const resetIn = () => (S.raid ? Math.max(0, S.raid.resetAt - Date.now()) : 0);
 const earnedNow = () => Math.max(S.raid ? S.raid.earned : 0, (S.me && S.me.lifetimeWatts) || 0);
 const raidNeed = () => (S.raid && S.raid.need) || RB().MIN_EARNED;
 const freshWords = () => `Earn ${fmt(raidNeed())} W from the wheel or bed first. Fresh dens can't raid or be raided.`;
-function raidPhase() { // none | fresh | shielded | open | spent | locked
+function raidPhase() { // none | fresh | shielded | open | spent
   if (!S.raid || !S.me) return "none";
   if (!S.raid.ready && earnedNow() < raidNeed()) return "fresh";
   if (myShield().kind === "bought") return "shielded";
-  if (!S.raid.open) return "locked";
   return raidsLeftNow() > 0 ? "open" : "spent";
 }
-const lockedWhy = () => (S.idle ? "he's asleep" : "waiting for a block");
 let chipSig = "";
 function renderRaidChip() {
   const el = $("raidChip"), ph = raidPhase();
   el.hidden = ph === "none";
   if (ph === "none") return;
-  const html = `⚔ Raid <span class="cd">${ph === "fresh" ? `${fmt(Math.min(earnedNow(), raidNeed()))}/${fmt(raidNeed())} W` : ph === "shielded" ? "🛡 shield up" : ph === "locked" ? lockedWhy() : `${raidsLeftNow()} left`}</span>`;
+  const html = `⚔ Raid <span class="cd">${ph === "fresh" ? `${fmt(Math.min(earnedNow(), raidNeed()))}/${fmt(raidNeed())} W` : ph === "shielded" ? "🛡 shield up" : `${raidsLeftNow()} left`}</span>`;
   const sig = ph + html;
   if (sig === chipSig) return;
   chipSig = sig;
   el.className = `raidchip ${ph === "fresh" || ph === "shielded" ? "locked " + ph : ph}`;
   el.innerHTML = html;
-  el.title = ph === "fresh" ? freshWords() : ph === "shielded" ? shieldedWords() : ph === "locked" ? "Raids only work while Squeektoshi runs" : ph === "spent" ? `Out of raids. More in ${durText(resetIn())}` : "Leaderboard";
+  el.title = ph === "fresh" ? freshWords() : ph === "shielded" ? shieldedWords() : ph === "spent" ? `Out of raids. More in ${durText(resetIn())}` : "Leaderboard";
   el.setAttribute("aria-expanded", String(LB.open));
 }
 
@@ -2849,7 +2847,6 @@ function raidStateWords() {
   const ph = raidPhase();
   if (ph === "open") return ["open", `<b>${raidsLeftNow()}/${S.raid.perDay}</b> raids left today`];
   if (ph === "spent") return ["", `Out of raids. More in <b>${durText(resetIn())}</b>`];
-  if (ph === "locked") return ["", S.idle ? "Squeektoshi is asleep. Raids open when he runs." : "Waiting for a fresh block."];
   if (ph === "fresh") return ["", `${freshWords()} You're at <b>${fmt(Math.min(earnedNow(), raidNeed()))} W</b>.`];
   if (ph === "shielded") return ["", shieldedWords()];
   return ["", "Loading…"];
@@ -3043,7 +3040,6 @@ function buildMults() {
 // Why the RAID button can't fire right now (null = it can). The server re-checks all of it anyway.
 function raidBlock(t, sb) {
   const ph = raidPhase();
-  if (ph === "locked") return { lock: true, msg: S.idle ? "Squeektoshi is asleep. Raids open when he runs." : "Waiting for a fresh block." };
   if (ph === "spent") return { lock: true, msg: `No raids left today. More in ${durText(resetIn())}.` };
   if (ph === "fresh") return { lock: true, msg: freshWords() };
   if (ph === "shielded") return { lock: true, msg: shieldedWords() };
@@ -3146,9 +3142,6 @@ function raidKey(e) {
 function raidErrorWords(j) {
   const e = (j && j.error) || "network", t = raidTarget();
   switch (e) {
-    case "hamster_asleep": return "Too late, he just fell asleep.";
-    case "chain_unknown": return "No blocks seen yet.";
-    case "chain_stale": return "Waiting for a fresh block.";
     case "no_raids_left": return `No raids left today. More in ${durText(j.resetMs || 0)}.`;
     case "bad_target": return "That den is gone.";
     case "not_eligible":
@@ -3280,8 +3273,7 @@ async function whack(i) {
   RU.busy = false;
   showStage("form");
   const j = r.j || {}, e = j.error;
-  if (e === "no_raids_left") applyRaidStatus({ open: true, raidsLeft: 0, perDay: S.raid && S.raid.perDay, resetMs: j.resetMs });
-  else if (e === "hamster_asleep" || e === "chain_unknown" || e === "chain_stale") { if (S.raid) S.raid.open = false; else applyRaidStatus({ open: false }); }
+  if (e === "no_raids_left") applyRaidStatus({ raidsLeft: 0, perDay: S.raid && S.raid.perDay, resetMs: j.resetMs });
   else if (e === "stake_out_of_range" || e === "bad_stake") { if (Number.isFinite(j.max) && j.max >= j.min) RU.stake = clamp(sb.v, j.min, j.max); refresh(); }
   if (e === "not_eligible" && j.reason === "fresh_attacker" && S.raid) { S.raid.ready = false; if (Number.isFinite(j.earned)) S.raid.earned = j.earned; }
   if (e === "not_eligible" || e === "bad_target" || e === "target_shielded" || e === "shielded") loadLb();

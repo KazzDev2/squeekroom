@@ -924,7 +924,7 @@ test("raid allowance: 10 per attacker per UTC day, being raided is unlimited", (
   for (let n = 0; n < RA.PER_DAY; n++) assert.ok(raid(st, TA, TB, 500, 2, at(day + n)).ok, `raid ${n}`);
   const r = raid(st, TA, TB, 500, 2, at(day + 20));
   assert.deepEqual([r.ok, r.error, r.resetMs], [false, "no_raids_left", 14 * 3600_000 - 20]);
-  assert.deepEqual(S.raidStatus(st, st.players[TA], day + 60_000), { open: true, raidsLeft: 0, perDay: RA.PER_DAY, resetMs: 14 * 3600_000 - 60_000, ready: true, earned: RA.MIN_EARNED, needEarned: RA.MIN_EARNED, shielded: false });
+  assert.deepEqual(S.raidStatus(st, st.players[TA], day + 60_000), { raidsLeft: 0, perDay: RA.PER_DAY, resetMs: 14 * 3600_000 - 60_000, ready: true, earned: RA.MIN_EARNED, needEarned: RA.MIN_EARNED, shielded: false });
   // others can still raid the same room
   for (let n = 0; n < 3; n++) assert.ok(raid(st, TC, TB, 100, 2, at(day + 100 + n)).ok);
   // the count resets at 00:00 UTC
@@ -941,25 +941,15 @@ test("raid allowance: 10 per attacker per UTC day, being raided is unlimited", (
   assert.equal(S.raidStatus(st2, st2.players[TA], T0).raidsLeft, RA.PER_DAY);
 });
 
-test("raid window: only while he runs (idle -> hamster_asleep), fresh chain read in live mode", () => {
-  assert.deepEqual(S.raidWindow(T0 - 60_000, T0), { open: true, reason: null });
-  assert.deepEqual(S.raidWindow(T0 - BALANCE.IDLE_AFTER_MS, T0), { open: false, reason: "hamster_asleep" });
-  assert.equal(S.raidWindow(T0 - BALANCE.IDLE_AFTER_MS + 1, T0).open, true);
-  assert.equal(S.raidWindow(null, T0).reason, "chain_unknown");
-  assert.equal(S.raidWindow(T0 - 60_000, T0, T0 - 10_000).open, true); // live, fresh read
-  assert.equal(S.raidWindow(T0 - 60_000, T0, T0 - S.CHAIN_FRESH_MS).open, true);
-  assert.equal(S.raidWindow(T0 - 60_000, T0, T0 - S.CHAIN_FRESH_MS - 1).reason, "chain_stale");
-  assert.equal(S.raidWindow(T0 - 60_000, T0, 0).reason, "chain_stale");
+test("raids are open all the time: while he sleeps, and with no chain reading at all", () => {
   const st = raidWorld();
-  st.lastAdvanceAt = T0 - BALANCE.IDLE_AFTER_MS - 60_000;
-  const r = raid(st, TA, TB, 100, 2);
-  assert.deepEqual([r.ok, r.error], [false, "hamster_asleep"]);
-  assert.deepEqual(S.raidStatus(st, st.players[TA], T0), { open: false, raidsLeft: RA.PER_DAY, perDay: RA.PER_DAY, resetMs: 86_400_000 - (T0 % 86_400_000), ready: true, earned: RA.MIN_EARNED, needEarned: RA.MIN_EARNED, shielded: false });
+  st.lastAdvanceAt = T0 - BALANCE.IDLE_AFTER_MS - 60_000; // long asleep
+  assert.equal(S.chainIdle(st.lastAdvanceAt, T0), true);
+  assert.deepEqual(S.raidStatus(st, st.players[TA], T0), { raidsLeft: RA.PER_DAY, perDay: RA.PER_DAY, resetMs: 86_400_000 - (T0 % 86_400_000), ready: true, earned: RA.MIN_EARNED, needEarned: RA.MIN_EARNED, shielded: false });
   const body = { target: pidOf(TB), stake: 500, mult: 2 };
-  assert.equal(S.applyRaid(st, TA, body, T0, { chainReadAt: T0 - 600_000 }).error, "chain_stale");
-  st.lastAdvanceAt = T0 - 5000; // a block settles: the window opens (given a fresh chain read)
-  assert.equal(S.applyRaid(st, TA, body, T0, { chainReadAt: T0 - 600_000 }).error, "chain_stale");
-  assert.ok(S.applyRaid(st, TA, body, T0, { chainReadAt: T0 - 5000, rng: seq(LOSE) }).ok);
+  assert.ok(S.applyRaid(st, TA, body, T0, { rng: seq(LOSE) }).ok);
+  st.lastAdvanceAt = null; // no chain seen yet
+  assert.ok(S.applyRaid(st, TA, body, T0, { rng: seq(LOSE) }).ok);
   assert.equal(S.applyRaid(st, "z".repeat(32), body, T0).error, "unknown_player");
 });
 
@@ -1053,7 +1043,7 @@ test("leaderboard: by balance, shape, per-viewer raidable/you flags, 10 s cache,
   assert.deepEqual(lb.rows.map((r) => r.nick), ["def", "atk", "poor"]);
   assert.deepEqual(lb.rows[1], { rank: 2, publicId: pidOf(TA), nick: "atk", name: "atk", verified: false, watts: 10_000, lifetimeWatts: 9000, roomTier: 2, fresh: false, shielded: false, raidable: false, revenge: false, you: true });
   assert.deepEqual(lb.rows.map((r) => r.raidable), [true, false, true]); // 8k >= 70% of 10k
-  assert.deepEqual(lb.raid, { open: true, raidsLeft: RA.PER_DAY, perDay: RA.PER_DAY, resetMs: 86_400_000 - (T0 % 86_400_000), ready: true, earned: 9000, needEarned: RA.MIN_EARNED, shielded: false });
+  assert.deepEqual(lb.raid, { raidsLeft: RA.PER_DAY, perDay: RA.PER_DAY, resetMs: 86_400_000 - (T0 % 86_400_000), ready: true, earned: 9000, needEarned: RA.MIN_EARNED, shielded: false });
   assert.equal(lb.total, 3);
   assert.ok(!JSON.stringify(lb).includes(TA), "leaderboard must not leak tokens");
   // the richest room has no targets; the poorest can hit everyone
@@ -1508,18 +1498,16 @@ test("replay tick: raids close 10 min into every sleep, reopen on a run's first 
     bed += got;
     const loc = S.replayLocate(x, SCHED);
     const segKey = `${loc.n}/${loc.i}`;
-    const w = S.raidWindow(st.lastAdvanceAt, x);
     if (loc.seg.kind === "run" && loc.u > 0) {
-      assert.equal(w.open, true, `raids open in run ${loc.seg.label} at ${new Date(x).toISOString()}`);
+      assert.equal(idle, false, `awake in run ${loc.seg.label} at ${new Date(x).toISOString()}`);
       if (segKey !== prevSeg) checkedOpen++; // the first poll of this run
       assert.equal(got, 0, "no bed income while she runs");
     } else if (loc.seg.kind === "sleep" && prevSeg !== null) {
       const into = x - (loc.cycleStart + loc.seg.start);
       if (into >= BALANCE.IDLE_AFTER_MS) {
         assert.equal(idle, true, `asleep ${into / MIN} min into ${loc.seg.label}`);
-        assert.equal(w.reason, "hamster_asleep");
         checkedClosed++;
-      } else assert.equal(w.open, true, `the first 10 min of a rest still count as running (${into / 1000} s)`);
+      } else assert.equal(idle, false, `the first 10 min of a rest still count as running (${into / 1000} s)`);
     }
     prevSeg = segKey;
   }
@@ -1563,7 +1551,7 @@ test("replay restart safety: height = offset + cumulativeBlocks(t) from the pers
   const born = replayWorld();
   S.replayTick(born, tSleep, SCHED);
   assert.equal(born.height, born.startHeight);
-  assert.equal(S.raidWindow(born.lastAdvanceAt, tSleep).reason, "hamster_asleep");
+  assert.equal(S.chainIdle(born.lastAdvanceAt, tSleep), true);
   const bornRun = replayWorld();
   const tPeak = EP + 12 * SCHED.cycleMs + segAt(SCHED, "peak").start + 5 * MIN;
   S.replayTick(bornRun, tPeak, SCHED);
@@ -1859,14 +1847,12 @@ test("asleep: a fresh live reading decides (asleep 20 s after it stops saying AC
   assert.equal(S.statusFresh(null, T0), false);
 });
 
-test("raids and bed income follow asleep(): closed 20 s after he stops, not 90 s", () => {
+test("bed income follows asleep(): 20 s after he stops, not 90 s", () => {
   const st = { lastAdvanceAt: T0, lastBedTickAt: null, players: { a: fresh() }, hamster: reading("ACTIVE", T0) };
   S.noteStatus(st, T0);
-  assert.equal(S.raidWindow(st.lastAdvanceAt, T0 + 1_000, null, st).open, true);
+  assert.equal(S.asleep(st, T0 + 1_000), false);
   st.hamster = reading("IDLE", T0 + 25_000);
-  assert.deepEqual(S.raidWindow(st.lastAdvanceAt, T0 + 25_000, null, st), { open: false, reason: "hamster_asleep" });
-  assert.equal(S.raidWindow(st.lastAdvanceAt, T0 + 25_000).open, true, "the chain alone would still say open");
-  assert.equal(S.raidStatus(st, st.players.a, T0 + 25_000).open, false);
+  assert.equal(S.asleep(st, T0 + 25_000), true);
   S.accrueBed(st, S.asleep(st, T0 + 25_000), T0 + 25_000);
   S.accrueBed(st, S.asleep(st, T0 + 85_000), T0 + 85_000);
   assert.equal(st.players.a.lifetimeWatts, 20, "a minute of bed income at 20 W/min");
