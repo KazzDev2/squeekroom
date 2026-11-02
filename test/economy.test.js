@@ -711,6 +711,22 @@ test("raid: a win while he's running pays 10% more, minted; the defender and a l
   assert.deepEqual([l.result.win, l.result.runBonus, lost.players[TA].watts, lost.minted || 0], [false, undefined, aw - 1000, 0]);
 });
 
+test("leaderboard: online means a heartbeat or a Burrow Drop in the last 90 s, and never exposes the time", () => {
+  const st = raidWorld();
+  const a = st.players[TA], b = st.players[TB];
+  a.lastHeartbeat = T0 - BALANCE.HEARTBEAT_WINDOW_MS; // just inside
+  b.lastHeartbeat = T0 - BALANCE.HEARTBEAT_WINDOW_MS - 1; // just outside
+  let lb = S.leaderboard(st, TA, T0);
+  const row = (l, t) => l.rows.find((r) => r.publicId === pidOf(t));
+  assert.deepEqual([row(lb, TA).online, row(lb, TB).online, lb.online], [true, false, 1]);
+  assert.equal(row(lb, TA).lastHeartbeat, undefined);
+  b.drop = { lastAt: T0 + 20_000 }; // on Burrow Drop: no heartbeat there
+  lb = S.leaderboard(st, TA, T0 + 20_000 + 10_000);
+  assert.deepEqual([row(lb, TA).online, row(lb, TB).online, lb.online], [false, true, 1]);
+  lb = S.leaderboard(st, null, T0 + 20_000 + 20_000 + BALANCE.HEARTBEAT_WINDOW_MS);
+  assert.deepEqual([row(lb, TA).online, row(lb, TB).online, lb.online], [false, false, 0]);
+});
+
 test("resolveRaid: a loss uses one roll and loses the whole stake", () => {
   const a = fresh({ watts: 10_000 }), d = fresh({ watts: 10_000 });
   const rng = seq(LOSE);
@@ -1083,7 +1099,7 @@ test("leaderboard: by balance, shape, per-viewer raidable/you flags, 10 s cache,
   const st = raidWorld({ atk: { lifetimeWatts: 9000, roomTier: 2 }, def: { watts: 20_000 }, poor: { watts: 8000 } });
   const lb = S.leaderboard(st, TA, T0);
   assert.deepEqual(lb.rows.map((r) => r.nick), ["def", "atk", "poor"]);
-  assert.deepEqual(lb.rows[1], { rank: 2, publicId: pidOf(TA), nick: "atk", name: "atk", verified: false, watts: 10_000, lifetimeWatts: 9000, roomTier: 2, fresh: false, shielded: false, raidable: false, revenge: false, you: true });
+  assert.deepEqual(lb.rows[1], { rank: 2, publicId: pidOf(TA), nick: "atk", name: "atk", verified: false, watts: 10_000, lifetimeWatts: 9000, roomTier: 2, fresh: false, online: false, shielded: false, raidable: false, revenge: false, you: true });
   assert.deepEqual(lb.rows.map((r) => r.raidable), [true, false, true]); // 8k >= 70% of 10k
   assert.deepEqual(lb.raid, { raidsLeft: RA.PER_DAY, perDay: RA.PER_DAY, resetMs: 86_400_000 - (T0 % 86_400_000), runPct: 0, ready: true, earned: 9000, needEarned: RA.MIN_EARNED, shielded: false });
   assert.equal(lb.total, 3);
