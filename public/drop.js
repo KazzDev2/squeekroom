@@ -417,7 +417,10 @@ async function load() {
   const me = r.j.me;
   if (!me) { st.mode = "noden"; renderHud(); return; }
   st.watts = me.watts;
-  if (st.mode === "load" || st.mode === "noden") { st.mode = "aim"; st.shownWatts = st.watts; st.shownStash = st.stash; }
+  if (st.mode === "load" || st.mode === "noden") { // first numbers: no count-up, and tickHud only redraws changes
+    st.mode = "aim"; st.shownWatts = st.watts; st.shownStash = st.stash;
+    $("watts").textContent = fmt(st.watts); $("stash").textContent = fmt(st.stash);
+  }
   if (st.mode === "aim" && me.drop) setBoard(me.drop.board);
   renderHud();
 }
