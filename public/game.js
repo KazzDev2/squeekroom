@@ -3109,11 +3109,10 @@ $("certShare").onclick = async () => {
 // ---------- raids: header chip, leaderboard, raid modal, result, feed ----------
 // The server rolls and re-validates every raid (window, daily allowance, eligibility, stake); the
 // client mirrors the maths so each option shows its odds and loot. EV is never shown on purpose.
-// A failed raid burns the whole wager (the defender gets nothing), and a den raids and can be raided
-// only once it has earned MIN_EARNED watts from the wheel or bed.
+// A failed raid burns the whole wager (the defender gets nothing).
 const RAID_DEFAULTS = { EDGE_PCT: 110, MULT_PCT: [150, 200, 300, 500, 1000], DEFENSE_PCT: [0, 5, 10, 15, 15, 15], TILT_EXP: 0.25, TILT_MIN_PCT: 75, TILT_MAX_PCT: 175,
   P_MIN_PCT: 2, P_MAX_PCT: 90, CRIT_CHANCE_PCT: 5, CRIT_MULT_PCT: 150, LOOT_MAX_DEF_PCT: 25, STAKE_MIN: 50, STAKE_MIN_BAL_PCT: 5,
-  ELIGIBLE_MIN_PCT: 70, REVENGE_WINDOW_MS: 86_400_000, PER_DAY: 10, MIN_EARNED: 5000 };
+  ELIGIBLE_MIN_PCT: 70, REVENGE_WINDOW_MS: 86_400_000, PER_DAY: 10, MIN_EARNED: 0 };
 const RB = () => ({ ...RAID_DEFAULTS, ...((S.balance && S.balance.RAID) || {}) });
 // p = clamp((EDGE / M) x (1 - d) x clamp((def / me) ^ 0.25, 0.75, 1.75), 0.02, 0.90), M as a percentage,
 // and at least 1/M when the target holds at least my watts
