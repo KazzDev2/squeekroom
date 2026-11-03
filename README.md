@@ -142,6 +142,10 @@ Floor items with a catalog `top` (in px) can carry other furniture. A placement 
 
 `public/sound.js`: effects are synthesized live with WebAudio; the music is two CC0 (public domain) tracks from OpenGameArt, in `public/music/`: "Chill lofi inspired" by omfgdude in the den and "Pixel Sprinter" (loop) by Zane Little Music in Burrow Drop. Sound starts on the first click; the speaker button cycles music + effects, effects only, off. A browser that can't play a track's format gets effects only.
 
+## License
+
+All rights reserved, not open source. See `LICENSE`. The two music tracks are CC0.
+
 ## Ideas
 
 - WalletConnect QR (mobile wallets) via a Reown projectId.

@@ -1,15 +1,11 @@
 // Squeekroom client: live state, HUD strip, and the room renderer.
-// Phase 3 (renderer core): every piece of art is a placeholder painted in code. Phase 4's
-// sprites.js drops real art in through the sprite registry below without touching game logic.
 (() => {
 "use strict";
 const $ = (id) => document.getElementById(id);
 const sfx = (name, o) => { if (window.SqueekSound) window.SqueekSound.sfx(name, o); }; // sound.js: a no-op until the first click
 
 // ---------- room geometry (server ROOM is the source of truth; these are the defaults) ----------
-// The server's model is the flat side view: 20 x 12 cells of 16 px (320 x 192). Floor items take
-// whole columns (1-D), wall items a 2-D cell on rows 2..7, rugs whole columns of their own layer.
-// The live room draws that model through the iso projection below; the certificate portrait
+// The live room is drawn through the iso projection below; the certificate portrait
 // (renderPortrait) still paints the flat view, so the FLAT_* geometry stays alongside.
 const FLAT_W = 320, FLAT_H = 192;
 let ROOM = { COLS: 20, ROWS: 12, CELL: 16, FLOOR_ROW: 11, WALL_TOP: 2, WALL_BOTTOM: 7, RESERVED: {},
@@ -21,7 +17,7 @@ let FLAT_WHEEL = { cx: 80, cy: 150, r: 23, x: 56, y: 126 }; // 48 x 48 box centr
 let FLAT_BURROW = { cx: 280, x: 256, y: 144, w: 48, h: 32 }; // 48 x 32 mound on floor cols 16..18
 let FLAT_SPOT = { wheel: { x: 80, y: 170 } };
 
-// ---------- iso view (v2): 2:1 dimetric room, a pure client-side projection of the flat model ----------
+// ---------- iso view: 2:1 dimetric room, a pure client-side projection of the flat model ----------
 // Floor: NI x NJ diamond tiles of 32 x 16. Tile (i, j): i runs down-right along the RIGHT back wall,
 // j runs down-left along the LEFT back wall, (0, 0) is the back corner. Tile centre on screen:
 //   x = X0 + (i - j) * 16,  y = Y0 + (i + j) * 8 + 8
@@ -62,7 +58,6 @@ function applyRoom(room) {
   const wcx = ((wa + wb + 1) * CELL) / 2;
   FLAT_WHEEL = { cx: wcx, cy: FLOOR_Y - 26, r: 23, x: wcx - 24, y: FLOOR_Y - 50 };
   FLAT_SPOT = { wheel: { x: wcx, y: FLAT_WHEEL.cy + FLAT_WHEEL.r - 3 } };
-  // the burrow mound only exists while the server still reserves lane tiles for it (it no longer does);
   // the wheel and the bed follow the player's fixtures
   FLAT_BURROW = IBURROW = null;
   if (bur) {
@@ -141,7 +136,7 @@ function drawText(c, str, x, y, color) {
   }
 }
 
-// ---------- sprite registry (phase 4 fills it) ----------
+// ---------- sprite registry ----------
 // sprites.js, loaded before game.js, may define:
 //   window.SPRITES = { [spriteId]: spriteData }
 //     ids: every catalog item's `sprite` (furniture, rugs, wall decor, wallpaper/floor 16x16 swatches,
@@ -854,7 +849,7 @@ function spotFor(mode) {
   return SPOT.sit;
 }
 // He sleeps exactly when the server says so (S.idle: the live reading has said "not running" for 20 s,
-// which is also when bed income starts and raids close) and wakes the moment the reading says he runs.
+// which is also when bed income starts) and wakes the moment the reading says he runs.
 // In between, a stop he may resume from, he stands still in the wheel. With no usable reading at all
 // (stale, offline) he's asleep as far as we know.
 function wantMode(st) {
@@ -2484,7 +2479,7 @@ function renderInventory() {
   }
 }
 
-// ---------- v3: boosts, the Raid Shield, lucky crates, golden blocks ----------
+// ---------- boosts, the Raid Shield, lucky crates, golden blocks ----------
 // The server owns every timer and roll (BALANCE.BOOSTS / SHIELD / CRATES / GOLDEN); this side only
 // shows them. Times are server ms: compare against Date.now() + S.skew.
 const BOOST_INFO = {
@@ -2772,7 +2767,7 @@ buildCards();
 renderInventory();
 renderPlacing();
 
-// ---------- commemorative certificate (phase 7, no chain) ----------
+// ---------- commemorative certificate (no chain) ----------
 // The PNG is a pure function of the certificate JSON (plus the catalog and sprite data): no clock,
 // no live reading, no Math.random. Everything that animates in the room (wheel, run cycle, window
 // sky, clock hands, TV) is frozen to values derived from the cert's seed and claim date, so anyone
@@ -3155,7 +3150,7 @@ const agoText = (at) => {
 function elx(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 const myPid = () => (S.me && S.me.publicId) || null;
 
-// raid window + this player's raids left today (snapshot every 5 s, the leaderboard, raid replies)
+// this player's raids left today (snapshot every 5 s, the leaderboard, raid replies)
 S.raid = null; S.raidFeed = []; S.burned = 0;
 function applyRaidStatus(raid) {
   if (!raid || typeof raid !== "object") { S.raid = null; return; }
