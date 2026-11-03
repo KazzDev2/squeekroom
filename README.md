@@ -164,7 +164,6 @@ All rights reserved, not open source. See `LICENSE`. The two music tracks are CC
 
 ## Ideas
 
-- WalletConnect QR (mobile wallets) via a Reown projectId.
-- Stream HUD view: a chrome-free page showing one featured room for the livestream.
-- Seasonal items that are only in the shop for a few weeks.
-- Foil items for record nights: anything bought during a speed record or milestone from `/v1/events` gets a shimmer.
+- Pets that move into your den.
+- Voting on den designs.
+- Sharing your den to X and other sites.
