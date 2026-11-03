@@ -2601,3 +2601,11 @@ test("upgrade cap: wheel and bed stop at T3, Gold and Diamond dens add no defenc
   assert.deepEqual([old.wheelTier, old.bedTier], [3, 3]);
   assert.ok(accrue(old, 1, T0) > 0, "still earns");
 });
+
+test("www goes to the bare domain, keeping the path; other hosts stay", () => {
+  assert.equal(S.wwwRedirect("www.squeekden.art", "/drop.html?x=1"), "https://squeekden.art/drop.html?x=1");
+  assert.equal(S.wwwRedirect("WWW.SqueekDen.art:443", "/"), "https://squeekden.art/");
+  for (const host of ["squeekden.art", "squeekroom-production.up.railway.app", "localhost:8788", "www.squeekden.art.evil.com", undefined]) {
+    assert.equal(S.wwwRedirect(host, "/"), null);
+  }
+});

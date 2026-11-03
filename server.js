@@ -2291,7 +2291,15 @@ const DEV_ROUTES = {
 
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".json": "application/json", ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".gif": "image/gif" };
 
+// Dens live in localStorage per address, so www has to land on the bare domain or it starts a new den.
+const wwwRedirect = (host, reqUrl) => (String(host || "").toLowerCase().split(":")[0] === "www.squeekden.art" ? `https://squeekden.art${reqUrl}` : null);
+
 async function handle(req, res) {
+  const toBare = wwwRedirect(req.headers.host, req.url);
+  if (toBare) {
+    res.writeHead(301, { location: toBare });
+    return res.end();
+  }
   const url = new URL(req.url, "http://x");
   try {
     if (url.pathname === "/api/state" && req.method === "GET") {
@@ -2372,7 +2380,7 @@ function listen() {
   process.on("SIGTERM", flush);
 }
 
-module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible };
+module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible, wwwRedirect };
 // Extra helpers for tests (the plan's six names above stay the primary surface).
 Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
