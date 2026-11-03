@@ -4,6 +4,8 @@ const assert = require("node:assert/strict");
 const S = require("../server.js");
 require("./alert.test.js"); // security alerts; Node 22+ runs only this file for `node --test test/` (see package.json)
 require("./drop.test.js"); // the Burrow Drop preview
+require("./stack.test.js"); // furniture on furniture
+require("./pets.test.js"); // pets
 const { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible } = S;
 
 const T0 = Date.UTC(2026, 9, 30, 22, 0, 0);
@@ -2339,7 +2341,7 @@ test("v3 catalog: the new items, prices, sizes and zones", () => {
   assert.ok(cheap >= 20, `${cheap} items in the 300-2,000 W band`);
   // the crate-only jackpots: never sold, never a free default, but in the crate decor table
   const crate = CATALOG.filter((i) => i.crate).map((i) => i.id).sort();
-  assert.deepEqual(crate, ["fur_clover_jar", "fur_sunflower", "wall_lucky_lantern", "wall_shooting_star"]);
+  assert.deepEqual(crate, ["fur_clover_jar", "fur_lucky_hamster", "fur_sunflower", "fur_wishing_well", "wall_horseshoe", "wall_lucky_lantern", "wall_rainbow", "wall_shooting_star"]);
   for (const id of crate) {
     assert.equal(S.CATALOG_BY_ID.get(id).price, 0);
     assert.ok(!S.FREE_IDS.includes(id), id);
@@ -2535,7 +2537,7 @@ test("visits: a den's look and public numbers only; never crates, items, boosts,
   host.raidedBy = [{ pid: "zzz", at: T0, avenged: false }];
   const r = S.visitDen(st, pidOf(TB), TA, T0);
   assert.equal(r.ok, true);
-  assert.deepEqual(Object.keys(r.den).sort(), ["bedTier", "fixtures", "floor", "lifetimeWatts", "name", "placed", "publicId", "roomTier", "shield", "skin", "verified", "wallpaper", "watts", "wheelTier"]);
+  assert.deepEqual(Object.keys(r.den).sort(), ["bedTier", "fixtures", "floor", "lifetimeWatts", "name", "petsActive", "placed", "publicId", "roomTier", "shield", "skin", "verified", "wallpaper", "watts", "wheelTier"]);
   assert.deepEqual([r.den.name, r.den.verified, r.den.skin, r.den.roomTier, r.den.watts], ["Host", true, "skin_panda", 2, 50_000]);
   assert.deepEqual(r.den.placed, [{ pid: "s1", item: "fur_sofa", x: 3, y: 2, flip: true }]);
   assert.deepEqual(r.den.fixtures, host.fixtures);
@@ -2600,4 +2602,12 @@ test("upgrade cap: wheel and bed stop at T3, Gold and Diamond dens add no defenc
   S.patchPlayer(old, TOKEN);
   assert.deepEqual([old.wheelTier, old.bedTier], [3, 3]);
   assert.ok(accrue(old, 1, T0) > 0, "still earns");
+});
+
+test("www goes to the bare domain, keeping the path; other hosts stay", () => {
+  assert.equal(S.wwwRedirect("www.squeekden.art", "/drop.html?x=1"), "https://squeekden.art/drop.html?x=1");
+  assert.equal(S.wwwRedirect("WWW.SqueekDen.art:443", "/"), "https://squeekden.art/");
+  for (const host of ["squeekden.art", "squeekroom-production.up.railway.app", "localhost:8788", "www.squeekden.art.evil.com", undefined]) {
+    assert.equal(S.wwwRedirect(host, "/"), null);
+  }
 });

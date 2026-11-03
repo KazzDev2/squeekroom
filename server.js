@@ -159,6 +159,10 @@ const BALANCE = {
   // Golden blocks: a settled height is golden when its hash says so (~1 in ONE_IN, the same answer on
   // every boot). It pays MULT_PCT wheel watts to every den watching when it settles; others get the normal rate.
   GOLDEN: { ONE_IN: 150, MULT_PCT: 1000 },
+  // Pets move in by themselves, for dens being watched: a common one on a heartbeat (COMMON_PCT, if its
+  // lure is placed), a running one on a settled block (RUN_PCT), the magpie on a golden block (GOLDEN_PCT).
+  // SLOTS of them can be home at once; only those give their perk.
+  PETS: { SLOTS: 3, COMMON_PCT: 1, RUN_PCT: 0.1, GOLDEN_PCT: 10 },
 };
 
 // ---------- room grid ----------
@@ -181,6 +185,7 @@ const ROOM = {
   FIX_MAX_SUM: 14,
   FIX_GAP: 2,
   FIXTURE_DEFAULTS: { wheel: { i: 1, j: 5, flip: true }, bed: { i: 7, j: 2, flip: false } },
+  STACK_MAX_Z: 80, // furniture can stand this many px above the floor (see Stacking below)
 };
 // Floor furniture and rugs stand on floor tiles: placement (x, y) = (i, j) is the BACK tile of a
 // w-tile chain that runs along i (flip false: parallel to the right wall, the iso art's canonical
@@ -196,8 +201,9 @@ const tileOnFloor = ([i, j]) => i >= 0 && j >= 0 && i < ROOM.ISO_NI && j < ROOM.
 const tileKey = ([i, j]) => i * 100 + j;
 
 // ---------- catalog ----------
-// {id, name, cat, price, w, h, zone, sprite, tier?, multPct?, animated?, crate?, remap?, colorOf?}
+// {id, name, cat, price, w, h, zone, sprite, tier?, multPct?, animated?, crate?, remap?, colorOf?, top?}
 // w/h are in cells; zone is "floor" | "wall" | "rug" for placeables, null otherwise.
+// top: furniture with a flat top; other furniture can stand on it, this many px above the item's own base.
 // crate: only found in lucky crates, never sold (price 0, but not one of the free defaults).
 // drop: only won in Burrow Drop (rarity: common | uncommon | rare | epic | legendary), never sold.
 // Colourways reuse their base item's art (sprite and iso_ sprite) with remap: [[from, to], ...]
@@ -209,6 +215,10 @@ const roomMat = (tier, material, price) => ({ id: `room_t${tier}`, name: `${mate
 const place = (id, name, cat, price, w, h, zone, animated) => ({ id, name, cat, price, w, h, zone, sprite: id, ...(animated ? { animated: true } : {}) });
 const crateOnly = (id, name, cat, w, h, zone, animated) => ({ ...place(id, name, cat, 0, w, h, zone, animated), crate: true });
 const dropOnly = (id, name, cat, w, h, zone, rarity, animated) => ({ ...place(id, name, cat, 0, w, h, zone, animated), drop: true, rarity });
+const surface = (id, name, price, w, h, top, animated) => ({ ...place(id, name, "furniture", price, w, h, "floor", animated), top });
+const fur = (id, name, price, w, h, animated) => place(id, name, "furniture", price, w, h, "floor", animated);
+const wall = (id, name, price, w, h, animated) => place(id, name, "wall", price, w, h, "wall", animated);
+const rug = (id, name, price, w) => place(id, name, "rug", price, w, 1, "rug");
 
 const CATALOG = [
   // wheel upgrades (strictly in order; with beds, the only items that change generation)
@@ -232,12 +242,31 @@ const CATALOG = [
   style("wp_forest", "Forest Mural", "wallpaper", 9_000),
   style("wp_circuit", "Circuit Board", "wallpaper", 18_000),
   style("wp_night_sky", "Night Sky", "wallpaper", 30_000),
+  style("wp_stripes", "Candy Stripes", "wallpaper", 2_000),
+  style("wp_brick", "Red Brick", "wallpaper", 3_000),
+  style("wp_tile", "Bathroom Tile", "wallpaper", 4_000),
+  style("wp_stone", "Castle Stone", "wallpaper", 6_000),
+  style("wp_wood", "Wood Panel", "wallpaper", 7_000),
+  style("wp_candy", "Sweet Shop", "wallpaper", 8_000),
+  style("wp_underwater", "Underwater", "wallpaper", 14_000),
+  style("wp_blueprint", "Blueprint", "wallpaper", 16_000),
+  style("wp_sunset", "Sunset Sky", "wallpaper", 20_000),
+  style("wp_starship", "Starship Hull", "wallpaper", 45_000),
   // flooring (equip one)
   style("fl_straw", "Straw Bedding", "floor", 0),
   style("fl_pine", "Pine Planks", "floor", 0),
   style("fl_checker", "Checker Tile", "floor", 2_400),
   style("fl_pebble", "Pebble Stone", "floor", 8_000),
   style("fl_cloud", "Cloud Carpet", "floor", 24_000),
+  style("fl_parquet", "Parquet", "floor", 3_000),
+  style("fl_terracotta", "Terracotta", "floor", 4_000),
+  style("fl_grass", "Lawn", "floor", 5_000),
+  style("fl_sand", "Beach Sand", "floor", 6_000),
+  style("fl_wool", "Wool Carpet", "floor", 7_000),
+  style("fl_hex", "Hex Tile", "floor", 9_000),
+  style("fl_ice", "Frozen Pond", "floor", 12_000),
+  style("fl_marble", "Marble", "floor", 18_000),
+  style("fl_lava", "Cooled Lava", "floor", 40_000),
   // rugs (flat layer, collide only with rugs)
   place("rug_rag", "Round Rag Rug", "rug", 1_600, 2, 1, "rug"),
   place("rug_cheese", "Cheese Wedge Rug", "rug", 5_000, 3, 1, "rug"),
@@ -245,29 +274,148 @@ const CATALOG = [
   place("rug_doormat", "Doormat", "rug", 500, 2, 1, "rug"),
   place("rug_leaves", "Leaf Pile", "rug", 600, 2, 1, "rug"),
   place("rug_sand", "Sand Patch", "rug", 800, 3, 1, "rug"),
+  rug("rug_bath", "Bath Mat", 450, 2),
+  rug("rug_puddle", "Puddle", 500, 2),
+  rug("rug_grass", "Patch of Grass", 700, 2),
+  rug("rug_yoga", "Yoga Mat", 900, 3),
+  rug("rug_stepping", "Stepping Stones", 1_200, 3),
+  rug("rug_paw", "Paw Print Rug", 1_600, 2),
+  rug("rug_picnic", "Picnic Blanket", 2_600, 3),
+  rug("rug_hopscotch", "Hopscotch", 3_200, 4),
+  rug("rug_chess", "Chessboard Rug", 6_000, 3),
+  rug("rug_pizza", "Pizza Rug", 7_500, 2),
+  rug("rug_map", "Pirate Map Rug", 12_000, 3),
+  rug("rug_lava", "Lava Moat", 30_000, 4),
   // floor furniture
   place("fur_seed_bowl", "Seed Bowl", "furniture", 1_200, 1, 1, "floor"),
   place("fur_cactus", "Cactus Pot", "furniture", 3_000, 1, 2, "floor"),
-  place("fur_bookshelf", "Tiny Bookshelf", "furniture", 3_600, 2, 2, "floor"),
+  surface("fur_bookshelf", "Tiny Bookshelf", 3_600, 2, 2, 29),
   place("fur_teacup_bed", "Teacup Bed", "furniture", 7_000, 2, 1, "floor"),
   place("fur_sofa", "Mini Sofa", "furniture", 12_000, 3, 2, "floor"),
   place("fur_lava_lamp", "Lava Lamp", "furniture", 16_000, 1, 2, "floor", true),
-  place("fur_arcade", "Arcade Cabinet", "furniture", 28_000, 2, 3, "floor", true),
+  surface("fur_arcade", "Arcade Cabinet", 28_000, 2, 3, 45, true),
   place("fur_grandfather_clock", "Grandfather Clock", "furniture", 40_000, 1, 4, "floor", true),
   place("fur_jukebox", "Jukebox", "furniture", 50_000, 2, 3, "floor", true),
-  place("fur_trophy_case", "Trophy Case", "furniture", 80_000, 2, 3, "floor"),
+  surface("fur_trophy_case", "Trophy Case", 80_000, 2, 3, 40),
   place("fur_golden_statue", "Golden Seed Statue", "furniture", 150_000, 2, 3, "floor"),
   // v3 decor wave: small, cheap things for the first days, plus a pricey hammock
   place("fur_mushroom", "Tiny Mushroom", "furniture", 300, 1, 1, "floor"),
   place("fur_yarn", "Ball of Yarn", "furniture", 400, 1, 1, "floor"),
   place("fur_water_bottle", "Water Bottle", "furniture", 500, 1, 2, "floor"),
   place("fur_fern", "Potted Fern", "furniture", 600, 1, 2, "floor"),
-  place("fur_stool", "Tiny Stool", "furniture", 700, 1, 1, "floor"),
+  surface("fur_stool", "Tiny Stool", 700, 1, 1, 8),
   place("fur_melon_cushion", "Watermelon Cushion", "furniture", 900, 1, 1, "floor"),
-  place("fur_box_house", "Cardboard Box House", "furniture", 1_500, 2, 2, "floor"),
+  surface("fur_box_house", "Cardboard Box House", 1_500, 2, 2, 23),
   place("fur_hammock", "Hamster Hammock", "furniture", 14_000, 2, 2, "floor"),
   crateOnly("fur_sunflower", "Golden Sunflower", "furniture", 1, 2, "floor"),
   crateOnly("fur_clover_jar", "Four-Leaf Clover Jar", "furniture", 1, 1, "floor"),
+  // v5: things to stack, with a flat top (art: public/sprites_v5_surfaces.js)
+  surface("fur_cardboard_box", "Cardboard Box", 350, 1, 1, 16),
+  surface("fur_milk_crate", "Milk Crate", 450, 1, 1, 14),
+  surface("fur_toy_block", "Alphabet Block", 500, 1, 1, 16),
+  surface("fur_wood_crate", "Wooden Crate", 600, 1, 1, 16),
+  surface("fur_wood_pallet", "Shipping Pallet", 650, 2, 1, 6),
+  surface("fur_book_stack", "Big Book Stack", 700, 1, 1, 10),
+  surface("fur_hay_bale", "Hay Bale", 800, 2, 1, 14),
+  surface("fur_stone_block", "Stone Block", 900, 1, 1, 16),
+  surface("fur_brick_stack", "Brick Pile", 1_000, 2, 1, 10),
+  surface("fur_gift_box", "Wrapped Present", 1_100, 1, 1, 16),
+  surface("fur_cheese_block", "Block of Cheese", 1_300, 1, 1, 14),
+  surface("fur_ottoman", "Ottoman", 1_400, 1, 1, 10),
+  surface("fur_barrel", "Oak Barrel", 1_600, 1, 2, 22),
+  surface("fur_cable_spool", "Cable Spool Table", 1_800, 1, 1, 14),
+  surface("fur_suitcase", "Old Suitcase", 2_200, 2, 1, 10),
+  surface("fur_side_table", "Side Table", 2_400, 1, 1, 14),
+  surface("fur_nightstand", "Nightstand", 2_800, 1, 2, 18),
+  surface("fur_coffee_table", "Coffee Table", 4_000, 2, 1, 11),
+  surface("fur_tv_stand", "TV Stand", 5_000, 2, 1, 14),
+  surface("fur_filing_cabinet", "Filing Cabinet", 6_000, 1, 2, 28),
+  surface("fur_desk", "Writing Desk", 7_000, 2, 2, 18),
+  surface("fur_dresser", "Chest of Drawers", 9_000, 2, 2, 22),
+  surface("fur_kitchen_counter", "Kitchen Counter", 10_000, 2, 2, 20),
+  surface("fur_tool_chest", "Rolling Tool Chest", 11_000, 2, 2, 20),
+  surface("fur_workbench", "Workbench", 13_000, 3, 2, 18),
+  surface("fur_dining_table", "Dining Table", 15_000, 3, 2, 16),
+  surface("fur_bar_counter", "Bar Counter", 20_000, 3, 2, 22),
+  surface("fur_server_rack", "Server Rack", 32_000, 1, 3, 40, true),
+  surface("fur_piano", "Upright Piano", 45_000, 3, 3, 34),
+  surface("fur_safe", "Ledger Safe", 55_000, 2, 2, 24),
+  // v5: little things for those tops (art: public/sprites_v5_small.js)
+  fur("fur_mug", "Coffee Mug", 300, 1, 1),
+  fur("fur_cupcake", "Cupcake", 320, 1, 1),
+  fur("fur_succulent", "Succulent", 350, 1, 1),
+  fur("fur_sandwich", "Sandwich", 380, 1, 1),
+  fur("fur_rubber_duck", "Rubber Duck", 400, 1, 1),
+  fur("fur_puzzle_cube", "Puzzle Cube", 450, 1, 1),
+  fur("fur_candle", "Candle", 600, 1, 1, true),
+  fur("fur_teapot", "Teapot", 700, 1, 1),
+  fur("fur_cookie_jar", "Cookie Jar", 800, 1, 1),
+  fur("fur_fruit_bowl", "Fruit Bowl", 900, 1, 1),
+  fur("fur_alarm_clock", "Alarm Clock", 1_000, 1, 1, true),
+  fur("fur_piggy_bank", "Piggy Bank", 1_100, 1, 1),
+  fur("fur_desk_lamp", "Desk Lamp", 1_300, 1, 2),
+  fur("fur_radio", "Little Radio", 1_500, 1, 1, true),
+  fur("fur_toaster", "Toaster", 1_600, 1, 1),
+  fur("fur_cake", "Birthday Cake", 2_000, 1, 1, true),
+  fur("fur_bonsai", "Bonsai", 2_600, 1, 2),
+  fur("fur_snow_globe", "Snow Globe", 3_000, 1, 1, true),
+  fur("fur_hourglass", "Hourglass", 3_200, 1, 2, true),
+  fur("fur_goldfish_bowl", "Goldfish Bowl", 3_600, 1, 1, true),
+  fur("fur_world_globe", "World Globe", 4_200, 1, 2),
+  fur("fur_microwave", "Microwave", 4_800, 1, 1, true),
+  fur("fur_typewriter", "Typewriter", 5_500, 1, 1),
+  fur("fur_laptop", "Laptop", 8_000, 1, 1, true),
+  fur("fur_game_console", "Game Console", 9_000, 1, 1, true),
+  fur("fur_crt_tv", "CRT Television", 10_000, 1, 1, true),
+  fur("fur_microscope", "Microscope", 11_000, 1, 2),
+  fur("fur_music_box", "Music Box", 14_000, 1, 1, true),
+  fur("fur_crystal_ball", "Crystal Ball", 18_000, 1, 1, true),
+  fur("fur_gramophone", "Gramophone", 24_000, 1, 2, true),
+  // v5: everyday and outdoors (art: public/sprites_v5_big1.js)
+  fur("fur_traffic_cone", "Traffic Cone", 400, 1, 1),
+  fur("fur_hydrant", "Fire Hydrant", 900, 1, 2),
+  fur("fur_mailbox", "Mailbox", 1_100, 1, 2),
+  fur("fur_pumpkin", "Pumpkin", 1_200, 1, 1),
+  fur("fur_skateboard", "Skateboard", 1_300, 2, 1),
+  fur("fur_ladder", "Stepladder", 1_800, 1, 3),
+  fur("fur_bird_bath", "Bird Bath", 2_500, 1, 2),
+  fur("fur_snowman", "Snowman", 3_000, 1, 2),
+  fur("fur_campfire", "Campfire", 4_500, 1, 2, true),
+  fur("fur_beehive", "Beehive", 5_000, 1, 2, true),
+  fur("fur_wheelbarrow", "Wheelbarrow", 5_200, 2, 2),
+  fur("fur_guitar_stand", "Guitar on a Stand", 6_500, 1, 3),
+  fur("fur_scarecrow", "Scarecrow", 7_000, 1, 3),
+  fur("fur_sink", "Kitchen Sink", 8_000, 1, 2, true),
+  fur("fur_street_lamp", "Street Lamp", 8_500, 1, 4, true),
+  fur("fur_palm_tree", "Palm Tree", 9_500, 2, 4),
+  fur("fur_stove", "Stove", 9_500, 1, 2, true),
+  fur("fur_washing_machine", "Washing Machine", 11_000, 1, 2, true),
+  fur("fur_bicycle", "Bicycle", 12_000, 2, 2),
+  fur("fur_fridge", "Fridge", 13_000, 1, 3),
+  // v5: statement pieces, up to the priciest things in the game (art: public/sprites_v5_big2.js)
+  fur("fur_gumball", "Gumball Machine", 12_000, 1, 3),
+  fur("fur_slide", "Playground Slide", 15_000, 3, 3),
+  fur("fur_bathtub", "Clawfoot Bathtub", 16_000, 2, 2),
+  fur("fur_tent", "Camping Tent", 18_000, 2, 3),
+  fur("fur_ore_cart", "Ore Cart", 22_000, 2, 2),
+  fur("fur_vending", "Vending Machine", 26_000, 2, 3, true),
+  fur("fur_christmas_tree", "Festive Tree", 28_000, 2, 4, true),
+  fur("fur_drum_kit", "Drum Kit", 30_000, 2, 2),
+  fur("fur_windmill", "Tiny Windmill", 34_000, 2, 4, true),
+  fur("fur_knight_armor", "Suit of Armor", 38_000, 1, 3),
+  fur("fur_sword_stone", "Sword in the Stone", 42_000, 1, 2),
+  fur("fur_mining_rig", "Mining Rig", 48_000, 2, 2, true),
+  fur("fur_fountain", "Stone Fountain", 60_000, 2, 2, true),
+  fur("fur_block_terminal", "Block Terminal", 70_000, 2, 3, true),
+  fur("fur_robot", "Butler Robot", 85_000, 1, 3, true),
+  fur("fur_dino_skeleton", "Dino Skeleton", 120_000, 3, 3),
+  fur("fur_throne", "Royal Throne", 200_000, 2, 3),
+  fur("fur_ufo", "Tiny UFO", 260_000, 2, 3, true),
+  fur("fur_dragon_hoard", "Dragon's Hoard", 350_000, 3, 2, true),
+  fur("fur_rocket", "Hamster Rocket", 500_000, 2, 5, true),
+  // crate-only finds (art: public/sprites_v5_prizes.js)
+  crateOnly("fur_lucky_hamster", "Waving Lucky Hamster", "furniture", 1, 2, "floor", true),
+  crateOnly("fur_wishing_well", "Wishing Well", "furniture", 2, 2, "floor"),
   // wall decor (rows 2..7)
   place("wall_pennant", "Pennant", "wall", 1_400, 1, 1, "wall"),
   place("wall_photo", "Family Photo", "wall", 1_800, 1, 1, "wall"),
@@ -288,15 +436,54 @@ const CATALOG = [
   place("wall_fish_tank", "Fish Tank", "wall", 22_000, 2, 2, "wall", true),
   crateOnly("wall_lucky_lantern", "Lucky Lantern", "wall", 1, 2, "wall", true),
   crateOnly("wall_shooting_star", "Shooting Star", "wall", 2, 1, "wall", true),
+  crateOnly("wall_horseshoe", "Lucky Horseshoe", "wall", 1, 1, "wall"),
+  crateOnly("wall_rainbow", "Rainbow", "wall", 3, 1, "wall"),
+  // v5 wall decor (art: public/sprites_v5_wall.js)
+  wall("wall_calendar", "Calendar", 350, 1, 1),
+  wall("wall_wanted", "Wanted Poster", 450, 1, 2),
+  wall("wall_dartboard", "Dartboard", 700, 1, 1),
+  wall("wall_coat_hooks", "Coat Hooks", 900, 2, 1),
+  wall("wall_phone", "Wall Phone", 1_000, 1, 2),
+  wall("wall_bunting", "Party Bunting", 1_200, 4, 1),
+  wall("wall_bulletin", "Bulletin Board", 1_500, 2, 2),
+  wall("wall_sunset", "Sunset Painting", 2_000, 2, 2),
+  wall("wall_planter", "Wall Planter", 2_200, 2, 1),
+  wall("wall_chalkboard", "Chalkboard", 3_000, 3, 2),
+  wall("wall_digital_clock", "Digital Clock", 3_000, 2, 1, true),
+  wall("wall_world_map", "Treasure Map", 3_600, 3, 2),
+  wall("wall_vinyl", "Vinyl Records", 4_200, 2, 1),
+  wall("wall_ac", "Air Conditioner", 5_000, 2, 1, true),
+  wall("wall_hoop", "Basketball Hoop", 5_500, 2, 2),
+  wall("wall_guitar", "Hanging Guitar", 7_000, 1, 3),
+  wall("wall_surfboard", "Surfboard", 8_000, 1, 3),
+  wall("wall_mona", "Mona Squeeza", 9_000, 2, 3),
+  wall("wall_speakers", "Wall Speaker", 12_000, 1, 2, true),
+  wall("wall_stained", "Stained Glass", 14_000, 2, 3, true),
+  wall("wall_porthole", "Porthole", 16_000, 2, 2, true),
+  wall("wall_ships_wheel", "Ship's Wheel", 18_000, 2, 2),
+  wall("wall_shield", "Shield and Swords", 26_000, 2, 2),
+  wall("wall_ticker", "Price Ticker", 32_000, 4, 1, true),
+  wall("wall_disco", "Disco Ball", 45_000, 2, 2, true),
+  wall("wall_family_tree", "Hamster Family Tree", 70_000, 3, 3),
+  wall("wall_gold_record", "Golden Wheel Award", 100_000, 2, 2, true),
   // Burrow Drop prizes (art: public/sprites_drop.js)
   dropOnly("fur_pebble_cairn", "Pebble Cairn", "furniture", 1, 1, "floor", "common"),
-  dropOnly("fur_root_stool", "Root Stool", "furniture", 1, 1, "floor", "common"),
+  { ...dropOnly("fur_root_stool", "Root Stool", "furniture", 1, 1, "floor", "common"), top: 5 },
   dropOnly("fur_seed_sack", "Seed Sack", "furniture", 1, 1, "floor", "common"),
   dropOnly("fur_acorn_lamp", "Acorn Lamp", "furniture", 1, 2, "floor", "uncommon"),
   dropOnly("wall_burrow_map", "Burrow Map", "wall", 2, 1, "wall", "uncommon"),
   dropOnly("fur_coin_jar", "Coin Jar", "furniture", 1, 1, "floor", "rare", true),
   dropOnly("fur_golden_acorn", "Golden Acorn", "furniture", 1, 1, "floor", "epic", true),
   dropOnly("fur_crystal_geode", "Crystal Geode", "furniture", 2, 1, "floor", "legendary", true),
+  // more prizes (art: public/sprites_v5_prizes.js)
+  dropOnly("fur_mossy_stump", "Mossy Stump", "furniture", 1, 1, "floor", "common"),
+  dropOnly("fur_burrow_bell", "Burrow Bell", "furniture", 1, 2, "floor", "common"),
+  dropOnly("fur_ore_chunk", "Raw Ore Chunk", "furniture", 1, 1, "floor", "uncommon"),
+  dropOnly("fur_miner_helmet", "Miner's Helmet", "furniture", 1, 1, "floor", "uncommon"),
+  dropOnly("fur_ancient_cog", "Ancient Cog", "furniture", 1, 2, "floor", "rare", true),
+  dropOnly("wall_fossil", "Fossil Slab", "wall", 2, 2, "wall", "rare"),
+  dropOnly("fur_burrow_idol", "Burrow Idol", "furniture", 1, 3, "floor", "epic", true),
+  dropOnly("fur_meteor", "Fallen Meteor", "furniture", 2, 2, "floor", "legendary", true),
   // hamster skins (palette remaps of one sprite set)
   style("skin_classic", "Classic", "skin", 0),
   style("skin_albino", "Albino", "skin", 20_000),
@@ -334,6 +521,79 @@ const TIER_FIELD = { wheel: "wheelTier", bed: "bedTier", room: "roomTier" };
 const tierField = (cat) => (Object.hasOwn(TIER_FIELD, cat) ? TIER_FIELD[cat] : null);
 const DEFAULTS = { skin: "skin_classic", wallpaper: "wp_plain", floor: "fl_straw" };
 const FREE_IDS = CATALOG.filter((i) => i.price === 0 && !i.crate && !i.drop).map((i) => i.id); // every player owns these
+
+// ---------- pets ----------
+// kind: "common" | "run" | "golden" (see BALANCE.PETS). lure: the placed item a common pet comes for.
+// perk: what it adds while it's home, read through petPerk(). Art: public/sprites_pets.js.
+const PETS = [
+  { id: "pet_mouse", name: "Mouse", kind: "common", lure: "fur_cardboard_box", perk: { wheelPct: 1 }, says: "+1% wheel Watts" },
+  { id: "pet_snail", name: "Snail", kind: "common", lure: "fur_hay_bale", perk: { bedPct: 1 }, says: "+1% bed Watts" },
+  { id: "pet_cricket", name: "Cricket", kind: "common", lure: "fur_campfire", perk: { watchPct: 1 }, says: "+1% watching bonus" },
+  { id: "pet_moth", name: "Moth", kind: "common", lure: "fur_street_lamp", perk: { cratesDay: 1 }, says: "+1 crate a day" },
+  { id: "pet_frog", name: "Frog", kind: "common", lure: "rug_puddle", perk: { cratesWaiting: 1 }, says: "Holds +1 unopened crate" },
+  { id: "pet_pigeon", name: "Pigeon", kind: "common", lure: "fur_mailbox", perk: { dailyWatts: 200 }, says: "Brings 200 W a day" },
+  { id: "pet_gecko", name: "Gecko", kind: "common", lure: "fur_safe", perk: { shieldMs: 900_000 }, says: "Raid Shield lasts 15 min longer" },
+  { id: "pet_ladybug", name: "Ladybug", kind: "common", lure: "fur_bonsai", perk: { dropPct: 1 }, says: "Burrow Drop pays 1% more" },
+  { id: "pet_shrew", name: "Shrew", kind: "run", perk: { raids: 1 }, says: "+1 raid a day" },
+  { id: "pet_spark_beetle", name: "Spark Beetle", kind: "run", perk: { wheelPct: 3 }, says: "+3% wheel Watts" },
+  { id: "pet_ferret", name: "Ferret", kind: "run", perk: { raidRunPct: 2 }, says: "Raid run bonus +2%" },
+  { id: "pet_hedgehog", name: "Hedgehog", kind: "run", perk: { bruiseMs: 600_000 }, says: "10 min more peace after a raid" },
+  { id: "pet_firefly", name: "Firefly", kind: "run", perk: { crateChancePct: 25 }, says: "Crates drop 25% more often" },
+  { id: "pet_magpie", name: "Magpie", kind: "golden", perk: { goldenPct: 100 }, says: "Golden blocks pay 11x" },
+];
+const PET_BY_ID = new Map(PETS.map((q) => [q.id, q]));
+// The sum of one perk over the pets at home.
+function petPerk(p, key) {
+  const home = p && p.petsActive;
+  if (!Array.isArray(home) || !home.length) return 0;
+  let n = 0;
+  for (const id of home) { const q = PET_BY_ID.get(id); if (q && q.perk[key]) n += q.perk[key]; }
+  return n;
+}
+function addPet(p, id, now) {
+  if (!p.pets || typeof p.pets !== "object") p.pets = {};
+  if (p.pets[id]) return false;
+  p.pets[id] = now;
+  if (!Array.isArray(p.petsActive)) p.petsActive = [];
+  if (p.petsActive.length < BALANCE.PETS.SLOTS) p.petsActive.push(id);
+  return true;
+}
+const pickOne = (list, rng) => list[Math.floor(rng() * list.length) % list.length];
+// One watched heartbeat: a common pet may come, if what it likes is in the den. Returns its id.
+function rollCommonPet(p, now, rng = Math.random) {
+  if (!(rng() < BALANCE.PETS.COMMON_PCT / 100)) return null;
+  const placed = new Set((p.placed || []).map((o) => o.item));
+  const can = PETS.filter((q) => q.kind === "common" && !(p.pets && p.pets[q.id]) && placed.has(q.lure));
+  if (!can.length) return null;
+  const q = pickOne(can, rng);
+  addPet(p, q.id, now);
+  return q.id;
+}
+// New settled blocks for a den being watched: he is running, so a running pet may come; a golden block
+// may bring the magpie. Returns the ids that moved in.
+function rollRunPets(p, blocks, golden, now, rng = Math.random) {
+  const P = BALANCE.PETS, got = [];
+  for (let n = 0; n < blocks; n++) {
+    if (!(rng() < P.RUN_PCT / 100)) continue;
+    const can = PETS.filter((q) => q.kind === "run" && !(p.pets && p.pets[q.id]));
+    if (!can.length) break;
+    const q = pickOne(can, rng);
+    addPet(p, q.id, now);
+    got.push(q.id);
+  }
+  for (let n = 0; n < golden; n++) {
+    if (!(p.pets && p.pets.pet_magpie) && rng() < P.GOLDEN_PCT / 100) { addPet(p, "pet_magpie", now); got.push("pet_magpie"); }
+  }
+  return got;
+}
+// body {active: [ids]}: which of the den's pets are home.
+function setPets(p, body) {
+  const a = body && body.active;
+  if (!Array.isArray(a) || a.length > BALANCE.PETS.SLOTS || new Set(a).size !== a.length) return fail("bad_pets");
+  for (const id of a) if (typeof id !== "string" || !PET_BY_ID.has(id) || !(p.pets && p.pets[id])) return fail("bad_pets");
+  p.petsActive = [...a];
+  return { ok: true };
+}
 
 // ---------- fixtures: the wheel and the bed ----------
 const FIXTURES = ["wheel", "bed"];
@@ -452,6 +712,9 @@ function newPlayer(height, now = Date.now(), token = null) {
     lastRaidAt: 0, // ms of this player's last resolved raid
     raidDay: null, // UTC day ("YYYY-MM-DD") that raidsToday counts
     raidsToday: 0, // raids made on raidDay (BALANCE.RAID.PER_DAY a day)
+    pets: {}, // pet id -> when it moved in
+    petsActive: [], // the ones home (BALANCE.PETS.SLOTS)
+    pigeonDay: null, // UTC day of the pigeon's last delivery
     raidedBy: [], // ring of {pid, at, avenged}: who raided this room (revenge waives the 70% rule once)
     wallet: null, // lowercase 0x address once a personal_sign proof was verified
     username: null, // unique, shown on the leaderboard instead of the nick; picked when the den starts
@@ -494,6 +757,9 @@ function patchPlayer(p, token) {
   if (!Array.isArray(p.crates)) p.crates = [];
   if (p.crateDay === undefined) p.crateDay = null;
   if (!Number.isInteger(p.cratesToday)) p.cratesToday = 0;
+  if (!p.pets || typeof p.pets !== "object") p.pets = {};
+  if (!Array.isArray(p.petsActive)) p.petsActive = [];
+  if (p.pigeonDay === undefined) p.pigeonDay = null;
   if (p.owned && typeof p.owned === "object") for (const id of FREE_IDS) if (!p.owned[id]) p.owned[id] = 1;
   for (const k of LEGACY_FIELDS) delete p[k];
   return p;
@@ -618,7 +884,7 @@ function purgeNameless(st) {
 
 // ---------- economy (pure-ish: explicit args, no globals) ----------
 function liveBonusPct(player, now = Date.now()) {
-  return player.lastHeartbeat > 0 && now - player.lastHeartbeat <= BALANCE.HEARTBEAT_WINDOW_MS ? BALANCE.LIVE_BONUS_PCT : 100;
+  return player.lastHeartbeat > 0 && now - player.lastHeartbeat <= BALANCE.HEARTBEAT_WINDOW_MS ? BALANCE.LIVE_BONUS_PCT + petPerk(player, "watchPct") : 100;
 }
 // boostPct: Double Wheel (100 = off). delta may count a golden block as GOLDEN.MULT_PCT / 100 blocks.
 function wattsFor(delta, tier, bonusPct, speedPct = 100, boostPct = 100) {
@@ -648,8 +914,8 @@ function creditWatts(player, earned, now) {
 function accrue(player, delta, now = Date.now(), speedPct = 100, golden = 0) {
   if (!Number.isInteger(delta) || delta <= 0) return 0;
   const bonus = liveBonusPct(player, now);
-  const gold = bonus > 100 && golden > 0 ? (Math.min(golden, delta) * (BALANCE.GOLDEN.MULT_PCT - 100)) / 100 : 0;
-  const earned = wattsFor(delta + gold, player.wheelTier | 0, bonus, speedPct, boostPct(player, "double_wheel", now));
+  const gold = bonus > 100 && golden > 0 ? (Math.min(golden, delta) * (BALANCE.GOLDEN.MULT_PCT + petPerk(player, "goldenPct") - 100)) / 100 : 0;
+  const earned = wattsFor(delta + gold, player.wheelTier | 0, bonus, speedPct, (boostPct(player, "double_wheel", now) * (100 + petPerk(player, "wheelPct"))) / 100);
   if (earned <= 0) return 0;
   creditWatts(player, earned, now);
   return earned;
@@ -705,7 +971,8 @@ const bedWattsPerMin = (player) => (bedRateTenths() * bedMultPct(player)) / 1000
 // Credit one player `ms` of bed time. Returns whole watts credited.
 function bedCredit(player, ms, now = Date.now()) {
   if (!Number.isFinite(ms) || ms <= 0) return 0;
-  const total = (Number.isFinite(player.bedFrac) ? player.bedFrac : 0) + ms * bedRateTenths() * bedMultPct(player) * liveBonusPct(player, now) * boostPct(player, "deep_sleep", now);
+  const earned = ms * bedRateTenths() * bedMultPct(player) * liveBonusPct(player, now) * boostPct(player, "deep_sleep", now);
+  const total = (Number.isFinite(player.bedFrac) ? player.bedFrac : 0) + Math.round((earned * (100 + petPerk(player, "bedPct"))) / 100);
   const watts = Math.floor(total / BED_FRAC_DEN);
   player.bedFrac = total - watts * BED_FRAC_DEN;
   if (watts > 0) creditWatts(player, watts, now);
@@ -740,7 +1007,11 @@ function accrueAll(st, newHeight, now = Date.now(), speedPct = 100, rng = Math.r
     const since = p.joinHeight == null ? st.lastAccruedHeight : Math.max(st.lastAccruedHeight, p.joinHeight);
     if (newHeight <= since) continue;
     total += accrue(p, newHeight - since, now, speedPct, golden.filter((h) => h > since).length);
-    if (liveBonusPct(p, now) > 100) rollCrates(p, Math.min(newHeight - since, BALANCE.CRATES.ROLLS_MAX), now, rng);
+    if (liveBonusPct(p, now) > 100) {
+      const rolls = Math.min(newHeight - since, BALANCE.CRATES.ROLLS_MAX);
+      rollCrates(p, rolls, now, rng);
+      rollRunPets(p, rolls, golden.filter((h) => h > since).length, now);
+    }
   }
   st.lastAccruedHeight = newHeight;
   return total;
@@ -789,10 +1060,11 @@ function rollCrates(p, rolls, now = Date.now(), rng = Math.random) {
   const C = BALANCE.CRATES, day = utcDay(now);
   if (p.crateDay !== day) { p.crateDay = day; p.cratesToday = 0; }
   if (!Array.isArray(p.crates)) p.crates = [];
+  const perDay = C.PER_DAY + petPerk(p, "cratesDay"), waiting = C.MAX_UNOPENED + petPerk(p, "cratesWaiting"), chance = (C.CHANCE_PCT * (100 + petPerk(p, "crateChancePct"))) / 100;
   let dropped = 0;
   for (let n = 0; n < rolls; n++) {
-    if (p.cratesToday >= C.PER_DAY || p.crates.length >= C.MAX_UNOPENED) break;
-    if (!(rng() < C.CHANCE_PCT / 100)) continue;
+    if (p.cratesToday >= perDay || p.crates.length >= waiting) break;
+    if (!(rng() < chance / 100)) continue;
     const c = rollCrateContents(p, rng), t = crateTile(p, rng);
     p.crates.push({ id: crypto.randomBytes(4).toString("hex"), at: now, i: t.i, j: t.j, c });
     p.cratesToday += 1;
@@ -889,13 +1161,13 @@ function playDrop(st, token, body, now = Date.now(), { rng = Math.random, seed =
     if (!Array.isArray(st.raidFeed)) st.raidFeed = [];
     pushRing(st.raidFeed, { at: now, kind: "bounty", atk: displayName(p), atkId: p.publicId, def: null, defId: null, win: true, amount: stashWon, crit: false, bonus: 0 }, BALANCE.RAID.FEED_MAX);
   }
-  else land = Math.round(wager * P[r.slotId]);
+  else land = Math.round((wager * P[r.slotId] * (100 + petPerk(p, "dropPct"))) / 100);
   let seeds = 0, chain = 0, lastF = -1e9;
   for (const e of r.events) {
     if (e.kind !== "seed") continue;
     chain = e.f - lastF < P.COMBO_FRAMES ? chain + 1 : 1;
     lastF = e.f;
-    seeds += Math.round((wager * P.SEED_PCT * Math.min(chain, P.COMBO_MAX) * (board.golden ? 2 : 1)) / 100);
+    seeds += Math.round((wager * P.SEED_PCT * Math.min(chain, P.COMBO_MAX) * (board.golden ? 2 : 1) * (100 + petPerk(p, "dropPct"))) / 10_000);
   }
   let crate = null;
   if (r.crateHit) {
@@ -966,7 +1238,7 @@ function raiseShield(st, token, body, now = Date.now()) {
     if (p.watts < price) return { ok: false, error: "poor", need: price - p.watts };
     p.watts -= price;
   } else return fail("bad_from");
-  p.shield = { until: now + BALANCE.SHIELD.MS, kind: "bought" };
+  p.shield = { until: now + BALANCE.SHIELD.MS + petPerk(p, "shieldMs"), kind: "bought" };
   p.shieldDay = utcDay(now);
   invalidateLeaderboard(st);
   return { ok: true, shield: p.shield };
@@ -1047,6 +1319,49 @@ const spanHits = (ax, aw, bx, bw) => ax < bx + bw && bx < ax + aw;
 // Validate putting one copy of itemId at cell (x, y). For floor/rug items x is the left column
 // and y is normalised to the floor row; for wall items (x, y) is the top-left cell.
 // ignorePid: the placement being moved (excluded from overlap + ownership counts).
+// ---------- stacking ----------
+// A placement's z is how many px above the floor it stands (no z = on the floor). Furniture can stand on
+// items with a `top`, on every one of its tiles at the same height; the server works z out, the client
+// never sends it. An item rests on another when they share a tile and its z is the other's top.
+const zOf = (o) => (o && o.z) | 0;
+function restsOn(o, oi, s, si) {
+  if (!si.top || zOf(o) !== zOf(s) + si.top) return false;
+  const under = new Set(footprint(si, s.x, s.y, !!s.flip).map(tileKey));
+  return footprint(oi, o.x, o.y, !!o.flip).some((t) => under.has(tileKey(t)));
+}
+// What goes with `e` if it moves: everything resting on it, all the way up. loose = one of those that
+// also rests on something else, which keeps it from moving (packing `e` away takes it along).
+function stackAbove(player, e) {
+  const floor = (player.placed || []).map((o) => [o, CATALOG_BY_ID.get(o.item)]).filter(([, oi]) => oi && oi.zone === "floor").sort((a, b) => zOf(a[0]) - zOf(b[0]));
+  const up = new Set([e.pid]);
+  let loose = null;
+  for (const [o, oi] of floor) {
+    if (zOf(o) <= zOf(e)) continue;
+    const under = floor.filter(([s, si]) => s !== o && restsOn(o, oi, s, si));
+    if (!under.some(([s]) => up.has(s.pid))) continue;
+    up.add(o.pid);
+    if (!under.every(([s]) => up.has(s.pid))) loose = loose || o;
+  }
+  return { up, loose };
+}
+function setZ(o, z) { if (z) o.z = z; else delete o.z; }
+// Move `e` and what it carries to (x, y) at height z. Turning it mirrors the stack across its back tile.
+function moveStack(player, e, x, y, z, flip) {
+  const turned = flip !== !!e.flip, { up } = stackAbove(player, e), dz = z - zOf(e);
+  for (const o of player.placed) {
+    if (o === e || !up.has(o.pid)) continue;
+    const di = o.x - e.x, dj = o.y - e.y;
+    o.x = x + (turned ? dj : di);
+    o.y = y + (turned ? di : dj);
+    if (turned) o.flip = !o.flip;
+    setZ(o, zOf(o) + dz);
+  }
+  e.x = x;
+  e.y = y;
+  e.flip = flip;
+  setZ(e, z);
+}
+
 function validatePlacement(player, itemId, x, y, ignorePid = null, flip = false) {
   const item = typeof itemId === "string" ? CATALOG_BY_ID.get(itemId) : undefined;
   if (!item) return fail("unknown_item");
@@ -1065,24 +1380,38 @@ function validatePlacement(player, itemId, x, y, ignorePid = null, flip = false)
     return { ok: true, item, x, y };
   }
 
-  // floor furniture and rugs: tiles anywhere on the floor; furniture overlaps furniture, rugs rugs,
-  // and furniture keeps off the wheel's and the bed's tiles (a rug can lie under them)
+  // floor furniture and rugs: tiles anywhere on the floor; furniture overlaps furniture (unless it can
+  // stand on it), rugs rugs, and furniture keeps off the wheel's and the bed's tiles (a rug can lie under them)
   const tiles = footprint(item, x, y, !!flip);
   if (!tiles.every(tileOnFloor)) return fail("out_of_bounds");
   const mine = new Set(tiles.map(tileKey));
+  const self = ignorePid ? (player.placed || []).find((p) => p.pid === ignorePid) : null;
+  const moving = self && item.zone === "floor" ? stackAbove(player, self) : null;
+  if (moving && moving.loose) return fail("holding");
+  const height = new Map(tiles.map((t) => [tileKey(t), 0]));
   for (const o of others) {
     const oi = CATALOG_BY_ID.get(o.item);
-    if (oi && oi.zone === item.zone && footprint(oi, o.x, o.y, !!o.flip).some((t) => mine.has(tileKey(t)))) return fail("overlap");
+    if (!oi || oi.zone !== item.zone || (moving && moving.up.has(o.pid))) continue;
+    for (const t of footprint(oi, o.x, o.y, !!o.flip)) {
+      const k = tileKey(t);
+      if (!mine.has(k)) continue;
+      if (item.zone !== "floor" || !oi.top) return fail("overlap");
+      height.set(k, Math.max(height.get(k), zOf(o) + oi.top));
+    }
   }
   if (item.zone === "floor") for (const k of FIXTURES) {
     const f = player.fixtures && player.fixtures[k];
     if (f && fixtureTiles(k, f).some((t) => mine.has(tileKey(t)))) return { ok: false, error: "fixture", which: k };
   }
-  return { ok: true, item, x, y };
+  const zs = [...height.values()], z = zs[0];
+  if (zs.some((h) => h !== z)) return fail("uneven");
+  const rise = moving ? Math.max(...player.placed.filter((o) => moving.up.has(o.pid)).map(zOf)) - zOf(self) : 0;
+  if (z + rise > ROOM.STACK_MAX_Z) return fail("too_high");
+  return { ok: true, item, x, y, z };
 }
 
 // Rate-limited "I'm watching" stamp. Early calls do not stamp (and cannot extend the window).
-function heartbeat(player, now = Date.now()) {
+function heartbeat(player, now = Date.now(), rng = Math.random) {
   const since = now - (player.lastHeartbeat || 0);
   if (player.lastHeartbeat > 0 && since < BALANCE.HEARTBEAT_MIN_INTERVAL_MS) {
     const bonusPct = liveBonusPct(player, now);
@@ -1090,7 +1419,11 @@ function heartbeat(player, now = Date.now()) {
   }
   player.lastHeartbeat = now;
   player.lastSeen = now;
-  return { ok: true, stamped: true, watching: true, bonusPct: BALANCE.LIVE_BONUS_PCT, nextMs: BALANCE.HEARTBEAT_MIN_INTERVAL_MS };
+  const pet = rollCommonPet(player, now, rng);
+  const brought = petPerk(player, "dailyWatts"), day = utcDay(now);
+  let pigeon = 0;
+  if (brought > 0 && player.pigeonDay !== day) { player.pigeonDay = day; player.watts += brought; pigeon = brought; } // on the balance only: not earnings
+  return { ok: true, stamped: true, watching: true, bonusPct: liveBonusPct(player, now), nextMs: BALANCE.HEARTBEAT_MIN_INTERVAL_MS, ...(pet ? { pet } : {}), ...(pigeon ? { pigeon } : {}) };
 }
 
 function certEligible(player) {
@@ -1122,7 +1455,7 @@ function claimCommemorative(st, token, now = Date.now()) {
     wheelTier: p.wheelTier,
     skin: p.skin,
     itemsOwned: { ...p.owned },
-    room: { wallpaper: p.wallpaper, floor: p.floor, placed: p.placed.map(({ item, x, y, flip }) => ({ item, x, y, flip })) },
+    room: { wallpaper: p.wallpaper, floor: p.floor, placed: p.placed.map(({ item, x, y, flip, z }) => ({ item, x, y, flip, ...(z ? { z } : {}) })) },
   };
   return { ok: true, already: false, cert: p.commemorative };
 }
@@ -1192,7 +1525,8 @@ function parseMultPct(v) {
   return L.includes(pct) && Math.abs(v * 100 - pct) < 1e-9 ? pct : null;
 }
 // Daily allowance: PER_DAY raids per UTC day; the count resets at 00:00 UTC.
-const raidsLeft = (p, now) => (p.raidDay === utcDay(now) ? Math.max(0, BALANCE.RAID.PER_DAY - (p.raidsToday | 0)) : BALANCE.RAID.PER_DAY);
+const raidsPerDay = (p) => BALANCE.RAID.PER_DAY + petPerk(p, "raids");
+const raidsLeft = (p, now) => (p.raidDay === utcDay(now) ? Math.max(0, raidsPerDay(p) - (p.raidsToday | 0)) : raidsPerDay(p));
 const msToUtcMidnight = (now) => 86_400_000 - (now % 86_400_000);
 // The oldest unavenged provocation by `pid` against `player` within the revenge window, or null.
 function pendingRevenge(player, pid, now) {
@@ -1208,9 +1542,9 @@ function raidEligibility(attacker, defender, now) {
   const revenge = pendingRevenge(attacker, defender.publicId, now);
   return revenge ? { ok: true, revenge } : { ok: false, error: "not_eligible" };
 }
-const raidRunPct = (st, now, readAt) => (runningNow(st, now, readAt) ? BALANCE.RAID.RUN_BONUS_PCT : 0);
+const raidRunPct = (st, now, readAt, p) => (runningNow(st, now, readAt) ? BALANCE.RAID.RUN_BONUS_PCT + petPerk(p, "raidRunPct") : 0);
 function raidStatus(st, player, now = Date.now(), readAt = chainReadAt()) {
-  return { raidsLeft: raidsLeft(player, now), perDay: BALANCE.RAID.PER_DAY, resetMs: msToUtcMidnight(now), runPct: raidRunPct(st, now, readAt),
+  return { raidsLeft: raidsLeft(player, now), perDay: raidsPerDay(player), resetMs: msToUtcMidnight(now), runPct: raidRunPct(st, now, readAt, player),
     ready: raidReady(player), earned: Math.max(0, player.lifetimeWatts | 0), needEarned: BALANCE.RAID.MIN_EARNED, shielded: boughtShieldUp(player, now) };
 }
 
@@ -1272,13 +1606,13 @@ function applyRaid(st, token, body, now = Date.now(), { rng = Math.random, readA
 
   // the whisker is only spent when it can help: odds already at P_MAX leave it armed for the next raid
   const lucky = boostActive(atk, "lucky_whisker", now) && raidChance(atk, def, multPct) < R.P_MAX_PCT / 100;
-  const r = resolveRaid(atk, def, stake, multPct, rng, lucky ? BALANCE.BOOSTS.lucky_whisker.ODDS_PTS : 0, raidRunPct(st, now, readAt));
+  const r = resolveRaid(atk, def, stake, multPct, rng, lucky ? BALANCE.BOOSTS.lucky_whisker.ODDS_PTS : 0, raidRunPct(st, now, readAt, atk));
   if (lucky) { atk.effects.lucky_whisker = false; r.lucky = true; }
   if (r.win) {
     def.watts -= r.loot;
     atk.watts += r.loot + r.bonus + r.runBonus;
     if (r.bonus + r.runBonus > 0) st.minted = (Number.isFinite(st.minted) ? st.minted : 0) + r.bonus + r.runBonus; // supply accounting
-    def.shield = { until: now + BALANCE.SHIELD.BRUISE_MS, kind: "bruise" }; // a bruise: a few minutes of peace
+    def.shield = { until: now + BALANCE.SHIELD.BRUISE_MS + petPerk(def, "bruiseMs"), kind: "bruise" }; // a bruise: a few minutes of peace
   } else {
     const insured = boostActive(atk, "wager_insurance", now);
     const refund = insured ? Math.floor((stake * BALANCE.BOOSTS.wager_insurance.REFUND_PCT) / 100) : 0;
@@ -1344,7 +1678,8 @@ function denView(st, p, viewer, now = Date.now()) {
   const den = {
     publicId: p.publicId, name: displayName(p), verified: !!p.wallet, watts: p.watts, lifetimeWatts: p.lifetimeWatts,
     roomTier: p.roomTier | 0, wheelTier: p.wheelTier | 0, bedTier: p.bedTier | 0, skin: p.skin, wallpaper: p.wallpaper, floor: p.floor,
-    placed: (p.placed || []).map(({ pid, item, x, y, flip }) => ({ pid, item, x, y, flip: !!flip })),
+    placed: (p.placed || []).map(({ pid, item, x, y, flip, z }) => ({ pid, item, x, y, flip: !!flip, ...(z ? { z } : {}) })),
+    petsActive: Array.isArray(p.petsActive) ? p.petsActive : [],
     fixtures: { wheel: { ...p.fixtures.wheel }, bed: { ...p.fixtures.bed } },
     shield: sh,
   };
@@ -2053,6 +2388,8 @@ function publicPlayer(p, now = Date.now()) {
     owned: p.owned,
     placed: p.placed,
     fixtures: p.fixtures,
+    pets: p.pets,
+    petsActive: p.petsActive,
     activeDays: p.activeDays,
     watching: bonusPct > 100,
     bonusPct,
@@ -2119,7 +2456,7 @@ function snapshot(token, ip = null) {
 // reading, and `replay` describes the schedule; null outside replay.
 function configPayload({ replay = REPLAY, sched = REPLAY_SCHEDULE } = {}) {
   return {
-    demo: DEMO, core: CORE, api: replay ? REPLAY_API_SINK : API, balance: BALANCE, room: ROOM, catalog: CATALOG,
+    demo: DEMO, core: CORE, api: replay ? REPLAY_API_SINK : API, balance: BALANCE, room: ROOM, catalog: CATALOG, pets: PETS,
     replay: replay ? { speed: sched.speed, blocksPerDay: sched.blocksPerDay, cycleMs: sched.cycleMs, epoch: new Date(sched.epochMs).toISOString(), nonstop: !!sched.nonstop } : null,
     wallet: { enabled: true, usernameRe: WALLET.USERNAME_RE.source, burnerWarning: true, nonceTtlMs: WALLET.NONCE_TTL_MS },
   };
@@ -2143,6 +2480,7 @@ const POST_ROUTES = {
     const v = validatePlacement(p, b.itemId, b.x, b.y, null, b.flip === true);
     if (!v.ok) return err(400, v.error, v.which ? { which: v.which } : {});
     const entry = { pid: crypto.randomBytes(4).toString("hex"), item: v.item.id, x: v.x, y: v.y, flip: b.flip === true };
+    setZ(entry, v.z);
     p.placed.push(entry);
     return okMe(p, { placed: entry });
   },
@@ -2151,9 +2489,12 @@ const POST_ROUTES = {
     if (!e) return err(404, "unknown_pid");
     const v = validatePlacement(p, e.item, b.x, b.y, e.pid, typeof b.flip === "boolean" ? b.flip : !!e.flip);
     if (!v.ok) return err(400, v.error, v.which ? { which: v.which } : {});
-    e.x = v.x;
-    e.y = v.y;
-    if (typeof b.flip === "boolean") e.flip = b.flip;
+    if (v.item.zone === "floor") moveStack(p, e, v.x, v.y, v.z, typeof b.flip === "boolean" ? b.flip : !!e.flip);
+    else {
+      e.x = v.x;
+      e.y = v.y;
+      if (typeof b.flip === "boolean") e.flip = b.flip;
+    }
     return okMe(p, { placed: e });
   },
   // {which: "wheel"|"bed", i, j, flip?}: stand the wheel or the bed on another floor tile
@@ -2165,7 +2506,14 @@ const POST_ROUTES = {
   "/api/remove": (b, p) => {
     const i = typeof b.pid === "string" ? p.placed.findIndex((q) => q.pid === b.pid) : -1;
     if (i < 0) return err(404, "unknown_pid");
-    p.placed.splice(i, 1);
+    const it = CATALOG_BY_ID.get(p.placed[i].item), gone = it && it.zone === "floor" ? stackAbove(p, p.placed[i]).up : new Set([b.pid]);
+    p.placed = p.placed.filter((q) => !gone.has(q.pid)); // what stood on it comes back too
+    return okMe(p);
+  },
+  // {active: [pet ids]}: who's home
+  "/api/pets": (b, p) => {
+    const r = setPets(p, b);
+    if (!r.ok) return err(400, r.error);
     return okMe(p);
   },
   "/api/skin": (b, p) => {
@@ -2268,6 +2616,11 @@ const DEV_ROUTES = {
     demoBlocks(Math.max(1, Math.min(DEMO_MAX_ADVANCE, n)));
     return [200, { ok: true, height: state.height }];
   },
+  "/api/dev/pet": (b) => { // {id}: a pet moves in for every den (demo only)
+    if (!PET_BY_ID.has(b && b.id)) return err(400, "bad_pet");
+    for (const p of Object.values(state.players)) addPet(p, b.id, Date.now());
+    return [200, { ok: true }];
+  },
   "/api/dev/grant": (b) => {
     const p = getPlayer(state, b.token);
     if (!p) return err(404, "unknown_player");
@@ -2296,7 +2649,15 @@ const DEV_ROUTES = {
 
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".json": "application/json", ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".gif": "image/gif" };
 
+// Dens live in localStorage per address, so www has to land on the bare domain or it starts a new den.
+const wwwRedirect = (host, reqUrl) => (String(host || "").toLowerCase().split(":")[0] === "www.squeekden.art" ? `https://squeekden.art${reqUrl}` : null);
+
 async function handle(req, res) {
+  const toBare = wwwRedirect(req.headers.host, req.url);
+  if (toBare) {
+    res.writeHead(301, { location: toBare });
+    return res.end();
+  }
   const url = new URL(req.url, "http://x");
   try {
     if (url.pathname === "/api/state" && req.method === "GET") {
@@ -2377,11 +2738,11 @@ function listen() {
   process.on("SIGTERM", flush);
 }
 
-module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible };
+module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible, wwwRedirect };
 // Extra helpers for tests (the plan's six names above stay the primary surface).
 Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
-  runningNow, raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidStatus, applyRaid,
+  stackAbove, moveStack, footprint, PETS, PET_BY_ID, petPerk, addPet, rollCommonPet, rollRunPets, setPets, raidsPerDay, runningNow, raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS, viewerFlags, denView, visitDen, randomDen, allowVisit, VISIT_LIMIT,
   WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername, usernameProblem, createDen, purgeNameless, runMigrations,
   REPLAY_NIGHT, REPLAY_NONSTOP_NIGHT, REPLAY_API_SINK, REPLAY_MIN_SLEEP_MS, replaySchedule, replayLocate, replayCumulativeBlocks, cumulativeBlocks: replayCumulativeBlocks,

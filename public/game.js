@@ -13,7 +13,7 @@ const sfx = (name, o) => { if (window.SqueekSound) window.SqueekSound.sfx(name, 
 // (renderPortrait) still paints the flat view, so the FLAT_* geometry stays alongside.
 const FLAT_W = 320, FLAT_H = 192;
 let ROOM = { COLS: 20, ROWS: 12, CELL: 16, FLOOR_ROW: 11, WALL_TOP: 2, WALL_BOTTOM: 7, RESERVED: {},
-  ISO_NI: 11, ISO_NJ: 10, FIX_MAX_SUM: 14, FIX_GAP: 2, FIXTURE_DEFAULTS: { wheel: { i: 1, j: 5, flip: true }, bed: { i: 7, j: 2, flip: false } } };
+  ISO_NI: 11, ISO_NJ: 10, FIX_MAX_SUM: 14, FIX_GAP: 2, FIXTURE_DEFAULTS: { wheel: { i: 1, j: 5, flip: true }, bed: { i: 7, j: 2, flip: false } }, STACK_MAX_Z: 80 };
 const CERT_WHEEL_COLS = [3, 6]; // the certificate's flat room keeps the wheel where it always stood
 let CELL = 16, FLOOR_Y = 176; // flat view: furniture bottoms stand on this line; the floor band is below it
 const BASEBOARD = 6; // flat view: wall trim height just above the floor line
@@ -443,7 +443,7 @@ if (!token || !TOKEN_RE.test(token)) {
 const S = {
   loaded: false, demo: false, offline: false, skew: 0,
   height: null, chain: null, hamster: null, live: null, api: "https://api.squeekchain.com/v1",
-  night: null, balance: null, catalog: new Map(), me: null, watching: false,
+  night: null, balance: null, catalog: new Map(), pets: new Map(), me: null, watching: false,
   configured: false, // GET /api/config (balance, room, catalog) has landed
   idle: false, // server's view: asleep by the chain (no settled block for IDLE_AFTER_MS): bed income flows
   meAt: 0, // serverTime of the newest `me` applied (drops an older snapshot that lands late)
@@ -502,6 +502,7 @@ function applyConfig(j) {
   if (j.balance) S.balance = j.balance;
   if (j.room) applyRoom(j.room);
   if (Array.isArray(j.catalog)) S.catalog = new Map(j.catalog.map((i) => [i.id, i]));
+  if (Array.isArray(j.pets)) S.pets = new Map(j.pets.map((q) => [q.id, q]));
   S.walletCfg = j.wallet && j.wallet.enabled ? j.wallet : null; // absent: no wallet button at all
   S.configured = true;
   walletHook("onConfig", S.walletCfg);
@@ -558,6 +559,10 @@ function applyMe(me, first = false, opts = {}) {
   S.me = me;
   if (!V.den) { myFixtures = me.fixtures || null; placeFixtures(); } // a visit keeps the visited den's fixtures
   S.watching = !!me.watching;
+  if (prev && prev.pets && me.pets) for (const id of Object.keys(me.pets)) {
+    const q = S.pets.get(id);
+    if (!prev.pets[id] && q) { toast(`A ${q.name} moved in. ${q.says}`); sfx("crateOpen"); }
+  }
   if (first || !prev) meter.shown = me.watts;
   else if (me.lifetimeWatts > prev.lifetimeWatts) onAccrual(me.lifetimeWatts - prev.lifetimeWatts, !!opts.soft);
   noteEarn(me, prev, first);
@@ -605,6 +610,7 @@ async function beat() {
   if (document.visibilityState !== "visible" || !S.me || S.preview) return;
   const r = await post("/api/heartbeat", {});
   if (r.ok) S.watching = !!r.j.watching;
+  if (r.ok && r.j.pigeon) toast(`The Pigeon brought ${fmt(r.j.pigeon)} W.`);
   renderHud();
 }
 
@@ -705,7 +711,127 @@ $("sleep").onclick = async () => {
 // fresh reading at all); otherwise (awake, just not running) REST on the open floor by the wheel,
 // blinking. Switching passes through a short SIT at that same spot, with hop/walk moves between.
 const SIT_MS = 1400;
-const ham = { init: false, mode: "sleep", x: SPOT.bed.x, y: SPOT.bed.y, gy: SPOT.bed.y, face: -1, move: null, sitLeft: 0, runPhase: 0, blink: 0, breath: 0 };
+const ham = { init: false, mode: "sleep", x: SPOT.bed.x, y: SPOT.bed.y, gy: SPOT.bed.y, face: -1, move: null, sitLeft: 0, runPhase: 0, blink: 0, breath: 0, perch: null, walk: null, act: null, detoured: false };
+// ---------- floor paths (the pets, and Squeektoshi's detours) ----------
+function blockedTiles(den) { // what stands on the floor: the wheel, the bed, furniture
+  const out = new Set();
+  for (const k of ["wheel", "bed"]) for (const [i, j] of fixtureTiles(k, fixture(k))) out.add(i * 100 + j);
+  for (const o of (den && den.placed) || []) {
+    const it = S.catalog.get(o.item);
+    if (it && it.zone === "floor" && !zOf(o)) for (const [i, j] of footprint(it, o.x, o.y, o.flip)) out.add(i * 100 + j);
+  }
+  return out;
+}
+// The tiles from a to b around what's blocked (b included, a not), or null. a itself may be blocked.
+function tilePath(a, b, blocked) {
+  const key = ([i, j]) => i * 100 + j, from = new Map([[key(a), null]]), queue = [a];
+  for (let n = 0; n < queue.length; n++) {
+    const t = queue[n];
+    if (t[0] === b[0] && t[1] === b[1]) {
+      const path = [];
+      for (let c = t; from.get(key(c)); c = from.get(key(c))) path.unshift(c);
+      return path;
+    }
+    for (const u of [[t[0] + 1, t[1]], [t[0] - 1, t[1]], [t[0], t[1] + 1], [t[0], t[1] - 1]]) {
+      if (from.has(key(u)) || !tileOnFloor(u) || blocked.has(key(u))) continue;
+      from.set(key(u), t);
+      queue.push(u);
+    }
+  }
+  return null;
+}
+const tileUnder = (x, y) => screenToTile(x, y - ISO.FOOT).map(Math.floor);
+// ---------- Squeektoshi and the furniture ----------
+// On the way from the wheel to bed he sometimes stops at something he can use, and sometimes falls asleep
+// somewhere other than his bed. Both are looks only, and the moment he runs again he goes to the wheel.
+// on: he hops up onto it, this many px above its base; else he stands on a tile beside it.
+const HAM_USES = {
+  fur_seed_bowl: { pose: "eat" }, fur_seed_sack: { pose: "eat" }, fur_cake: { pose: "eat" }, fur_cupcake: { pose: "eat" }, fur_fruit_bowl: { pose: "eat" }, fur_cookie_jar: { pose: "eat" }, fur_sandwich: { pose: "eat" },
+  fur_water_bottle: { pose: "drink" }, fur_bird_bath: { pose: "drink" }, fur_fountain: { pose: "drink" },
+  fur_yarn: { pose: "sniff" }, fur_rubber_duck: { pose: "sniff" }, fur_radio: { pose: "sniff" }, fur_gramophone: { pose: "sniff" }, fur_jukebox: { pose: "sniff" }, fur_arcade: { pose: "sniff" },
+  fur_campfire: { pose: "groom" }, fur_stool: { pose: "groom", on: 8 }, fur_root_stool: { pose: "groom", on: 5 }, fur_ottoman: { pose: "groom", on: 10 }, fur_melon_cushion: { pose: "groom", on: 6 },
+};
+const HAM_NAPS = { fur_sofa: 10, fur_hammock: 14, fur_teacup_bed: 7, fur_melon_cushion: 6, fur_ottoman: 10, fur_hay_bale: 14, fur_box_house: 23, fur_cardboard_box: 16, fur_book_stack: 10, fur_suitcase: 10 };
+const HAM_DETOUR_PCT = 60, HAM_NAP_PCT = 40, HAM_ACT_MS = 8000, HAM_WALK_PX_S = 44, HAM_PATH_MAX = 16;
+const baseOf = (it) => it.colorOf || it.id;
+function hasOnTop(den, p, it) {
+  const mine = new Set(footprint(it, p.x, p.y, p.flip).map(([i, j]) => i * 100 + j));
+  return ((den && den.placed) || []).some((o) => {
+    const oi = S.catalog.get(o.item);
+    return o !== p && oi && oi.zone === "floor" && zOf(o) > zOf(p) && footprint(oi, o.x, o.y, o.flip).some(([i, j]) => mine.has(i * 100 + j));
+  });
+}
+function perchItem() {
+  const den = shownDen(), p = ham.perch && den && (den.placed || []).find((o) => o.pid === ham.perch.pid), it = p && S.catalog.get(p.item);
+  return it && !hasOnTop(den, p, it) ? [p, it] : null;
+}
+function perchSpot() { // the middle of the item's top
+  const hit = perchItem();
+  if (!hit) return null;
+  const [p, it] = hit, t = footprint(it, p.x, p.y, p.flip).map(([i, j]) => isoTileCenter(i, j));
+  return { x: Math.round(t.reduce((a, c) => a + c.x, 0) / t.length), y: Math.round(t.reduce((a, c) => a + c.y, 0) / t.length) + ISO.FOOT - zOf(p) - ham.perch.rise };
+}
+function pickNap() {
+  const den = shownDen(), can = [];
+  ham.perch = null;
+  for (const p of (den && den.placed) || []) {
+    const it = S.catalog.get(p.item), rise = it && HAM_NAPS[baseOf(it)];
+    if (rise && !hasOnTop(den, p, it)) can.push({ pid: p.pid, rise });
+  }
+  if (can.length && Math.random() * 100 < HAM_NAP_PCT) ham.perch = can[Math.floor(Math.random() * can.length)];
+}
+// Something he can use now, the nearest first try: { p, it, use, path } or null.
+function pickUse() {
+  const den = shownDen(), blocked = blockedTiles(den), from = tileUnder(ham.x, ham.gy), can = [];
+  for (const p of (den && den.placed) || []) {
+    const it = S.catalog.get(p.item), use = it && HAM_USES[baseOf(it)];
+    if (use && !zOf(p) && !(use.on && hasOnTop(den, p, it))) can.push({ p, it, use });
+  }
+  while (can.length) {
+    const c = can.splice(Math.floor(Math.random() * can.length), 1)[0];
+    let best = null;
+    for (const [i, j] of footprint(c.it, c.p.x, c.p.y, c.p.flip)) for (const u of [[i + 1, j], [i - 1, j], [i, j + 1], [i, j - 1]]) {
+      if (!tileOnFloor(u) || blocked.has(u[0] * 100 + u[1])) continue;
+      const path = tilePath(from, u, blocked);
+      if (path && path.length <= HAM_PATH_MAX && (!best || path.length < best.length)) best = path;
+    }
+    if (best) return { ...c, path: best };
+  }
+  return null;
+}
+function startDetour() {
+  ham.detoured = true;
+  if (Math.random() * 100 >= HAM_DETOUR_PCT) return false;
+  const u = pickUse();
+  if (!u) return false;
+  ham.walk = { use: u, pts: u.path.map(([i, j]) => { const c = isoTileCenter(i, j); return { x: c.x, y: c.y + ISO.FOOT }; }) };
+  ham.mode = "walk";
+  return true;
+}
+function startAct(use, p, it) {
+  const t = footprint(it, p.x, p.y, p.flip).map(([i, j]) => isoTileCenter(i, j)), cx = t.reduce((a, c) => a + c.x, 0) / t.length;
+  if (!use.on && Math.abs(cx - ham.x) > 0.5) ham.face = cx < ham.x ? -1 : 1;
+  ham.act = { pose: use.pose, left: HAM_ACT_MS };
+  ham.mode = "act";
+}
+function stepWalk(dt) {
+  const w = ham.walk;
+  let go = (HAM_WALK_PX_S * dt) / 1000;
+  while (go > 0 && w.pts.length) {
+    const to = w.pts[0], d = Math.hypot(to.x - ham.x, to.y - ham.gy);
+    if (Math.abs(to.x - ham.x) > 0.5) ham.face = to.x < ham.x ? -1 : 1;
+    if (d <= go) { ham.x = to.x; ham.gy = to.y; go -= d; w.pts.shift(); }
+    else { ham.x += ((to.x - ham.x) / d) * go; ham.gy += ((to.y - ham.gy) / d) * go; go = 0; }
+  }
+  ham.runPhase += (dt / 1000) * 8;
+  ham.y = ham.gy - (Math.floor(ham.runPhase) % 2 ? 1 : 0);
+  if (w.pts.length) return;
+  const { use, p, it } = w.use;
+  ham.walk = null;
+  ham.y = ham.gy;
+  if (use.on) { ham.perch = { pid: p.pid, rise: use.on, use }; moveTo("perch"); }
+  else startAct(use, p, it);
+}
 // The bed he sleeps in: me.bedTier's sprite standing on the bed fixture's tile (i, j); sleep = where his
 // bottom-centre goes. With iso art (iso_bed_tN) its iso vertex sits on that tile's south vertex (mirrored
 // when flipped); id is then the iso id, so the "_front" overlay drawn at the same origin is iso_bed_tN_front.
@@ -723,6 +849,7 @@ function bedGeom(at = null) {
 }
 function spotFor(mode) {
   if (mode === "run") return SPOT.wheel;
+  if (mode === "perch" || (mode === "sleep" && ham.perch)) { const q = perchSpot(); if (q) return q; ham.perch = null; }
   if (mode === "sleep") { const b = bedGeom(); return { x: b.sleepX, y: b.sleepY }; }
   return SPOT.sit;
 }
@@ -737,20 +864,31 @@ function wantMode(st) {
 }
 const near = (a, b) => Math.hypot(a.x - b.x, a.y - b.y) < 1;
 function moveTo(name) {
+  if (name === "sleep") pickNap();
+  else if (name !== "perch") ham.perch = null;
   const to = spotFor(name), from = { x: ham.x, y: ham.gy };
   const dist = Math.hypot(to.x - from.x, to.y - from.y);
   const inWheel = near(from, SPOT.wheel), inBed = near(from, spotFor("sleep"));
   const hop = inWheel || inBed || name === "run" || name === "sleep"; // in/out of the wheel or the bed is one hop
   ham.move = { name, fx: from.x, fy: from.y, tx: to.x, ty: to.y, t: 0, dur: hop ? Math.max(650, (dist / 110) * 1000) : Math.max(500, (dist / 70) * 1000), hop, steps: Math.max(1, Math.round(dist / 14)),
-    wheel: inWheel || name === "run", bed: inBed || name === "sleep" };
+    wheel: inWheel || name === "run", bed: name !== "run" && name !== "perch" && !ham.perch && (inBed || name === "sleep") };
   if (Math.abs(to.x - from.x) > 0.5) ham.face = to.x < from.x ? -1 : 1;
   ham.mode = "move";
 }
-function settle(mode) { ham.mode = mode; ham.face = mode === "run" ? (fixture("wheel").flip ? -1 : 1) : mode === "sleep" ? -1 : ham.face; }
+function settle(mode) { if (mode === "run") ham.detoured = false; ham.mode = mode; ham.face = mode === "run" ? (fixture("wheel").flip ? -1 : 1) : mode === "sleep" ? -1 : ham.face; }
 function stepHamster(dt, st) {
   const want = wantMode(st);
   if (!ham.init && S.loaded && S.me) { // first reading: start in place, no transition
-    ham.init = true; const s = spotFor(want); ham.x = s.x; ham.y = ham.gy = s.y; ham.move = null; settle(want);
+    ham.init = true; if (want === "sleep") pickNap(); const s = spotFor(want); ham.x = s.x; ham.y = ham.gy = s.y; ham.move = null; settle(want);
+  }
+  if ((ham.mode === "walk" || ham.mode === "act") && want === "run") { ham.walk = ham.act = null; moveTo("run"); }
+  if (ham.mode === "walk") { stepWalk(dt); return; }
+  if (ham.mode === "act") {
+    const q = ham.perch && perchSpot();
+    if (q) { ham.x = q.x; ham.y = ham.gy = q.y; }
+    ham.act.left -= dt;
+    if (ham.act.left <= 0) { ham.act = null; moveTo("sleep"); }
+    return;
   }
   if (ham.mode === "move") {
     const m = ham.move;
@@ -763,16 +901,22 @@ function stepHamster(dt, st) {
     if (k >= 1) {
       ham.move = null;
       ham.y = ham.gy;
-      if (m.name === "sit") { if (want === "rest") settle("rest"); else { ham.mode = "sit"; ham.sitLeft = SIT_MS; ham.face = spotFor(want).x < ham.x ? -1 : 1; } }
+      if (m.name === "perch") {
+        const hit = perchItem();
+        if (hit) startAct(ham.perch.use, hit[0], hit[1]); else moveTo(want);
+      } else if (m.name === "sit") { if (want === "rest") settle("rest"); else { ham.mode = "sit"; ham.sitLeft = SIT_MS; ham.face = spotFor(want).x < ham.x ? -1 : 1; } }
       else if (m.name === want) settle(want);
       else moveTo("sit");
     }
   } else if (ham.mode === "sit") {
     ham.face = spotFor(want).x < ham.x ? -1 : 1;
     ham.sitLeft -= dt;
-    if (ham.sitLeft <= 0) { if (want === "rest") settle("rest"); else moveTo(want); }
+    if (ham.sitLeft <= 0) {
+      if (want === "rest") settle("rest");
+      else if (want !== "sleep" || ham.detoured || !startDetour()) moveTo(want);
+    }
   } else if (ham.mode !== want) {
-    if (ham.mode === "rest") moveTo(want); // already at the sit spot
+    if (ham.mode === "rest" || want === "run") moveTo(want); // already at the sit spot; he goes straight back to the wheel
     else moveTo("sit");
   } else if (ham.mode === "run") {
     ham.x = SPOT.wheel.x; ham.y = ham.gy = SPOT.wheel.y; ham.face = fixture("wheel").flip ? -1 : 1; // the wheel may have moved
@@ -780,6 +924,60 @@ function stepHamster(dt, st) {
   } else if (ham.mode === "sleep") {
     const s = spotFor("sleep"); ham.x = s.x; ham.y = ham.gy = s.y; // a bed upgrade (or a moved bed) moves the pillow
   } else if (ham.mode === "rest" && !near({ x: ham.x, y: ham.gy }, SPOT.sit)) moveTo("sit"); // the wheel moved: walk over
+}
+
+// ---------- pets: the ones home wander the floor (looks only: each browser plays its own) ----------
+const petSims = new Map(); // pet id -> { id, x, y, pts, wait, face, fly, speed }
+let petDen = null;
+const PET_FLYERS = new Set(["pet_moth", "pet_firefly"]);
+const PET_SPEED = { pet_snail: 5, pet_ladybug: 10, pet_spark_beetle: 14, pet_shrew: 34, pet_ferret: 38 };
+function petWander(q, blocked) {
+  const [i, j] = tileUnder(q.x, q.y), r = 4;
+  const to = [i + Math.floor(Math.random() * (2 * r + 1)) - r, j + Math.floor(Math.random() * (2 * r + 1)) - r];
+  q.wait = 1500 + Math.random() * 5000;
+  if (!tileOnFloor(to) || (!q.fly && blocked.has(to[0] * 100 + to[1]))) return;
+  const path = q.fly ? [to] : tilePath([i, j], to, blocked);
+  if (path) q.pts = path.map(([a, b]) => { const c = isoTileCenter(a, b); return { x: c.x, y: c.y + ISO.FOOT }; });
+}
+function stepPets(dt) {
+  const den = shownDen(), home = (den && den.petsActive) || [], key = den ? den.publicId || "me" : null;
+  if (key !== petDen) { petSims.clear(); petDen = key; } // another den, other pets
+  for (const id of [...petSims.keys()]) if (!home.includes(id)) petSims.delete(id);
+  if (!home.length) return;
+  const blocked = blockedTiles(den);
+  for (const id of home) {
+    let q = petSims.get(id);
+    if (!q) {
+      const free = [];
+      for (let i = 0; i < ROOM.ISO_NI; i++) for (let j = 0; j < ROOM.ISO_NJ; j++) if (tileOnFloor([i, j]) && !blocked.has(i * 100 + j)) free.push([i, j]);
+      const [a, b] = free.length ? free[Math.floor(Math.random() * free.length)] : [2, 2], c = isoTileCenter(a, b);
+      q = { id, x: c.x, y: c.y + ISO.FOOT, pts: [], wait: Math.random() * 3000, face: Math.random() < 0.5 ? -1 : 1, fly: PET_FLYERS.has(id), speed: PET_SPEED[id] || 18, seed: Math.random() * 1000 };
+      petSims.set(id, q);
+    }
+    if (q.pts.length) {
+      let go = (q.speed * dt) / 1000;
+      while (go > 0 && q.pts.length) {
+        const to = q.pts[0], d = Math.hypot(to.x - q.x, to.y - q.y);
+        if (Math.abs(to.x - q.x) > 0.5) q.face = to.x < q.x ? -1 : 1;
+        if (d <= go) { q.x = to.x; q.y = to.y; go -= d; q.pts.shift(); }
+        else { q.x += ((to.x - q.x) / d) * go; q.y += ((to.y - q.y) / d) * go; go = 0; }
+      }
+    } else if ((q.wait -= dt) <= 0) petWander(q, blocked);
+  }
+}
+const petLift = (q, t) => (q.fly ? 16 + Math.round(3 * Math.sin((t + q.seed) / 500)) : 0);
+function drawPet(q) {
+  const t = performance.now() + q.seed, moving = q.pts.length > 0;
+  const frame = moving || q.fly ? 2 + Math.floor(t / (q.fly ? 110 : 170)) % 2 : (t % 3000 < 260 ? 1 : 0);
+  sprite(g, q.id, frame, Math.round(q.x - 12), Math.round(q.y - 24 - petLift(q, t)), { flip: q.face < 0 });
+}
+function petAt(L) {
+  let best = null;
+  for (const q of petSims.values()) {
+    const top = q.y - 24 - petLift(q, performance.now() + q.seed);
+    if (Math.abs(L.x - q.x) <= 10 && L.y >= top && L.y <= top + 26 && (!best || q.y > best.y)) best = q;
+  }
+  return best;
 }
 
 // ---------- wheel ----------
@@ -912,7 +1110,7 @@ addEventListener("resize", () => { fit(); positionTool(); });
 function itemsIn(zone) {
   const out = [];
   for (const p of (shownDen() && shownDen().placed) || []) {
-    if (P.mode === "move" && p.pid === P.pid) continue; // the ghost stands in for it while moving
+    if (P.mode === "move" && P.carried.has(p.pid)) continue; // the ghost stands in for it (and what it carries) while moving
     const it = S.catalog.get(p.item);
     if (it && it.zone === zone) out.push([p, it]);
   }
@@ -967,7 +1165,7 @@ function diamondCanvas(fill, rim, hatch = null, k = 1) {
   diamondCache.set(key, c);
   return c;
 }
-const drawTileOverlay = (c, i, j, img) => { const t = isoTileTop(i, j); c.drawImage(img, t.x, t.y); };
+const drawTileOverlay = (c, i, j, img, z = 0) => { const t = isoTileTop(i, j); c.drawImage(img, t.x, t.y - z); };
 const matTier = () => clamp((shownDen() && shownDen().roomTier) | 0, 0, 5);
 function matEdge(t) { const s = (window.SPRITES || {})[`floor_mat_t${t}`]; return ((s && s.edge) || [2, 13, 14]).map((i) => PALETTE[i] || "#888888"); }
 // 16 x 16 swatch canvas of a wallpaper / flooring style (sprite, or the flat painter's top-left corner)
@@ -1084,6 +1282,42 @@ function footprint(it, i, j, flip) {
   return out;
 }
 const tileOnFloor = ([i, j]) => i >= 0 && j >= 0 && i < ROOM.ISO_NI && j < ROOM.ISO_NJ && i + j <= ROOM.FIX_MAX_SUM;
+// Stacking (same rules as server.js): z = px above the floor; an item rests on another when they share
+// a tile and its z is the other's top.
+const zOf = (o) => (o && o.z) | 0;
+function restsOn(o, oi, s, si) {
+  if (!si.top || zOf(o) !== zOf(s) + si.top) return false;
+  const under = new Set(footprint(si, s.x, s.y, s.flip).map(([i, j]) => i * 100 + j));
+  return footprint(oi, o.x, o.y, o.flip).some(([i, j]) => under.has(i * 100 + j));
+}
+function floorPlaced(placed) { // [placement, item] lowest first
+  return (placed || []).map((o) => [o, S.catalog.get(o.item)]).filter(([, oi]) => oi && oi.zone === "floor").sort((a, b) => zOf(a[0]) - zOf(b[0]));
+}
+// What goes with e if it moves: up = its pid and everything resting on it, all the way up; loose = one
+// of those that also rests on something else, which keeps it from moving.
+function stackAbove(placed, e) {
+  const floor = floorPlaced(placed), up = new Set([e.pid]);
+  let loose = null;
+  for (const [o, oi] of floor) {
+    if (zOf(o) <= zOf(e)) continue;
+    const under = floor.filter(([s, si]) => s !== o && restsOn(o, oi, s, si));
+    if (!under.some(([s]) => up.has(s.pid))) continue;
+    up.add(o.pid);
+    if (!under.every(([s]) => up.has(s.pid))) loose = loose || o;
+  }
+  return { up, loose };
+}
+// Painter's keys for floor items: what rests on something draws after it, whichever tile it stands on.
+function stackDepths(list) {
+  const out = new Map(), done = [];
+  for (const [p, it] of [...list].sort((a, b) => zOf(a[0]) - zOf(b[0]))) {
+    let d = floorGeom(it, p.x, p.y, p.flip).d;
+    if (zOf(p)) for (const [s, si] of done) if (restsOn(p, it, s, si)) d = Math.max(d, out.get(s));
+    out.set(p, d);
+    done.push([p, it]);
+  }
+  return out;
+}
 function tilesBox(tiles) { // screen box around a set of floor tiles
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const [i, j] of tiles) { const o = isoTileTop(i, j); x0 = Math.min(x0, o.x); y0 = Math.min(y0, o.y); x1 = Math.max(x1, o.x + 32); y1 = Math.max(y1, o.y + 16); }
@@ -1152,7 +1386,8 @@ function render(st) {
   g.fillStyle = `rgba(${t.haze[0]},${t.haze[1]},${t.haze[2]},${t.haze[3].toFixed(3)})`; g.fillRect(0, 0, LW, LH);
   if (dimLevel > 0.01) {
     g.globalCompositeOperation = "lighter";
-    const breathe = 0.85 + 0.15 * Math.sin(performance.now() / 900), gx = SPOT.bed.x, gy = SPOT.bed.y - 10;
+    const glowAt = ham.perch ? { x: ham.x, y: ham.y } : SPOT.bed; // over wherever he's sleeping
+    const breathe = 0.85 + 0.15 * Math.sin(performance.now() / 900), gx = glowAt.x, gy = glowAt.y - 10;
     const grd = g.createRadialGradient(gx, gy, 2, gx, gy, 46);
     grd.addColorStop(0, `rgba(255,170,70,${(0.32 * dimLevel * breathe).toFixed(3)})`);
     grd.addColorStop(1, "rgba(255,170,70,0)");
@@ -1198,15 +1433,15 @@ function isoSpan(id, x, w, flip) {
 // vertex of its FRONT tile (mirrored when flipped), else a billboard standing on that tile.
 // d: painter's key = the ground line of its back tile, so anything a row in front of any of its
 // tiles draws over it.
-function floorGeom(it, i, j, flip) {
+function floorGeom(it, i, j, flip, z = 0) {
   const f = !!flip, front = f ? [i, j + it.w - 1] : [i + it.w - 1, j], d = isoTileCenter(i, j).y + ISO.FOOT;
   const s = isoArt(it.sprite); // colourways share their base's iso art
-  if (s) { const o = isoOrigin(s, tileSouth(front[0], front[1]), f); return { art: { id: "iso_" + it.sprite, flip: f }, x: o.x, y: o.y, w: s.w, h: s.h, d }; }
+  if (s) { const o = isoOrigin(s, tileSouth(front[0], front[1]), f); return { art: { id: "iso_" + it.sprite, flip: f }, x: o.x, y: o.y - z, w: s.w, h: s.h, d }; }
   const c = isoTileCenter(front[0], front[1]), pw = it.w * CELL, ph = it.h * CELL;
-  return { art: null, x: Math.round(c.x - pw / 2), y: c.y + ISO.FOOT - ph, w: pw, h: ph, d };
+  return { art: null, x: Math.round(c.x - pw / 2), y: c.y + ISO.FOOT - ph - z, w: pw, h: ph, d };
 }
 function drawFloorItem(p, it, c = g) {
-  const G = floorGeom(it, p.x, p.y, p.flip);
+  const G = floorGeom(it, p.x, p.y, p.flip, zOf(p));
   if (G.art && sprite(c, G.art.id, frame10, G.x, G.y, { ...FX, flip: G.art.flip, remap: remapOf(it) })) return;
   drawItem(p, it, G.x, G.y, G.w, G.h, c);
 }
@@ -1221,11 +1456,14 @@ function drawBurrow() {
 // Iso art stands on the same tiles and sorts by the same ground line.
 const SHADOW = () => diamondCanvas("rgba(0,0,0,.2)", null, null, 0.72);
 function drawStanding(me) {
-  const list = [];
-  for (const [p, it] of itemsIn("floor")) {
-    for (const [i, j] of footprint(it, p.x, p.y, p.flip)) drawTileOverlay(g, i, j, SHADOW());
-    const G = floorGeom(it, p.x, p.y, p.flip);
-    list.push({ d: G.d, x: G.x, draw: () => drawFloorItem(p, it) });
+  const list = [], floorItems = itemsIn("floor"), depths = stackDepths(floorItems);
+  for (const [p, it] of floorItems) {
+    const z = zOf(p), tiles = footprint(it, p.x, p.y, p.flip); // its shadow falls on the floor, or on the top it stands on
+    if (!z) for (const [i, j] of tiles) drawTileOverlay(g, i, j, SHADOW());
+    list.push({ d: depths.get(p), z, x: floorGeom(it, p.x, p.y, p.flip, z).x, draw: () => {
+      if (z) for (const [i, j] of tiles) drawTileOverlay(g, i, j, SHADOW(), z);
+      drawFloorItem(p, it);
+    } });
   }
   for (const c of (me && me.crates) || []) { drawTileOverlay(g, c.i, c.j, SHADOW()); const G = crateGeom(c); list.push({ d: G.d, x: G.x, draw: () => drawCrate(c, G) }); }
   if (IBURROW) {
@@ -1233,7 +1471,8 @@ function drawStanding(me) {
     list.push({ d: ab ? ab.d : IBURROW.foot, x: IBURROW.x, draw: drawBurrow });
   }
   const m = ham.mode === "move" ? ham.move : null;
-  const hamInWheel = ham.mode === "run" || (m && m.wheel), hamInBed = ham.mode === "sleep" || (m && m.bed);
+  const perched = ham.perch ? perchItem() : null;
+  const hamInWheel = ham.mode === "run" || (m && m.wheel), hamInBed = (ham.mode === "sleep" && !perched) || (m && m.bed);
   const moving = P.mode === "move" ? fixOf(P.pid) : null; // a fixture being moved fades in place
   const wf = fixture("wheel");
   for (const [i, j] of fixtureTiles("wheel", wf)) drawTileOverlay(g, i, j, SHADOW());
@@ -1242,10 +1481,14 @@ function drawStanding(me) {
   for (const [i, j] of fixtureTiles("bed", b)) drawTileOverlay(g, i, j, SHADOW());
   list.push({ d: b.foot, x: b.x, draw: () => drawBed(b, hamInBed, moving === "bed" ? 0.35 : 1) });
   if (!hamInWheel && !hamInBed) {
-    g.fillStyle = "rgba(0,0,0,.2)"; g.fillRect(Math.round(ham.x) - 6, Math.round(ham.gy) - 1, 12, 2); // his own little shadow
-    list.push({ d: ham.gy, x: ham.x, draw: drawHamster });
+    if (!perched) { g.fillStyle = "rgba(0,0,0,.2)"; g.fillRect(Math.round(ham.x) - 6, Math.round(ham.gy) - 1, 12, 2); } // his own little shadow
+    list.push({ d: perched && depths.has(perched[0]) ? depths.get(perched[0]) : ham.gy, z: perched ? 999 : 0, x: ham.x, draw: drawHamster });
   }
-  list.sort((a, c) => a.d - c.d || a.x - c.x);
+  for (const q of petSims.values()) {
+    g.fillStyle = "rgba(0,0,0,.2)"; g.fillRect(Math.round(q.x) - 4, Math.round(q.y) - 1, 8, 1);
+    list.push({ d: q.y, x: q.x, draw: () => drawPet(q) });
+  }
+  list.sort((a, c) => a.d - c.d || (a.z | 0) - (c.z | 0) || a.x - c.x);
   for (const e of list) e.draw();
 }
 // the wheel on tile (i, j): back layer, the running hamster, front layer (3D), or the old billboard
@@ -1282,9 +1525,11 @@ function drawHamster() {
   let kind = "sit", frame = 0, x = ham.x, y = ham.y;
   if (ham.mode === "run") { kind = "run"; frame = Math.floor(ham.runPhase) % 4; y -= frame % 2 ? 1 : 0; }
   else if (ham.mode === "move") { kind = ham.move && ham.move.hop ? "sit" : "run"; frame = Math.floor(ham.runPhase) % 4; }
+  else if (ham.mode === "walk") { kind = "run"; frame = Math.floor(ham.runPhase) % 4; }
   else if (ham.mode === "sleep") { kind = "sleep"; frame = ham.breath; }
   else if (ham.blink > 0) kind = "blink";
-  const id = kind === "run" ? "hamster_run" : kind === "sleep" ? "hamster_sleep" : kind === "blink" ? "hamster_blink" : "hamster_sit";
+  let id = kind === "run" ? "hamster_run" : kind === "sleep" ? "hamster_sleep" : kind === "blink" ? "hamster_blink" : "hamster_sit";
+  if (ham.mode === "act" && ham.act && hasSprite(`hamster_${ham.act.pose}`)) { id = `hamster_${ham.act.pose}`; frame = Math.floor(performance.now() / 240) % 2; }
   const dx = Math.round(x - 12), dy = Math.round(y - 24), flip = ham.face < 0;
   const opts = { flip, skin, remap: (window.SKIN_REMAPS || {})[skin] };
   if (sprite(g, id, frame, dx, dy, opts)) return;
@@ -1409,6 +1654,7 @@ let last = performance.now(), acc = 0, acc10 = 0, hudClock = 0;
 function step(dt) {
   const st = liveStatus();
   stepHamster(dt, st);
+  stepPets(dt);
   stepWheel(dt, st);
   stepFx(dt, st);
   stepMeter(dt);
@@ -1446,7 +1692,7 @@ const unplaced = (id) => (S.me ? (S.me.owned[id] || 0) - S.me.placed.filter((p) 
 // box, else its billboard box. Rug: the box around its tiles. Wall: the bounding box of the folded
 // rect (wallRect is the same rect in flat strip coordinates).
 const wallRect = (it, x, y) => ({ x: colLeft(x), y: wallRowY(y), w: it.w * CELL, h: it.h * CELL });
-function isoRect(it, x, y, flip = false) {
+function isoRect(it, x, y, flip = false, z = 0) {
   if (it.zone === "fixture") return fixtureRect(it.fixture, x, y, flip);
   if (it.zone === "wall") {
     const f = wallRect(it, x, y);
@@ -1455,7 +1701,7 @@ function isoRect(it, x, y, flip = false) {
     return { x: f.x, y: top, w: f.w, h: bot - top };
   }
   if (it.zone === "rug") return tilesBox(footprint(it, x, y, flip));
-  const G = floorGeom(it, x, y, flip);
+  const G = floorGeom(it, x, y, flip, z);
   return { x: G.x, y: G.y, w: G.w, h: G.h };
 }
 // Same checks, same order as server.js validatePlacement(); the server re-validates every move.
@@ -1476,12 +1722,26 @@ function checkSpot(it, x, y, ignorePid = null, flip = false) {
   const tiles = footprint(it, x, y, flip);
   if (!tiles.every(tileOnFloor)) return { ok: false, error: "out_of_bounds" };
   const mine = new Set(tiles.map(([i, j]) => i * 100 + j));
+  const self = ignorePid ? findPlaced(ignorePid) : null;
+  const moving = self && it.zone === "floor" ? stackAbove(me.placed, self) : null;
+  if (moving && moving.loose) return { ok: false, error: "holding", z: zOf(self) };
+  const height = new Map(tiles.map(([i, j]) => [i * 100 + j, 0]));
   for (const o of others) {
     const oi = S.catalog.get(o.item);
-    if (oi && oi.zone === it.zone && footprint(oi, o.x, o.y, o.flip).some(([i, j]) => mine.has(i * 100 + j))) return { ok: false, error: "overlap", with: oi };
+    if (!oi || oi.zone !== it.zone || (moving && moving.up.has(o.pid))) continue;
+    for (const [i, j] of footprint(oi, o.x, o.y, o.flip)) {
+      const k = i * 100 + j;
+      if (!mine.has(k)) continue;
+      if (it.zone !== "floor" || !oi.top) return { ok: false, error: "overlap", with: oi };
+      height.set(k, Math.max(height.get(k), zOf(o) + oi.top));
+    }
   }
   if (it.zone === "floor") for (const k of ["wheel", "bed"]) { if (fixtureTiles(k, fixture(k)).some(([i, j]) => mine.has(i * 100 + j))) return { ok: false, error: "fixture", which: k }; }
-  return { ok: true };
+  const zs = [...height.values()], z = Math.max(...zs);
+  if (zs.some((h) => h !== z)) return { ok: false, error: "uneven", z };
+  const rise = moving ? Math.max(...me.placed.filter((o) => moving.up.has(o.pid)).map(zOf)) - zOf(self) : 0;
+  if (z + rise > ROOM.STACK_MAX_Z) return { ok: false, error: "too_high", z };
+  return { ok: true, z };
 }
 // Server error codes in words.
 function errorWords(j, ctx = {}) {
@@ -1503,6 +1763,9 @@ function errorWords(j, ctx = {}) {
     case "too_close": return ctx.which === "bed" ? "Too close to the wheel" : "Too close to the bed";
     case "bad_fixture": return "That can't move";
     case "overlap": return ctx.with ? `The ${ctx.with.name} is already there` : "Something is already there";
+    case "uneven": return "It needs a level spot";
+    case "too_high": return "That stack is high enough";
+    case "holding": return "Something on it is also resting on something else";
     case "out_of_bounds": case "oob": return ctx.it && ctx.it.zone === "wall" ? "Wall decor goes on the wall" : ctx.it && ctx.it.zone === "fixture" ? "Keep it on the open floor" : "Doesn't fit there";
     case "unowned": return "None left. Buy another in the shop";
     case "bad_coords": return "Pick a spot inside the den";
@@ -1516,7 +1779,7 @@ function errorWords(j, ctx = {}) {
 
 // ---------- placement UI ----------
 // mode "place": a ghost of an inventory item; "move": a placed item picked up (toolbar Move or drag).
-const P = { mode: null, it: null, pid: null, flip: false, cell: null, valid: null, busy: false, drag: null, from: null, down: false, flashUntil: 0 };
+const P = { mode: null, it: null, pid: null, flip: false, cell: null, valid: null, busy: false, drag: null, from: null, down: false, flashUntil: 0, carried: new Set() };
 let selPid = null, press = null;
 const coarse = matchMedia("(pointer: coarse)");
 function logical(e) {
@@ -1542,9 +1805,36 @@ function floorCell(it, fi, fj, flip) { // tile under the pointer -> back tile, t
   const back = Math.floor((it.w - 1) / 2), along = flip ? [0, back] : [back, 0];
   return { x: clamp(Math.floor(fi) - along[0], 0, ROOM.ISO_NI - 1), y: clamp(Math.floor(fj) - along[1], 0, ROOM.ISO_NJ - 1) };
 }
+// The flat top under a screen point: each top is a floor raised by its height, front-most and highest first.
+function surfaceAt(L) {
+  let best = null;
+  for (const [p, it] of floorPlaced(S.me && S.me.placed)) {
+    if (!it.top || P.carried.has(p.pid)) continue;
+    const z = zOf(p) + it.top, [fi, fj] = screenToTile(L.x, L.y + z), ti = Math.floor(fi), tj = Math.floor(fj);
+    if (!footprint(it, p.x, p.y, p.flip).some(([i, j]) => i === ti && j === tj)) continue;
+    const d = floorGeom(it, p.x, p.y, p.flip).d;
+    if (!best || d > best.d || (d === best.d && z > best.z)) best = { p, it, z, d, fi, fj };
+  }
+  return best;
+}
+// On a top the chain slides along itself until it fits (a long item on a table), else it stays centred.
+function surfaceCell(it, sf) {
+  if (P.mode === "place" && !P.userFlip && it.w > 1) P.flip = !!sf.p.flip; // long things lie along the table
+  const c = floorCell(it, sf.fi, sf.fj, P.flip), ignore = P.mode === "move" ? P.pid : null;
+  for (let s = 0; s < it.w; s++) for (const k of s ? [s, -s] : [0]) {
+    const t = P.flip ? { x: c.x, y: c.y + k } : { x: c.x + k, y: c.y };
+    if (checkSpot(it, t.x, t.y, ignore, P.flip).ok) return t;
+  }
+  return c;
+}
 function cellAt(it, Ls) { // the ghost is centred on the pointer and clamped into its zone
   if (it.zone === "fixture") return fixtureCell(Ls.x, Ls.y);
-  if (it.zone !== "wall") { const [fi, fj] = screenToTile(Ls.x, Ls.y); return floorCell(it, fi, fj, P.flip); }
+  if (it.zone !== "wall") {
+    const sf = it.zone === "floor" ? surfaceAt(Ls) : null;
+    if (sf) return surfaceCell(it, sf);
+    const [fi, fj] = screenToTile(Ls.x, Ls.y);
+    return floorCell(it, fi, fj, P.flip);
+  }
   const L = toFlat(Ls, it.zone);
   const x = clamp(Math.round(L.x / CELL - it.w / 2), 0, ROOM.COLS - it.w);
   const [y0, y1] = wallYRange(it);
@@ -1552,8 +1842,10 @@ function cellAt(it, Ls) { // the ghost is centred on the pointer and clamped int
 }
 function dragCell(Ls) { // dragging keeps the grab offset: the item moves by whole cells (d.lx/ly: flat press point)
   const d = P.drag, it = P.it, L = toFlat(Ls, it.zone);
-  if (it.zone !== "wall") { // floor: the back tile follows the pointer by whole tiles
-    const c = isoTileCenter(d.x0, d.y0), x = c.x + L.x - d.lx, y = c.y + L.y - d.ly;
+  if (it.zone !== "wall") { // floor: the back tile follows the pointer by whole tiles (or lands on the top under it)
+    const sf = it.zone === "floor" ? surfaceAt(Ls) : null;
+    if (sf) return surfaceCell(it, sf);
+    const c = isoTileCenter(d.x0, d.y0), x = c.x + L.x - d.lx, y = c.y + L.y - d.ly - (d.z0 | 0);
     if (it.zone === "fixture") return fixtureCell(x, y);
     const [fi, fj] = screenToTile(x, y);
     return { x: clamp(Math.floor(fi), 0, ROOM.ISO_NI - 1), y: clamp(Math.floor(fj), 0, ROOM.ISO_NJ - 1) };
@@ -1583,19 +1875,35 @@ function revalidate() {
   const c = P.cell;
   P.valid = P.it.zone === "fixture" ? checkFixture(P.it.fixture, c.x, c.y, P.flip) : checkSpot(P.it, c.x, c.y, P.mode === "move" ? P.pid : null, P.flip);
 }
+// A floor item under a screen point: on its art (give or take a pixel), so clicks pass through the blank
+// corners of its box to whatever is behind.
+function floorHit(p, it, L) {
+  const G = floorGeom(it, p.x, p.y, p.flip, zOf(p));
+  if (L.x < G.x || L.x >= G.x + G.w || L.y < G.y || L.y >= G.y + G.h) return false;
+  const s = G.art && window.SPRITES[G.art.id], px = s && s.frames && s.frames[0];
+  if (!px || !px.length) return true;
+  const x = Math.floor(L.x - G.x), y = Math.floor(L.y - G.y), u = G.art.flip ? s.w - 1 - x : x;
+  for (let b = Math.max(0, y - 1); b <= Math.min(s.h - 1, y + 1); b++) for (let a = Math.max(0, u - 1); a <= Math.min(s.w - 1, u + 1); a++) if (px[b * s.w + a]) return true;
+  return false;
+}
 function hitTest(L) {
   if (!S.me || S.preview || V.den) return null;
   const order = { floor: 0, rug: 1, wall: 2 }; // topmost layer first; floor billboards front-most first
-  const depth = (p, it) => (it.zone === "floor" ? floorGeom(it, p.x, p.y, p.flip).d : 0);
+  const depths = stackDepths(floorPlaced(S.me.placed));
   const list = S.me.placed.map((p) => [p, S.catalog.get(p.item)]).filter(([, it]) => it && it.zone)
-    .sort((a, b) => order[a[1].zone] - order[b[1].zone] || depth(...b) - depth(...a));
+    .sort((a, b) => order[a[1].zone] - order[b[1].zone] || (depths.get(b[0]) || 0) - (depths.get(a[0]) || 0) || zOf(b[0]) - zOf(a[0]));
   const inside = (f, x, y) => x >= f.x && x < f.x + f.w && y >= f.y && y < f.y + f.h;
   // the wheel and the bed stand in front of every lane: they win, front-most first
   const fx = ["wheel", "bed"].map((k) => findPlaced("fx:" + k)).sort((a, b) => b.x + b.y - (a.x + a.y));
-  for (const p of fx) if (inside(fixtureRect(p.fixture, p.x, p.y, p.flip), L.x, L.y)) return p;
+  const fxp = fx.find((p) => inside(fixtureRect(p.fixture, p.x, p.y, p.flip), L.x, L.y));
+  if (fxp) { // ...unless furniture stands in front of it
+    const foot = fxp.fixture === "wheel" ? wheelAt(fxp.x, fxp.y, fxp.flip).foot : bedGeom({ i: fxp.x, j: fxp.y, flip: fxp.flip }).foot;
+    for (const [p, it] of list) if (it.zone === "floor" && depths.get(p) > foot && floorHit(p, it, L)) return p;
+    return fxp;
+  }
   const sy = L.y - stripTop(clamp(Math.floor(L.x), WALL_X0, WALL_X1 - 1)); // the pointer on the unfolded wall
   for (const [p, it] of list) {
-    if (it.zone === "rug" ? rugHit(p, it, L) : it.zone === "wall" ? inside(wallRect(it, p.x, p.y), L.x, sy) : inside(isoRect(it, p.x, p.y, p.flip), L.x, L.y)) return p;
+    if (it.zone === "rug" ? rugHit(p, it, L) : it.zone === "wall" ? inside(wallRect(it, p.x, p.y), L.x, sy) : floorHit(p, it, L)) return p;
   }
   return null;
 }
@@ -1604,7 +1912,7 @@ function enterPlace(itemId) {
   const it = S.catalog.get(itemId);
   if (!it || !it.zone || unplaced(itemId) <= 0) return;
   selPid = null;
-  Object.assign(P, { mode: "place", it, pid: null, flip: false, userFlip: false, cell: null, valid: null, drag: null, from: null, down: false });
+  Object.assign(P, { mode: "place", it, pid: null, flip: false, userFlip: false, cell: null, valid: null, drag: null, from: null, down: false, carried: new Set() });
   afterMode();
   if (matchMedia("(max-width:860px)").matches) stage.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
@@ -1612,12 +1920,13 @@ function enterMove(pid, drag = null) {
   const p = findPlaced(pid), it = itemOf(p);
   if (!it) return;
   selPid = pid;
-  Object.assign(P, { mode: "move", it, pid, flip: !!p.flip, cell: { x: p.x, y: p.y }, valid: { ok: true }, drag, from: { x: p.x, y: p.y, flip: !!p.flip }, down: false });
+  const carried = it.zone === "floor" ? stackAbove(S.me.placed, p).up : new Set([pid]);
+  Object.assign(P, { mode: "move", it, pid, flip: !!p.flip, cell: { x: p.x, y: p.y }, valid: { ok: true, z: zOf(p) }, drag, from: { x: p.x, y: p.y, flip: !!p.flip }, down: false, carried });
   afterMode();
 }
 function cancelMode() {
   if (!P.mode) return;
-  Object.assign(P, { mode: null, it: null, pid: null, cell: null, valid: null, drag: null, from: null, down: false });
+  Object.assign(P, { mode: null, it: null, pid: null, cell: null, valid: null, drag: null, from: null, down: false, carried: new Set() });
   afterMode();
 }
 function afterMode() { renderPlacing(); renderInventory(); renderFirstHint(); positionTool(); }
@@ -1633,7 +1942,7 @@ async function commit() {
   P.busy = false;
   if (r.ok && r.j.me) {
     ls.set("sr_placed_once", "1");
-    Object.assign(P, { mode: null, it: null, pid: null, cell: null, valid: null, drag: null, from: null });
+    Object.assign(P, { mode: null, it: null, pid: null, cell: null, valid: null, drag: null, from: null, carried: new Set() });
     selPid = (r.j.placed && r.j.placed.pid) || pid;
     applyMe(r.j.me);
     sfx("place");
@@ -1667,7 +1976,7 @@ function positionTool() {
   $("toolName").textContent = it.name;
   el.querySelector('[data-act="remove"]').hidden = !!p.fixture;
   el.hidden = false;
-  const f = isoRect(it, p.x, p.y, p.flip), cr = view.getBoundingClientRect(), sr = stage.getBoundingClientRect(), k = cr.width / LW;
+  const f = isoRect(it, p.x, p.y, p.flip, zOf(p)), cr = view.getBoundingClientRect(), sr = stage.getBoundingClientRect(), k = cr.width / LW;
   const tw = el.offsetWidth, th = el.offsetHeight;
   let left = cr.left - sr.left + (f.x + f.w / 2) * k, top = cr.top - sr.top + f.y * k - 6;
   if (top - th < 4) top = cr.top - sr.top + (f.y + f.h) * k + th + 6; // no room above: hang it below
@@ -1710,14 +2019,18 @@ view.addEventListener("pointerdown", (e) => {
   if (crate) { openCrateUi(crate); return; }
   const hit = hitTest(L);
   if (hit) { select(hit.pid); press = { pid: hit.pid, cx: e.clientX, cy: e.clientY, L }; }
-  else select(null);
+  else {
+    select(null);
+    const pet = petAt(L), q = pet && S.pets.get(pet.id);
+    if (q) toast(`${q.name}: ${q.says}`);
+  }
 });
 view.addEventListener("pointermove", (e) => {
   const L = logical(e);
   if (press && !P.mode && Math.hypot(e.clientX - press.cx, e.clientY - press.cy) > 6) {
     const p = findPlaced(press.pid);
     const pi = itemOf(p);
-    if (p && pi) { const F = toFlat(press.L, pi.zone); enterMove(p.pid, { x0: p.x, y0: p.y, lx: F.x, ly: F.y }); }
+    if (p && pi) { const F = toFlat(press.L, pi.zone); enterMove(p.pid, { x0: p.x, y0: p.y, z0: zOf(p), lx: F.x, ly: F.y }); }
     press = null;
   }
   if (P.mode) { if (e.pointerType === "mouse" || P.down || P.drag) updateGhost(L); }
@@ -1765,7 +2078,20 @@ const OV = {
   ok: () => diamondCanvas("rgba(34,197,94,.3)", "#4ade80"),
   bad: () => diamondCanvas("rgba(239,68,68,.38)", "#f87171"),
   sel: () => diamondCanvas(null, "rgba(255,255,255,.85)"),
+  top: () => diamondCanvas("rgba(74,222,128,.16)", "rgba(134,239,172,.8)"),
 };
+// Where the things on a moved item go: same as server.js moveStack(), lowest first.
+function carriedGhosts(gp) {
+  const base = P.mode === "move" ? findPlaced(P.pid) : null;
+  if (!base) return [];
+  const turned = gp.flip !== !!base.flip, out = [];
+  for (const [o, oi] of floorPlaced(S.me.placed)) {
+    if (o === base || !P.carried.has(o.pid)) continue;
+    const di = o.x - base.x, dj = o.y - base.y;
+    out.push([{ x: gp.x + (turned ? dj : di), y: gp.y + (turned ? di : dj), flip: turned ? !o.flip : !!o.flip, z: zOf(o) + gp.z - zOf(base) }, oi]);
+  }
+  return out;
+}
 function drawPlacement() {
   const now = performance.now();
   if (P.mode && P.it && P.it.zone === "fixture") { // open-floor tiles, the target tile, a ghost of the fixture
@@ -1788,6 +2114,13 @@ function drawPlacement() {
     } else { // every floor tile outlined; for furniture the wheel's and the bed's hatched red
       for (let i = 0; i < ROOM.ISO_NI; i++) for (let j = 0; j < ROOM.ISO_NJ; j++) if (tileOnFloor([i, j])) drawTileOverlay(g, i, j, OV.lane());
       if (it.zone === "floor") for (const k of ["wheel", "bed"]) for (const [i, j] of fixtureTiles(k, fixture(k))) drawTileOverlay(g, i, j, OV.reserved());
+      if (it.zone === "floor") { // the tops it could stand on
+        const floor = floorPlaced(S.me && S.me.placed).filter(([p]) => !P.carried.has(p.pid));
+        for (const [p, pi] of floor) if (pi.top) for (const [i, j] of footprint(pi, p.x, p.y, p.flip)) {
+          const covered = floor.some(([o, oi]) => o !== p && zOf(o) > zOf(p) && footprint(oi, o.x, o.y, o.flip).some(([a, b]) => a === i && b === j));
+          if (!covered && zOf(p) + pi.top <= ROOM.STACK_MAX_Z) drawTileOverlay(g, i, j, OV.top(), zOf(p) + pi.top);
+        }
+      }
     }
     if (P.cell) {
       const ok = !!(P.valid && P.valid.ok) && P.flashUntil < now, col = ok ? "#4ade80" : "#f87171";
@@ -1799,11 +2132,18 @@ function drawPlacement() {
           ring(f, col, s);
         }, f.x - 1, f.x + f.w + 1);
       } else {
-        for (const [i, j] of footprint(it, P.cell.x, P.cell.y, P.flip)) if (tileOnFloor([i, j])) drawTileOverlay(g, i, j, ok ? OV.ok() : OV.bad());
+        const gz = (P.valid && P.valid.z) | 0;
+        for (const [i, j] of footprint(it, P.cell.x, P.cell.y, P.flip)) if (tileOnFloor([i, j])) drawTileOverlay(g, i, j, ok ? OV.ok() : OV.bad(), gz);
         g.globalAlpha = 0.8;
-        const gp = { x: P.cell.x, y: P.cell.y, flip: P.flip };
+        const gp = { x: P.cell.x, y: P.cell.y, flip: P.flip, z: gz };
         if (it.zone === "rug") { const r = rugProjection(gp, it); g.drawImage(r.canvas, r.x, r.y); }
-        else { const f = isoRect(it, gp.x, gp.y, gp.flip); drawFloorItem(gp, it); g.globalAlpha = 1; ring(f, col); } // what you see is what lands
+        else { // what you see is what lands, with whatever it carries
+          const f = isoRect(it, gp.x, gp.y, gp.flip, gz);
+          drawFloorItem(gp, it);
+          for (const [o, oi] of carriedGhosts(gp)) drawFloorItem(o, oi);
+          g.globalAlpha = 1;
+          ring(f, col);
+        }
         g.globalAlpha = 1;
       }
     }
@@ -1813,8 +2153,8 @@ function drawPlacement() {
     if (it && it.zone === "fixture") { for (const [i, j] of fixtureTiles(p.fixture, { i: p.x, j: p.y, flip: !!p.flip })) drawTileOverlay(g, i, j, OV.sel()); const f = fixtureRect(p.fixture, p.x, p.y, p.flip); ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now); }
     else if (it && it.zone === "wall") { const f = wallRect(it, p.x, p.y); foldLayer((s) => ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now, s), f.x - 1, f.x + f.w + 1); }
     else if (it) {
-      for (const [i, j] of footprint(it, p.x, p.y, p.flip)) drawTileOverlay(g, i, j, OV.sel());
-      if (it.zone === "floor") { const f = isoRect(it, p.x, p.y, p.flip); ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now); }
+      for (const [i, j] of footprint(it, p.x, p.y, p.flip)) drawTileOverlay(g, i, j, OV.sel(), zOf(p));
+      if (it.zone === "floor") { const f = isoRect(it, p.x, p.y, p.flip, zOf(p)); ants(f.x - 1, f.y - 1, f.w + 2, f.h + 2, now); }
     }
   }
 }
@@ -1863,6 +2203,7 @@ function tickThumbs() {
 // ---------- shop ----------
 const TABS = [
   { id: "decor", label: "Decor", cats: ["furniture", "wall"] },
+  { id: "pets", label: "Pets", cats: [] },
   { id: "rugs", label: "Rugs", cats: ["rug"] },
   { id: "styles", label: "Walls & Floors", cats: ["wallpaper", "floor"] },
   { id: "skins", label: "Skins", cats: ["skin"] },
@@ -1871,6 +2212,17 @@ const TABS = [
   { id: "room", label: "Den", cats: ["room"] },
 ];
 const SUBHEAD = { furniture: "Floor", wall: "Wall", wallpaper: "Wallpaper", floor: "Flooring" };
+// the Decor tab is long: these narrow it down
+const little = (i) => i.w === 1 && i.h <= 2;
+const DECOR_VIEWS = [
+  { id: "all", label: "All", f: () => true },
+  { id: "stack", label: "Tables & Boxes", f: (i) => !!i.top },
+  { id: "little", label: "Little Things", f: (i) => i.cat === "furniture" && !i.top && little(i) },
+  { id: "big", label: "Furniture", f: (i) => i.cat === "furniture" && !i.top && !little(i) },
+  { id: "wall", label: "Wall", f: (i) => i.cat === "wall" },
+];
+let decorView = ls.get("sd_decor_view");
+if (!DECOR_VIEWS.some((v) => v.id === decorView)) decorView = "all";
 let shopTab = ls.get("sr_tab");
 if (!TABS.some((t) => t.id === shopTab)) shopTab = "decor";
 const shopCards = new Map(); // itemId -> { el, it, thumb, btn, price, own, note, state, busy, ticking }
@@ -1887,6 +2239,52 @@ function buildTabs() {
     box.appendChild(b);
   }
 }
+// Pets aren't sold: the tab says who's home, and what the others come for.
+let petCardSig = "";
+const petSigNow = () => JSON.stringify([S.me && Object.keys(S.me.pets || {}), S.me && S.me.petsActive]);
+function petThumb(cv, id, hidden) {
+  const c = cv.getContext("2d"), t = canvas(24, 24), x = t.getContext("2d");
+  sprite(x, id, 0, 0, 0, {});
+  if (hidden) { x.globalCompositeOperation = "source-in"; x.fillStyle = "#6b7280"; x.fillRect(0, 0, 24, 24); }
+  c.imageSmoothingEnabled = false;
+  c.clearRect(0, 0, cv.width, cv.height);
+  c.drawImage(t, 8, 8, 48, 48);
+}
+function petHint(q) {
+  if (q.kind === "run") return "Only comes while he runs";
+  if (q.kind === "golden") return "Only comes on a golden block";
+  const it = S.catalog.get(q.lure);
+  return `Comes for a ${it ? it.name : "something"}`;
+}
+async function setHome(active) {
+  const r = await post("/api/pets", { active });
+  if (r.ok && r.j.me) { applyMe(r.j.me); sfx("click"); updateCards(); }
+  else toast(errorWords(r.j), "err");
+}
+function buildPetCards(box) {
+  const me = S.me, home = (me && me.petsActive) || [], have = (me && me.pets) || {}, slots = (S.balance && S.balance.PETS && S.balance.PETS.SLOTS) || 3;
+  petCardSig = petSigNow();
+  const head = document.createElement("div");
+  head.className = "sub";
+  head.textContent = `Home ${home.length}/${slots}`;
+  box.appendChild(head);
+  for (const q of [...S.pets.values()].sort((a, b) => (have[b.id] ? 1 : 0) - (have[a.id] ? 1 : 0))) {
+    const el = document.createElement("div"), got = !!have[q.id], isHome = home.includes(q.id);
+    el.className = "card";
+    el.innerHTML = '<canvas class="thumb" width="64" height="64"></canvas><div class="cname"></div><div class="cnote"></div>';
+    el.querySelector(".cname").textContent = got ? q.name : "???";
+    el.querySelector(".cnote").textContent = got ? q.says : petHint(q);
+    petThumb(el.querySelector("canvas"), q.id, !got);
+    if (got) {
+      const b = document.createElement("button");
+      b.textContent = isHome ? "Send away" : "Bring home";
+      b.disabled = !isHome && home.length >= slots;
+      b.onclick = () => setHome(isHome ? home.filter((id) => id !== q.id) : [...home, q.id]);
+      el.appendChild(b);
+    }
+    box.appendChild(el);
+  }
+}
 function buildCards() {
   const box = $("cards"), tab = TABS.find((t) => t.id === shopTab);
   box.innerHTML = "";
@@ -1894,11 +2292,25 @@ function buildCards() {
   builtTab = shopTab;
   builtSize = S.catalog.size;
   if (!S.catalog.size) { box.innerHTML = "<p>Opening the shop…</p>"; return; }
+  if (tab.id === "pets") { buildPetCards(box); return; }
+  const decor = tab.id === "decor", view = decor ? DECOR_VIEWS.find((v) => v.id === decorView) : null;
+  if (decor) {
+    const row = document.createElement("div");
+    row.className = "tabs views";
+    for (const v of DECOR_VIEWS) {
+      const b = document.createElement("button");
+      b.textContent = v.label;
+      b.setAttribute("aria-pressed", String(v === view));
+      b.onclick = () => { decorView = v.id; ls.set("sd_decor_view", v.id); buildCards(); };
+      row.appendChild(b);
+    }
+    box.appendChild(row);
+  }
   for (const cat of tab.cats) {
     // cheapest first (a stable sort keeps colourways next to their base); crate finds and Burrow Drop prizes are never listed
-    const items = [...S.catalog.values()].filter((i) => i.cat === cat && !i.crate && !i.drop).sort((a, b) => a.price - b.price);
+    const items = [...S.catalog.values()].filter((i) => i.cat === cat && !i.crate && !i.drop && (!view || view.f(i))).sort((a, b) => a.price - b.price);
     if (!items.length) continue;
-    if (tab.cats.length > 1) { const h = document.createElement("div"); h.className = "sub"; h.textContent = SUBHEAD[cat] || cat; box.appendChild(h); }
+    if (tab.cats.length > 1 && (!view || view.id === "all")) { const h = document.createElement("div"); h.className = "sub"; h.textContent = SUBHEAD[cat] || cat; box.appendChild(h); }
     for (const it of items) {
       const el = document.createElement("div");
       el.className = "card";
@@ -1952,6 +2364,7 @@ function updateCards() {
   if (builtTab !== shopTab || builtSize !== S.catalog.size) return buildCards();
   const me = S.me;
   $("wallet").textContent = me ? `${fmt(me.watts)} W to spend` : "";
+  if (shopTab === "pets") { if (petCardSig !== petSigNow()) buildCards(); return; }
   for (const c of shopCards.values()) {
     const st = cardState(c.it, me), buying = st.kind === "buy" || st.kind === "upgrade";
     c.state = st;
@@ -2337,7 +2750,7 @@ function afterMe() {
   if (selPid && !findPlaced(selPid)) selPid = null;
   if (P.mode === "move" && !findPlaced(P.pid)) cancelMode();
   if (P.mode === "place" && unplaced(P.it.id) <= 0) cancelMode();
-  if (P.mode && P.cell) P.valid = checkSpot(P.it, P.cell.x, P.cell.y, P.mode === "move" ? P.pid : null);
+  if (P.mode && P.cell) revalidate();
   updateCards();
   renderInventory();
   renderFirstHint();
@@ -2426,10 +2839,10 @@ function renderPortrait(cert, pose) {
   };
   const backToFront = (a, b) => a[0].x + a[0].y - (b[0].x + b[0].y);
   for (const [p, it] of items("rug").sort(backToFront)) drawRugFlat(p, it, flatX(p, it), c, fx, fr);
-  for (const [p, it] of items("floor").sort(backToFront)) {
-    const pw = it.w * CELL, ph = it.h * CELL, x = flatX(p, it);
-    c.fillStyle = "rgba(0,0,0,.2)"; c.fillRect(x + 1, FLOOR_Y, pw - 2, 2);
-    drawItem(p, it, x, FLOOR_Y - ph, pw, ph, c, fx, fr);
+  for (const [p, it] of items("floor").sort((a, b) => zOf(a[0]) - zOf(b[0]) || backToFront(a, b))) {
+    const pw = it.w * CELL, ph = it.h * CELL, x = flatX(p, it), z = zOf(p);
+    if (!z) { c.fillStyle = "rgba(0,0,0,.2)"; c.fillRect(x + 1, FLOOR_Y, pw - 2, 2); }
+    drawItem(p, it, x, FLOOR_Y - ph - z, pw, ph, c, fx, fr);
   }
   if (FLAT_BURROW && !sprite(c, "burrow", fr, FLAT_BURROW.x, FLAT_BURROW.y, {})) c.drawImage(burrowCanvas(), FLAT_BURROW.x, FLAT_BURROW.y);
   const tier = clamp(cert.wheelTier | 0, 0, 5), angle = pose.angle;

@@ -33,6 +33,7 @@ const KEYS = {
   crateChance: (B) => `${B.CRATES.CHANCE_PCT}%`,
   cratesDay: (B) => String(B.CRATES.PER_DAY),
   cratesWaiting: (B) => String(B.CRATES.MAX_UNOPENED),
+  petSlots: (B) => String(B.PETS.SLOTS),
   crateWatts: (B) => `${fmt(B.CRATES.WATTS_MIN)}–${fmt(B.CRATES.WATTS_MAX)} W`,
   dw: (B) => `${mult(B.BOOSTS.double_wheel.PCT)} wheel Watts for ${dur(B.BOOSTS.double_wheel.MS)}`,
   ds: (B) => `+${B.BOOSTS.deep_sleep.PCT - 100}% bed income for ${dur(B.BOOSTS.deep_sleep.MS)}`,
