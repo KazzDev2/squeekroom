@@ -5,6 +5,7 @@ const S = require("../server.js");
 require("./alert.test.js"); // security alerts; Node 22+ runs only this file for `node --test test/` (see package.json)
 require("./drop.test.js"); // the Burrow Drop preview
 require("./stack.test.js"); // furniture on furniture
+require("./pets.test.js"); // pets
 const { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible } = S;
 
 const T0 = Date.UTC(2026, 9, 30, 22, 0, 0);
@@ -2536,7 +2537,7 @@ test("visits: a den's look and public numbers only; never crates, items, boosts,
   host.raidedBy = [{ pid: "zzz", at: T0, avenged: false }];
   const r = S.visitDen(st, pidOf(TB), TA, T0);
   assert.equal(r.ok, true);
-  assert.deepEqual(Object.keys(r.den).sort(), ["bedTier", "fixtures", "floor", "lifetimeWatts", "name", "placed", "publicId", "roomTier", "shield", "skin", "verified", "wallpaper", "watts", "wheelTier"]);
+  assert.deepEqual(Object.keys(r.den).sort(), ["bedTier", "fixtures", "floor", "lifetimeWatts", "name", "petsActive", "placed", "publicId", "roomTier", "shield", "skin", "verified", "wallpaper", "watts", "wheelTier"]);
   assert.deepEqual([r.den.name, r.den.verified, r.den.skin, r.den.roomTier, r.den.watts], ["Host", true, "skin_panda", 2, 50_000]);
   assert.deepEqual(r.den.placed, [{ pid: "s1", item: "fur_sofa", x: 3, y: 2, flip: true }]);
   assert.deepEqual(r.den.fixtures, host.fixtures);

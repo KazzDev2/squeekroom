@@ -159,6 +159,10 @@ const BALANCE = {
   // Golden blocks: a settled height is golden when its hash says so (~1 in ONE_IN, the same answer on
   // every boot). It pays MULT_PCT wheel watts to every den watching when it settles; others get the normal rate.
   GOLDEN: { ONE_IN: 150, MULT_PCT: 1000 },
+  // Pets move in by themselves, for dens being watched: a common one on a heartbeat (COMMON_PCT, if its
+  // lure is placed), a running one on a settled block (RUN_PCT), the magpie on a golden block (GOLDEN_PCT).
+  // SLOTS of them can be home at once; only those give their perk.
+  PETS: { SLOTS: 3, COMMON_PCT: 1, RUN_PCT: 0.1, GOLDEN_PCT: 10 },
 };
 
 // ---------- room grid ----------
@@ -518,6 +522,79 @@ const tierField = (cat) => (Object.hasOwn(TIER_FIELD, cat) ? TIER_FIELD[cat] : n
 const DEFAULTS = { skin: "skin_classic", wallpaper: "wp_plain", floor: "fl_straw" };
 const FREE_IDS = CATALOG.filter((i) => i.price === 0 && !i.crate && !i.drop).map((i) => i.id); // every player owns these
 
+// ---------- pets ----------
+// kind: "common" | "run" | "golden" (see BALANCE.PETS). lure: the placed item a common pet comes for.
+// perk: what it adds while it's home, read through petPerk(). Art: public/sprites_pets.js.
+const PETS = [
+  { id: "pet_mouse", name: "Mouse", kind: "common", lure: "fur_cardboard_box", perk: { wheelPct: 1 }, says: "+1% wheel Watts" },
+  { id: "pet_snail", name: "Snail", kind: "common", lure: "fur_hay_bale", perk: { bedPct: 1 }, says: "+1% bed Watts" },
+  { id: "pet_cricket", name: "Cricket", kind: "common", lure: "fur_campfire", perk: { watchPct: 1 }, says: "+1% watching bonus" },
+  { id: "pet_moth", name: "Moth", kind: "common", lure: "fur_street_lamp", perk: { cratesDay: 1 }, says: "+1 crate a day" },
+  { id: "pet_frog", name: "Frog", kind: "common", lure: "rug_puddle", perk: { cratesWaiting: 1 }, says: "Holds +1 unopened crate" },
+  { id: "pet_pigeon", name: "Pigeon", kind: "common", lure: "fur_mailbox", perk: { dailyWatts: 200 }, says: "Brings 200 W a day" },
+  { id: "pet_gecko", name: "Gecko", kind: "common", lure: "fur_safe", perk: { shieldMs: 900_000 }, says: "Raid Shield lasts 15 min longer" },
+  { id: "pet_ladybug", name: "Ladybug", kind: "common", lure: "fur_bonsai", perk: { dropPct: 1 }, says: "Burrow Drop pays 1% more" },
+  { id: "pet_shrew", name: "Shrew", kind: "run", perk: { raids: 1 }, says: "+1 raid a day" },
+  { id: "pet_spark_beetle", name: "Spark Beetle", kind: "run", perk: { wheelPct: 3 }, says: "+3% wheel Watts" },
+  { id: "pet_ferret", name: "Ferret", kind: "run", perk: { raidRunPct: 2 }, says: "Raid run bonus +2%" },
+  { id: "pet_hedgehog", name: "Hedgehog", kind: "run", perk: { bruiseMs: 600_000 }, says: "10 min more peace after a raid" },
+  { id: "pet_firefly", name: "Firefly", kind: "run", perk: { crateChancePct: 25 }, says: "Crates drop 25% more often" },
+  { id: "pet_magpie", name: "Magpie", kind: "golden", perk: { goldenPct: 100 }, says: "Golden blocks pay 11x" },
+];
+const PET_BY_ID = new Map(PETS.map((q) => [q.id, q]));
+// The sum of one perk over the pets at home.
+function petPerk(p, key) {
+  const home = p && p.petsActive;
+  if (!Array.isArray(home) || !home.length) return 0;
+  let n = 0;
+  for (const id of home) { const q = PET_BY_ID.get(id); if (q && q.perk[key]) n += q.perk[key]; }
+  return n;
+}
+function addPet(p, id, now) {
+  if (!p.pets || typeof p.pets !== "object") p.pets = {};
+  if (p.pets[id]) return false;
+  p.pets[id] = now;
+  if (!Array.isArray(p.petsActive)) p.petsActive = [];
+  if (p.petsActive.length < BALANCE.PETS.SLOTS) p.petsActive.push(id);
+  return true;
+}
+const pickOne = (list, rng) => list[Math.floor(rng() * list.length) % list.length];
+// One watched heartbeat: a common pet may come, if what it likes is in the den. Returns its id.
+function rollCommonPet(p, now, rng = Math.random) {
+  if (!(rng() < BALANCE.PETS.COMMON_PCT / 100)) return null;
+  const placed = new Set((p.placed || []).map((o) => o.item));
+  const can = PETS.filter((q) => q.kind === "common" && !(p.pets && p.pets[q.id]) && placed.has(q.lure));
+  if (!can.length) return null;
+  const q = pickOne(can, rng);
+  addPet(p, q.id, now);
+  return q.id;
+}
+// New settled blocks for a den being watched: he is running, so a running pet may come; a golden block
+// may bring the magpie. Returns the ids that moved in.
+function rollRunPets(p, blocks, golden, now, rng = Math.random) {
+  const P = BALANCE.PETS, got = [];
+  for (let n = 0; n < blocks; n++) {
+    if (!(rng() < P.RUN_PCT / 100)) continue;
+    const can = PETS.filter((q) => q.kind === "run" && !(p.pets && p.pets[q.id]));
+    if (!can.length) break;
+    const q = pickOne(can, rng);
+    addPet(p, q.id, now);
+    got.push(q.id);
+  }
+  for (let n = 0; n < golden; n++) {
+    if (!(p.pets && p.pets.pet_magpie) && rng() < P.GOLDEN_PCT / 100) { addPet(p, "pet_magpie", now); got.push("pet_magpie"); }
+  }
+  return got;
+}
+// body {active: [ids]}: which of the den's pets are home.
+function setPets(p, body) {
+  const a = body && body.active;
+  if (!Array.isArray(a) || a.length > BALANCE.PETS.SLOTS || new Set(a).size !== a.length) return fail("bad_pets");
+  for (const id of a) if (typeof id !== "string" || !PET_BY_ID.has(id) || !(p.pets && p.pets[id])) return fail("bad_pets");
+  p.petsActive = [...a];
+  return { ok: true };
+}
+
 // ---------- fixtures: the wheel and the bed ----------
 const FIXTURES = ["wheel", "bed"];
 const defaultFixtures = () => ({ wheel: { ...ROOM.FIXTURE_DEFAULTS.wheel }, bed: { ...ROOM.FIXTURE_DEFAULTS.bed } });
@@ -635,6 +712,9 @@ function newPlayer(height, now = Date.now(), token = null) {
     lastRaidAt: 0, // ms of this player's last resolved raid
     raidDay: null, // UTC day ("YYYY-MM-DD") that raidsToday counts
     raidsToday: 0, // raids made on raidDay (BALANCE.RAID.PER_DAY a day)
+    pets: {}, // pet id -> when it moved in
+    petsActive: [], // the ones home (BALANCE.PETS.SLOTS)
+    pigeonDay: null, // UTC day of the pigeon's last delivery
     raidedBy: [], // ring of {pid, at, avenged}: who raided this room (revenge waives the 70% rule once)
     wallet: null, // lowercase 0x address once a personal_sign proof was verified
     username: null, // unique, shown on the leaderboard instead of the nick; picked when the den starts
@@ -677,6 +757,9 @@ function patchPlayer(p, token) {
   if (!Array.isArray(p.crates)) p.crates = [];
   if (p.crateDay === undefined) p.crateDay = null;
   if (!Number.isInteger(p.cratesToday)) p.cratesToday = 0;
+  if (!p.pets || typeof p.pets !== "object") p.pets = {};
+  if (!Array.isArray(p.petsActive)) p.petsActive = [];
+  if (p.pigeonDay === undefined) p.pigeonDay = null;
   if (p.owned && typeof p.owned === "object") for (const id of FREE_IDS) if (!p.owned[id]) p.owned[id] = 1;
   for (const k of LEGACY_FIELDS) delete p[k];
   return p;
@@ -801,7 +884,7 @@ function purgeNameless(st) {
 
 // ---------- economy (pure-ish: explicit args, no globals) ----------
 function liveBonusPct(player, now = Date.now()) {
-  return player.lastHeartbeat > 0 && now - player.lastHeartbeat <= BALANCE.HEARTBEAT_WINDOW_MS ? BALANCE.LIVE_BONUS_PCT : 100;
+  return player.lastHeartbeat > 0 && now - player.lastHeartbeat <= BALANCE.HEARTBEAT_WINDOW_MS ? BALANCE.LIVE_BONUS_PCT + petPerk(player, "watchPct") : 100;
 }
 // boostPct: Double Wheel (100 = off). delta may count a golden block as GOLDEN.MULT_PCT / 100 blocks.
 function wattsFor(delta, tier, bonusPct, speedPct = 100, boostPct = 100) {
@@ -831,8 +914,8 @@ function creditWatts(player, earned, now) {
 function accrue(player, delta, now = Date.now(), speedPct = 100, golden = 0) {
   if (!Number.isInteger(delta) || delta <= 0) return 0;
   const bonus = liveBonusPct(player, now);
-  const gold = bonus > 100 && golden > 0 ? (Math.min(golden, delta) * (BALANCE.GOLDEN.MULT_PCT - 100)) / 100 : 0;
-  const earned = wattsFor(delta + gold, player.wheelTier | 0, bonus, speedPct, boostPct(player, "double_wheel", now));
+  const gold = bonus > 100 && golden > 0 ? (Math.min(golden, delta) * (BALANCE.GOLDEN.MULT_PCT + petPerk(player, "goldenPct") - 100)) / 100 : 0;
+  const earned = wattsFor(delta + gold, player.wheelTier | 0, bonus, speedPct, (boostPct(player, "double_wheel", now) * (100 + petPerk(player, "wheelPct"))) / 100);
   if (earned <= 0) return 0;
   creditWatts(player, earned, now);
   return earned;
@@ -888,7 +971,8 @@ const bedWattsPerMin = (player) => (bedRateTenths() * bedMultPct(player)) / 1000
 // Credit one player `ms` of bed time. Returns whole watts credited.
 function bedCredit(player, ms, now = Date.now()) {
   if (!Number.isFinite(ms) || ms <= 0) return 0;
-  const total = (Number.isFinite(player.bedFrac) ? player.bedFrac : 0) + ms * bedRateTenths() * bedMultPct(player) * liveBonusPct(player, now) * boostPct(player, "deep_sleep", now);
+  const earned = ms * bedRateTenths() * bedMultPct(player) * liveBonusPct(player, now) * boostPct(player, "deep_sleep", now);
+  const total = (Number.isFinite(player.bedFrac) ? player.bedFrac : 0) + Math.round((earned * (100 + petPerk(player, "bedPct"))) / 100);
   const watts = Math.floor(total / BED_FRAC_DEN);
   player.bedFrac = total - watts * BED_FRAC_DEN;
   if (watts > 0) creditWatts(player, watts, now);
@@ -923,7 +1007,11 @@ function accrueAll(st, newHeight, now = Date.now(), speedPct = 100, rng = Math.r
     const since = p.joinHeight == null ? st.lastAccruedHeight : Math.max(st.lastAccruedHeight, p.joinHeight);
     if (newHeight <= since) continue;
     total += accrue(p, newHeight - since, now, speedPct, golden.filter((h) => h > since).length);
-    if (liveBonusPct(p, now) > 100) rollCrates(p, Math.min(newHeight - since, BALANCE.CRATES.ROLLS_MAX), now, rng);
+    if (liveBonusPct(p, now) > 100) {
+      const rolls = Math.min(newHeight - since, BALANCE.CRATES.ROLLS_MAX);
+      rollCrates(p, rolls, now, rng);
+      rollRunPets(p, rolls, golden.filter((h) => h > since).length, now);
+    }
   }
   st.lastAccruedHeight = newHeight;
   return total;
@@ -972,10 +1060,11 @@ function rollCrates(p, rolls, now = Date.now(), rng = Math.random) {
   const C = BALANCE.CRATES, day = utcDay(now);
   if (p.crateDay !== day) { p.crateDay = day; p.cratesToday = 0; }
   if (!Array.isArray(p.crates)) p.crates = [];
+  const perDay = C.PER_DAY + petPerk(p, "cratesDay"), waiting = C.MAX_UNOPENED + petPerk(p, "cratesWaiting"), chance = (C.CHANCE_PCT * (100 + petPerk(p, "crateChancePct"))) / 100;
   let dropped = 0;
   for (let n = 0; n < rolls; n++) {
-    if (p.cratesToday >= C.PER_DAY || p.crates.length >= C.MAX_UNOPENED) break;
-    if (!(rng() < C.CHANCE_PCT / 100)) continue;
+    if (p.cratesToday >= perDay || p.crates.length >= waiting) break;
+    if (!(rng() < chance / 100)) continue;
     const c = rollCrateContents(p, rng), t = crateTile(p, rng);
     p.crates.push({ id: crypto.randomBytes(4).toString("hex"), at: now, i: t.i, j: t.j, c });
     p.cratesToday += 1;
@@ -1072,13 +1161,13 @@ function playDrop(st, token, body, now = Date.now(), { rng = Math.random, seed =
     if (!Array.isArray(st.raidFeed)) st.raidFeed = [];
     pushRing(st.raidFeed, { at: now, kind: "bounty", atk: displayName(p), atkId: p.publicId, def: null, defId: null, win: true, amount: stashWon, crit: false, bonus: 0 }, BALANCE.RAID.FEED_MAX);
   }
-  else land = Math.round(wager * P[r.slotId]);
+  else land = Math.round((wager * P[r.slotId] * (100 + petPerk(p, "dropPct"))) / 100);
   let seeds = 0, chain = 0, lastF = -1e9;
   for (const e of r.events) {
     if (e.kind !== "seed") continue;
     chain = e.f - lastF < P.COMBO_FRAMES ? chain + 1 : 1;
     lastF = e.f;
-    seeds += Math.round((wager * P.SEED_PCT * Math.min(chain, P.COMBO_MAX) * (board.golden ? 2 : 1)) / 100);
+    seeds += Math.round((wager * P.SEED_PCT * Math.min(chain, P.COMBO_MAX) * (board.golden ? 2 : 1) * (100 + petPerk(p, "dropPct"))) / 10_000);
   }
   let crate = null;
   if (r.crateHit) {
@@ -1149,7 +1238,7 @@ function raiseShield(st, token, body, now = Date.now()) {
     if (p.watts < price) return { ok: false, error: "poor", need: price - p.watts };
     p.watts -= price;
   } else return fail("bad_from");
-  p.shield = { until: now + BALANCE.SHIELD.MS, kind: "bought" };
+  p.shield = { until: now + BALANCE.SHIELD.MS + petPerk(p, "shieldMs"), kind: "bought" };
   p.shieldDay = utcDay(now);
   invalidateLeaderboard(st);
   return { ok: true, shield: p.shield };
@@ -1322,7 +1411,7 @@ function validatePlacement(player, itemId, x, y, ignorePid = null, flip = false)
 }
 
 // Rate-limited "I'm watching" stamp. Early calls do not stamp (and cannot extend the window).
-function heartbeat(player, now = Date.now()) {
+function heartbeat(player, now = Date.now(), rng = Math.random) {
   const since = now - (player.lastHeartbeat || 0);
   if (player.lastHeartbeat > 0 && since < BALANCE.HEARTBEAT_MIN_INTERVAL_MS) {
     const bonusPct = liveBonusPct(player, now);
@@ -1330,7 +1419,11 @@ function heartbeat(player, now = Date.now()) {
   }
   player.lastHeartbeat = now;
   player.lastSeen = now;
-  return { ok: true, stamped: true, watching: true, bonusPct: BALANCE.LIVE_BONUS_PCT, nextMs: BALANCE.HEARTBEAT_MIN_INTERVAL_MS };
+  const pet = rollCommonPet(player, now, rng);
+  const brought = petPerk(player, "dailyWatts"), day = utcDay(now);
+  let pigeon = 0;
+  if (brought > 0 && player.pigeonDay !== day) { player.pigeonDay = day; player.watts += brought; pigeon = brought; } // on the balance only: not earnings
+  return { ok: true, stamped: true, watching: true, bonusPct: liveBonusPct(player, now), nextMs: BALANCE.HEARTBEAT_MIN_INTERVAL_MS, ...(pet ? { pet } : {}), ...(pigeon ? { pigeon } : {}) };
 }
 
 function certEligible(player) {
@@ -1432,7 +1525,8 @@ function parseMultPct(v) {
   return L.includes(pct) && Math.abs(v * 100 - pct) < 1e-9 ? pct : null;
 }
 // Daily allowance: PER_DAY raids per UTC day; the count resets at 00:00 UTC.
-const raidsLeft = (p, now) => (p.raidDay === utcDay(now) ? Math.max(0, BALANCE.RAID.PER_DAY - (p.raidsToday | 0)) : BALANCE.RAID.PER_DAY);
+const raidsPerDay = (p) => BALANCE.RAID.PER_DAY + petPerk(p, "raids");
+const raidsLeft = (p, now) => (p.raidDay === utcDay(now) ? Math.max(0, raidsPerDay(p) - (p.raidsToday | 0)) : raidsPerDay(p));
 const msToUtcMidnight = (now) => 86_400_000 - (now % 86_400_000);
 // The oldest unavenged provocation by `pid` against `player` within the revenge window, or null.
 function pendingRevenge(player, pid, now) {
@@ -1448,9 +1542,9 @@ function raidEligibility(attacker, defender, now) {
   const revenge = pendingRevenge(attacker, defender.publicId, now);
   return revenge ? { ok: true, revenge } : { ok: false, error: "not_eligible" };
 }
-const raidRunPct = (st, now, readAt) => (runningNow(st, now, readAt) ? BALANCE.RAID.RUN_BONUS_PCT : 0);
+const raidRunPct = (st, now, readAt, p) => (runningNow(st, now, readAt) ? BALANCE.RAID.RUN_BONUS_PCT + petPerk(p, "raidRunPct") : 0);
 function raidStatus(st, player, now = Date.now(), readAt = chainReadAt()) {
-  return { raidsLeft: raidsLeft(player, now), perDay: BALANCE.RAID.PER_DAY, resetMs: msToUtcMidnight(now), runPct: raidRunPct(st, now, readAt),
+  return { raidsLeft: raidsLeft(player, now), perDay: raidsPerDay(player), resetMs: msToUtcMidnight(now), runPct: raidRunPct(st, now, readAt, player),
     ready: raidReady(player), earned: Math.max(0, player.lifetimeWatts | 0), needEarned: BALANCE.RAID.MIN_EARNED, shielded: boughtShieldUp(player, now) };
 }
 
@@ -1512,13 +1606,13 @@ function applyRaid(st, token, body, now = Date.now(), { rng = Math.random, readA
 
   // the whisker is only spent when it can help: odds already at P_MAX leave it armed for the next raid
   const lucky = boostActive(atk, "lucky_whisker", now) && raidChance(atk, def, multPct) < R.P_MAX_PCT / 100;
-  const r = resolveRaid(atk, def, stake, multPct, rng, lucky ? BALANCE.BOOSTS.lucky_whisker.ODDS_PTS : 0, raidRunPct(st, now, readAt));
+  const r = resolveRaid(atk, def, stake, multPct, rng, lucky ? BALANCE.BOOSTS.lucky_whisker.ODDS_PTS : 0, raidRunPct(st, now, readAt, atk));
   if (lucky) { atk.effects.lucky_whisker = false; r.lucky = true; }
   if (r.win) {
     def.watts -= r.loot;
     atk.watts += r.loot + r.bonus + r.runBonus;
     if (r.bonus + r.runBonus > 0) st.minted = (Number.isFinite(st.minted) ? st.minted : 0) + r.bonus + r.runBonus; // supply accounting
-    def.shield = { until: now + BALANCE.SHIELD.BRUISE_MS, kind: "bruise" }; // a bruise: a few minutes of peace
+    def.shield = { until: now + BALANCE.SHIELD.BRUISE_MS + petPerk(def, "bruiseMs"), kind: "bruise" }; // a bruise: a few minutes of peace
   } else {
     const insured = boostActive(atk, "wager_insurance", now);
     const refund = insured ? Math.floor((stake * BALANCE.BOOSTS.wager_insurance.REFUND_PCT) / 100) : 0;
@@ -1585,6 +1679,7 @@ function denView(st, p, viewer, now = Date.now()) {
     publicId: p.publicId, name: displayName(p), verified: !!p.wallet, watts: p.watts, lifetimeWatts: p.lifetimeWatts,
     roomTier: p.roomTier | 0, wheelTier: p.wheelTier | 0, bedTier: p.bedTier | 0, skin: p.skin, wallpaper: p.wallpaper, floor: p.floor,
     placed: (p.placed || []).map(({ pid, item, x, y, flip, z }) => ({ pid, item, x, y, flip: !!flip, ...(z ? { z } : {}) })),
+    petsActive: Array.isArray(p.petsActive) ? p.petsActive : [],
     fixtures: { wheel: { ...p.fixtures.wheel }, bed: { ...p.fixtures.bed } },
     shield: sh,
   };
@@ -2293,6 +2388,8 @@ function publicPlayer(p, now = Date.now()) {
     owned: p.owned,
     placed: p.placed,
     fixtures: p.fixtures,
+    pets: p.pets,
+    petsActive: p.petsActive,
     activeDays: p.activeDays,
     watching: bonusPct > 100,
     bonusPct,
@@ -2359,7 +2456,7 @@ function snapshot(token, ip = null) {
 // reading, and `replay` describes the schedule; null outside replay.
 function configPayload({ replay = REPLAY, sched = REPLAY_SCHEDULE } = {}) {
   return {
-    demo: DEMO, core: CORE, api: replay ? REPLAY_API_SINK : API, balance: BALANCE, room: ROOM, catalog: CATALOG,
+    demo: DEMO, core: CORE, api: replay ? REPLAY_API_SINK : API, balance: BALANCE, room: ROOM, catalog: CATALOG, pets: PETS,
     replay: replay ? { speed: sched.speed, blocksPerDay: sched.blocksPerDay, cycleMs: sched.cycleMs, epoch: new Date(sched.epochMs).toISOString(), nonstop: !!sched.nonstop } : null,
     wallet: { enabled: true, usernameRe: WALLET.USERNAME_RE.source, burnerWarning: true, nonceTtlMs: WALLET.NONCE_TTL_MS },
   };
@@ -2411,6 +2508,12 @@ const POST_ROUTES = {
     if (i < 0) return err(404, "unknown_pid");
     const it = CATALOG_BY_ID.get(p.placed[i].item), gone = it && it.zone === "floor" ? stackAbove(p, p.placed[i]).up : new Set([b.pid]);
     p.placed = p.placed.filter((q) => !gone.has(q.pid)); // what stood on it comes back too
+    return okMe(p);
+  },
+  // {active: [pet ids]}: who's home
+  "/api/pets": (b, p) => {
+    const r = setPets(p, b);
+    if (!r.ok) return err(400, r.error);
     return okMe(p);
   },
   "/api/skin": (b, p) => {
@@ -2507,6 +2610,11 @@ const DEV_ROUTES = {
     setDemoHamster("ACTIVE");
     demoBlocks(Math.max(1, Math.min(DEMO_MAX_ADVANCE, n)));
     return [200, { ok: true, height: state.height }];
+  },
+  "/api/dev/pet": (b) => { // {id}: a pet moves in for every den (demo only)
+    if (!PET_BY_ID.has(b && b.id)) return err(400, "bad_pet");
+    for (const p of Object.values(state.players)) addPet(p, b.id, Date.now());
+    return [200, { ok: true }];
   },
   "/api/dev/grant": (b) => {
     const p = getPlayer(state, b.token);
@@ -2629,7 +2737,7 @@ module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certElig
 // Extra helpers for tests (the plan's six names above stay the primary surface).
 Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
-  stackAbove, moveStack, footprint, runningNow, raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidStatus, applyRaid,
+  stackAbove, moveStack, footprint, PETS, PET_BY_ID, petPerk, addPet, rollCommonPet, rollRunPets, setPets, raidsPerDay, runningNow, raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS, viewerFlags, denView, visitDen, randomDen, allowVisit, VISIT_LIMIT,
   WALLET, displayName, walletMessage, issueWalletNonce, verifyWallet, setUsername, usernameProblem, createDen, purgeNameless, runMigrations,
   REPLAY_NIGHT, REPLAY_NONSTOP_NIGHT, REPLAY_API_SINK, REPLAY_MIN_SLEEP_MS, replaySchedule, replayLocate, replayCumulativeBlocks, cumulativeBlocks: replayCumulativeBlocks,

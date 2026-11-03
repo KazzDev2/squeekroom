@@ -443,7 +443,7 @@ if (!token || !TOKEN_RE.test(token)) {
 const S = {
   loaded: false, demo: false, offline: false, skew: 0,
   height: null, chain: null, hamster: null, live: null, api: "https://api.squeekchain.com/v1",
-  night: null, balance: null, catalog: new Map(), me: null, watching: false,
+  night: null, balance: null, catalog: new Map(), pets: new Map(), me: null, watching: false,
   configured: false, // GET /api/config (balance, room, catalog) has landed
   idle: false, // server's view: asleep by the chain (no settled block for IDLE_AFTER_MS): bed income flows
   meAt: 0, // serverTime of the newest `me` applied (drops an older snapshot that lands late)
@@ -502,6 +502,7 @@ function applyConfig(j) {
   if (j.balance) S.balance = j.balance;
   if (j.room) applyRoom(j.room);
   if (Array.isArray(j.catalog)) S.catalog = new Map(j.catalog.map((i) => [i.id, i]));
+  if (Array.isArray(j.pets)) S.pets = new Map(j.pets.map((q) => [q.id, q]));
   S.walletCfg = j.wallet && j.wallet.enabled ? j.wallet : null; // absent: no wallet button at all
   S.configured = true;
   walletHook("onConfig", S.walletCfg);
@@ -558,6 +559,10 @@ function applyMe(me, first = false, opts = {}) {
   S.me = me;
   if (!V.den) { myFixtures = me.fixtures || null; placeFixtures(); } // a visit keeps the visited den's fixtures
   S.watching = !!me.watching;
+  if (prev && prev.pets && me.pets) for (const id of Object.keys(me.pets)) {
+    const q = S.pets.get(id);
+    if (!prev.pets[id] && q) { toast(`A ${q.name} moved in. ${q.says}`); sfx("crateOpen"); }
+  }
   if (first || !prev) meter.shown = me.watts;
   else if (me.lifetimeWatts > prev.lifetimeWatts) onAccrual(me.lifetimeWatts - prev.lifetimeWatts, !!opts.soft);
   noteEarn(me, prev, first);
@@ -605,6 +610,7 @@ async function beat() {
   if (document.visibilityState !== "visible" || !S.me || S.preview) return;
   const r = await post("/api/heartbeat", {});
   if (r.ok) S.watching = !!r.j.watching;
+  if (r.ok && r.j.pigeon) toast(`The Pigeon brought ${fmt(r.j.pigeon)} W.`);
   renderHud();
 }
 
@@ -705,7 +711,127 @@ $("sleep").onclick = async () => {
 // fresh reading at all); otherwise (awake, just not running) REST on the open floor by the wheel,
 // blinking. Switching passes through a short SIT at that same spot, with hop/walk moves between.
 const SIT_MS = 1400;
-const ham = { init: false, mode: "sleep", x: SPOT.bed.x, y: SPOT.bed.y, gy: SPOT.bed.y, face: -1, move: null, sitLeft: 0, runPhase: 0, blink: 0, breath: 0 };
+const ham = { init: false, mode: "sleep", x: SPOT.bed.x, y: SPOT.bed.y, gy: SPOT.bed.y, face: -1, move: null, sitLeft: 0, runPhase: 0, blink: 0, breath: 0, perch: null, walk: null, act: null, detoured: false };
+// ---------- floor paths (the pets, and Squeektoshi's detours) ----------
+function blockedTiles(den) { // what stands on the floor: the wheel, the bed, furniture
+  const out = new Set();
+  for (const k of ["wheel", "bed"]) for (const [i, j] of fixtureTiles(k, fixture(k))) out.add(i * 100 + j);
+  for (const o of (den && den.placed) || []) {
+    const it = S.catalog.get(o.item);
+    if (it && it.zone === "floor" && !zOf(o)) for (const [i, j] of footprint(it, o.x, o.y, o.flip)) out.add(i * 100 + j);
+  }
+  return out;
+}
+// The tiles from a to b around what's blocked (b included, a not), or null. a itself may be blocked.
+function tilePath(a, b, blocked) {
+  const key = ([i, j]) => i * 100 + j, from = new Map([[key(a), null]]), queue = [a];
+  for (let n = 0; n < queue.length; n++) {
+    const t = queue[n];
+    if (t[0] === b[0] && t[1] === b[1]) {
+      const path = [];
+      for (let c = t; from.get(key(c)); c = from.get(key(c))) path.unshift(c);
+      return path;
+    }
+    for (const u of [[t[0] + 1, t[1]], [t[0] - 1, t[1]], [t[0], t[1] + 1], [t[0], t[1] - 1]]) {
+      if (from.has(key(u)) || !tileOnFloor(u) || blocked.has(key(u))) continue;
+      from.set(key(u), t);
+      queue.push(u);
+    }
+  }
+  return null;
+}
+const tileUnder = (x, y) => screenToTile(x, y - ISO.FOOT).map(Math.floor);
+// ---------- Squeektoshi and the furniture ----------
+// On the way from the wheel to bed he sometimes stops at something he can use, and sometimes falls asleep
+// somewhere other than his bed. Both are looks only, and the moment he runs again he goes to the wheel.
+// on: he hops up onto it, this many px above its base; else he stands on a tile beside it.
+const HAM_USES = {
+  fur_seed_bowl: { pose: "eat" }, fur_seed_sack: { pose: "eat" }, fur_cake: { pose: "eat" }, fur_cupcake: { pose: "eat" }, fur_fruit_bowl: { pose: "eat" }, fur_cookie_jar: { pose: "eat" }, fur_sandwich: { pose: "eat" },
+  fur_water_bottle: { pose: "drink" }, fur_bird_bath: { pose: "drink" }, fur_fountain: { pose: "drink" },
+  fur_yarn: { pose: "sniff" }, fur_rubber_duck: { pose: "sniff" }, fur_radio: { pose: "sniff" }, fur_gramophone: { pose: "sniff" }, fur_jukebox: { pose: "sniff" }, fur_arcade: { pose: "sniff" },
+  fur_campfire: { pose: "groom" }, fur_stool: { pose: "groom", on: 8 }, fur_root_stool: { pose: "groom", on: 5 }, fur_ottoman: { pose: "groom", on: 10 }, fur_melon_cushion: { pose: "groom", on: 6 },
+};
+const HAM_NAPS = { fur_sofa: 10, fur_hammock: 14, fur_teacup_bed: 7, fur_melon_cushion: 6, fur_ottoman: 10, fur_hay_bale: 14, fur_box_house: 23, fur_cardboard_box: 16, fur_book_stack: 10, fur_suitcase: 10 };
+const HAM_DETOUR_PCT = 60, HAM_NAP_PCT = 40, HAM_ACT_MS = 8000, HAM_WALK_PX_S = 44, HAM_PATH_MAX = 16;
+const baseOf = (it) => it.colorOf || it.id;
+function hasOnTop(den, p, it) {
+  const mine = new Set(footprint(it, p.x, p.y, p.flip).map(([i, j]) => i * 100 + j));
+  return ((den && den.placed) || []).some((o) => {
+    const oi = S.catalog.get(o.item);
+    return o !== p && oi && oi.zone === "floor" && zOf(o) > zOf(p) && footprint(oi, o.x, o.y, o.flip).some(([i, j]) => mine.has(i * 100 + j));
+  });
+}
+function perchItem() {
+  const den = shownDen(), p = ham.perch && den && (den.placed || []).find((o) => o.pid === ham.perch.pid), it = p && S.catalog.get(p.item);
+  return it && !hasOnTop(den, p, it) ? [p, it] : null;
+}
+function perchSpot() { // the middle of the item's top
+  const hit = perchItem();
+  if (!hit) return null;
+  const [p, it] = hit, t = footprint(it, p.x, p.y, p.flip).map(([i, j]) => isoTileCenter(i, j));
+  return { x: Math.round(t.reduce((a, c) => a + c.x, 0) / t.length), y: Math.round(t.reduce((a, c) => a + c.y, 0) / t.length) + ISO.FOOT - zOf(p) - ham.perch.rise };
+}
+function pickNap() {
+  const den = shownDen(), can = [];
+  ham.perch = null;
+  for (const p of (den && den.placed) || []) {
+    const it = S.catalog.get(p.item), rise = it && HAM_NAPS[baseOf(it)];
+    if (rise && !hasOnTop(den, p, it)) can.push({ pid: p.pid, rise });
+  }
+  if (can.length && Math.random() * 100 < HAM_NAP_PCT) ham.perch = can[Math.floor(Math.random() * can.length)];
+}
+// Something he can use now, the nearest first try: { p, it, use, path } or null.
+function pickUse() {
+  const den = shownDen(), blocked = blockedTiles(den), from = tileUnder(ham.x, ham.gy), can = [];
+  for (const p of (den && den.placed) || []) {
+    const it = S.catalog.get(p.item), use = it && HAM_USES[baseOf(it)];
+    if (use && !zOf(p) && !(use.on && hasOnTop(den, p, it))) can.push({ p, it, use });
+  }
+  while (can.length) {
+    const c = can.splice(Math.floor(Math.random() * can.length), 1)[0];
+    let best = null;
+    for (const [i, j] of footprint(c.it, c.p.x, c.p.y, c.p.flip)) for (const u of [[i + 1, j], [i - 1, j], [i, j + 1], [i, j - 1]]) {
+      if (!tileOnFloor(u) || blocked.has(u[0] * 100 + u[1])) continue;
+      const path = tilePath(from, u, blocked);
+      if (path && path.length <= HAM_PATH_MAX && (!best || path.length < best.length)) best = path;
+    }
+    if (best) return { ...c, path: best };
+  }
+  return null;
+}
+function startDetour() {
+  ham.detoured = true;
+  if (Math.random() * 100 >= HAM_DETOUR_PCT) return false;
+  const u = pickUse();
+  if (!u) return false;
+  ham.walk = { use: u, pts: u.path.map(([i, j]) => { const c = isoTileCenter(i, j); return { x: c.x, y: c.y + ISO.FOOT }; }) };
+  ham.mode = "walk";
+  return true;
+}
+function startAct(use, p, it) {
+  const t = footprint(it, p.x, p.y, p.flip).map(([i, j]) => isoTileCenter(i, j)), cx = t.reduce((a, c) => a + c.x, 0) / t.length;
+  if (!use.on && Math.abs(cx - ham.x) > 0.5) ham.face = cx < ham.x ? -1 : 1;
+  ham.act = { pose: use.pose, left: HAM_ACT_MS };
+  ham.mode = "act";
+}
+function stepWalk(dt) {
+  const w = ham.walk;
+  let go = (HAM_WALK_PX_S * dt) / 1000;
+  while (go > 0 && w.pts.length) {
+    const to = w.pts[0], d = Math.hypot(to.x - ham.x, to.y - ham.gy);
+    if (Math.abs(to.x - ham.x) > 0.5) ham.face = to.x < ham.x ? -1 : 1;
+    if (d <= go) { ham.x = to.x; ham.gy = to.y; go -= d; w.pts.shift(); }
+    else { ham.x += ((to.x - ham.x) / d) * go; ham.gy += ((to.y - ham.gy) / d) * go; go = 0; }
+  }
+  ham.runPhase += (dt / 1000) * 8;
+  ham.y = ham.gy - (Math.floor(ham.runPhase) % 2 ? 1 : 0);
+  if (w.pts.length) return;
+  const { use, p, it } = w.use;
+  ham.walk = null;
+  ham.y = ham.gy;
+  if (use.on) { ham.perch = { pid: p.pid, rise: use.on, use }; moveTo("perch"); }
+  else startAct(use, p, it);
+}
 // The bed he sleeps in: me.bedTier's sprite standing on the bed fixture's tile (i, j); sleep = where his
 // bottom-centre goes. With iso art (iso_bed_tN) its iso vertex sits on that tile's south vertex (mirrored
 // when flipped); id is then the iso id, so the "_front" overlay drawn at the same origin is iso_bed_tN_front.
@@ -723,6 +849,7 @@ function bedGeom(at = null) {
 }
 function spotFor(mode) {
   if (mode === "run") return SPOT.wheel;
+  if (mode === "perch" || (mode === "sleep" && ham.perch)) { const q = perchSpot(); if (q) return q; ham.perch = null; }
   if (mode === "sleep") { const b = bedGeom(); return { x: b.sleepX, y: b.sleepY }; }
   return SPOT.sit;
 }
@@ -737,20 +864,31 @@ function wantMode(st) {
 }
 const near = (a, b) => Math.hypot(a.x - b.x, a.y - b.y) < 1;
 function moveTo(name) {
+  if (name === "sleep") pickNap();
+  else if (name !== "perch") ham.perch = null;
   const to = spotFor(name), from = { x: ham.x, y: ham.gy };
   const dist = Math.hypot(to.x - from.x, to.y - from.y);
   const inWheel = near(from, SPOT.wheel), inBed = near(from, spotFor("sleep"));
   const hop = inWheel || inBed || name === "run" || name === "sleep"; // in/out of the wheel or the bed is one hop
   ham.move = { name, fx: from.x, fy: from.y, tx: to.x, ty: to.y, t: 0, dur: hop ? Math.max(650, (dist / 110) * 1000) : Math.max(500, (dist / 70) * 1000), hop, steps: Math.max(1, Math.round(dist / 14)),
-    wheel: inWheel || name === "run", bed: inBed || name === "sleep" };
+    wheel: inWheel || name === "run", bed: name !== "run" && name !== "perch" && !ham.perch && (inBed || name === "sleep") };
   if (Math.abs(to.x - from.x) > 0.5) ham.face = to.x < from.x ? -1 : 1;
   ham.mode = "move";
 }
-function settle(mode) { ham.mode = mode; ham.face = mode === "run" ? (fixture("wheel").flip ? -1 : 1) : mode === "sleep" ? -1 : ham.face; }
+function settle(mode) { if (mode === "run") ham.detoured = false; ham.mode = mode; ham.face = mode === "run" ? (fixture("wheel").flip ? -1 : 1) : mode === "sleep" ? -1 : ham.face; }
 function stepHamster(dt, st) {
   const want = wantMode(st);
   if (!ham.init && S.loaded && S.me) { // first reading: start in place, no transition
-    ham.init = true; const s = spotFor(want); ham.x = s.x; ham.y = ham.gy = s.y; ham.move = null; settle(want);
+    ham.init = true; if (want === "sleep") pickNap(); const s = spotFor(want); ham.x = s.x; ham.y = ham.gy = s.y; ham.move = null; settle(want);
+  }
+  if ((ham.mode === "walk" || ham.mode === "act") && want === "run") { ham.walk = ham.act = null; moveTo("run"); }
+  if (ham.mode === "walk") { stepWalk(dt); return; }
+  if (ham.mode === "act") {
+    const q = ham.perch && perchSpot();
+    if (q) { ham.x = q.x; ham.y = ham.gy = q.y; }
+    ham.act.left -= dt;
+    if (ham.act.left <= 0) { ham.act = null; moveTo("sleep"); }
+    return;
   }
   if (ham.mode === "move") {
     const m = ham.move;
@@ -763,16 +901,22 @@ function stepHamster(dt, st) {
     if (k >= 1) {
       ham.move = null;
       ham.y = ham.gy;
-      if (m.name === "sit") { if (want === "rest") settle("rest"); else { ham.mode = "sit"; ham.sitLeft = SIT_MS; ham.face = spotFor(want).x < ham.x ? -1 : 1; } }
+      if (m.name === "perch") {
+        const hit = perchItem();
+        if (hit) startAct(ham.perch.use, hit[0], hit[1]); else moveTo(want);
+      } else if (m.name === "sit") { if (want === "rest") settle("rest"); else { ham.mode = "sit"; ham.sitLeft = SIT_MS; ham.face = spotFor(want).x < ham.x ? -1 : 1; } }
       else if (m.name === want) settle(want);
       else moveTo("sit");
     }
   } else if (ham.mode === "sit") {
     ham.face = spotFor(want).x < ham.x ? -1 : 1;
     ham.sitLeft -= dt;
-    if (ham.sitLeft <= 0) { if (want === "rest") settle("rest"); else moveTo(want); }
+    if (ham.sitLeft <= 0) {
+      if (want === "rest") settle("rest");
+      else if (want !== "sleep" || ham.detoured || !startDetour()) moveTo(want);
+    }
   } else if (ham.mode !== want) {
-    if (ham.mode === "rest") moveTo(want); // already at the sit spot
+    if (ham.mode === "rest" || want === "run") moveTo(want); // already at the sit spot; he goes straight back to the wheel
     else moveTo("sit");
   } else if (ham.mode === "run") {
     ham.x = SPOT.wheel.x; ham.y = ham.gy = SPOT.wheel.y; ham.face = fixture("wheel").flip ? -1 : 1; // the wheel may have moved
@@ -780,6 +924,60 @@ function stepHamster(dt, st) {
   } else if (ham.mode === "sleep") {
     const s = spotFor("sleep"); ham.x = s.x; ham.y = ham.gy = s.y; // a bed upgrade (or a moved bed) moves the pillow
   } else if (ham.mode === "rest" && !near({ x: ham.x, y: ham.gy }, SPOT.sit)) moveTo("sit"); // the wheel moved: walk over
+}
+
+// ---------- pets: the ones home wander the floor (looks only: each browser plays its own) ----------
+const petSims = new Map(); // pet id -> { id, x, y, pts, wait, face, fly, speed }
+let petDen = null;
+const PET_FLYERS = new Set(["pet_moth", "pet_firefly"]);
+const PET_SPEED = { pet_snail: 5, pet_ladybug: 10, pet_spark_beetle: 14, pet_shrew: 34, pet_ferret: 38 };
+function petWander(q, blocked) {
+  const [i, j] = tileUnder(q.x, q.y), r = 4;
+  const to = [i + Math.floor(Math.random() * (2 * r + 1)) - r, j + Math.floor(Math.random() * (2 * r + 1)) - r];
+  q.wait = 1500 + Math.random() * 5000;
+  if (!tileOnFloor(to) || (!q.fly && blocked.has(to[0] * 100 + to[1]))) return;
+  const path = q.fly ? [to] : tilePath([i, j], to, blocked);
+  if (path) q.pts = path.map(([a, b]) => { const c = isoTileCenter(a, b); return { x: c.x, y: c.y + ISO.FOOT }; });
+}
+function stepPets(dt) {
+  const den = shownDen(), home = (den && den.petsActive) || [], key = den ? den.publicId || "me" : null;
+  if (key !== petDen) { petSims.clear(); petDen = key; } // another den, other pets
+  for (const id of [...petSims.keys()]) if (!home.includes(id)) petSims.delete(id);
+  if (!home.length) return;
+  const blocked = blockedTiles(den);
+  for (const id of home) {
+    let q = petSims.get(id);
+    if (!q) {
+      const free = [];
+      for (let i = 0; i < ROOM.ISO_NI; i++) for (let j = 0; j < ROOM.ISO_NJ; j++) if (tileOnFloor([i, j]) && !blocked.has(i * 100 + j)) free.push([i, j]);
+      const [a, b] = free.length ? free[Math.floor(Math.random() * free.length)] : [2, 2], c = isoTileCenter(a, b);
+      q = { id, x: c.x, y: c.y + ISO.FOOT, pts: [], wait: Math.random() * 3000, face: Math.random() < 0.5 ? -1 : 1, fly: PET_FLYERS.has(id), speed: PET_SPEED[id] || 18, seed: Math.random() * 1000 };
+      petSims.set(id, q);
+    }
+    if (q.pts.length) {
+      let go = (q.speed * dt) / 1000;
+      while (go > 0 && q.pts.length) {
+        const to = q.pts[0], d = Math.hypot(to.x - q.x, to.y - q.y);
+        if (Math.abs(to.x - q.x) > 0.5) q.face = to.x < q.x ? -1 : 1;
+        if (d <= go) { q.x = to.x; q.y = to.y; go -= d; q.pts.shift(); }
+        else { q.x += ((to.x - q.x) / d) * go; q.y += ((to.y - q.y) / d) * go; go = 0; }
+      }
+    } else if ((q.wait -= dt) <= 0) petWander(q, blocked);
+  }
+}
+const petLift = (q, t) => (q.fly ? 16 + Math.round(3 * Math.sin((t + q.seed) / 500)) : 0);
+function drawPet(q) {
+  const t = performance.now() + q.seed, moving = q.pts.length > 0;
+  const frame = moving || q.fly ? 2 + Math.floor(t / (q.fly ? 110 : 170)) % 2 : (t % 3000 < 260 ? 1 : 0);
+  sprite(g, q.id, frame, Math.round(q.x - 12), Math.round(q.y - 24 - petLift(q, t)), { flip: q.face < 0 });
+}
+function petAt(L) {
+  let best = null;
+  for (const q of petSims.values()) {
+    const top = q.y - 24 - petLift(q, performance.now() + q.seed);
+    if (Math.abs(L.x - q.x) <= 10 && L.y >= top && L.y <= top + 26 && (!best || q.y > best.y)) best = q;
+  }
+  return best;
 }
 
 // ---------- wheel ----------
@@ -1188,7 +1386,8 @@ function render(st) {
   g.fillStyle = `rgba(${t.haze[0]},${t.haze[1]},${t.haze[2]},${t.haze[3].toFixed(3)})`; g.fillRect(0, 0, LW, LH);
   if (dimLevel > 0.01) {
     g.globalCompositeOperation = "lighter";
-    const breathe = 0.85 + 0.15 * Math.sin(performance.now() / 900), gx = SPOT.bed.x, gy = SPOT.bed.y - 10;
+    const glowAt = ham.perch ? { x: ham.x, y: ham.y } : SPOT.bed; // over wherever he's sleeping
+    const breathe = 0.85 + 0.15 * Math.sin(performance.now() / 900), gx = glowAt.x, gy = glowAt.y - 10;
     const grd = g.createRadialGradient(gx, gy, 2, gx, gy, 46);
     grd.addColorStop(0, `rgba(255,170,70,${(0.32 * dimLevel * breathe).toFixed(3)})`);
     grd.addColorStop(1, "rgba(255,170,70,0)");
@@ -1272,7 +1471,8 @@ function drawStanding(me) {
     list.push({ d: ab ? ab.d : IBURROW.foot, x: IBURROW.x, draw: drawBurrow });
   }
   const m = ham.mode === "move" ? ham.move : null;
-  const hamInWheel = ham.mode === "run" || (m && m.wheel), hamInBed = ham.mode === "sleep" || (m && m.bed);
+  const perched = ham.perch ? perchItem() : null;
+  const hamInWheel = ham.mode === "run" || (m && m.wheel), hamInBed = (ham.mode === "sleep" && !perched) || (m && m.bed);
   const moving = P.mode === "move" ? fixOf(P.pid) : null; // a fixture being moved fades in place
   const wf = fixture("wheel");
   for (const [i, j] of fixtureTiles("wheel", wf)) drawTileOverlay(g, i, j, SHADOW());
@@ -1281,8 +1481,12 @@ function drawStanding(me) {
   for (const [i, j] of fixtureTiles("bed", b)) drawTileOverlay(g, i, j, SHADOW());
   list.push({ d: b.foot, x: b.x, draw: () => drawBed(b, hamInBed, moving === "bed" ? 0.35 : 1) });
   if (!hamInWheel && !hamInBed) {
-    g.fillStyle = "rgba(0,0,0,.2)"; g.fillRect(Math.round(ham.x) - 6, Math.round(ham.gy) - 1, 12, 2); // his own little shadow
-    list.push({ d: ham.gy, x: ham.x, draw: drawHamster });
+    if (!perched) { g.fillStyle = "rgba(0,0,0,.2)"; g.fillRect(Math.round(ham.x) - 6, Math.round(ham.gy) - 1, 12, 2); } // his own little shadow
+    list.push({ d: perched && depths.has(perched[0]) ? depths.get(perched[0]) : ham.gy, z: perched ? 999 : 0, x: ham.x, draw: drawHamster });
+  }
+  for (const q of petSims.values()) {
+    g.fillStyle = "rgba(0,0,0,.2)"; g.fillRect(Math.round(q.x) - 4, Math.round(q.y) - 1, 8, 1);
+    list.push({ d: q.y, x: q.x, draw: () => drawPet(q) });
   }
   list.sort((a, c) => a.d - c.d || (a.z | 0) - (c.z | 0) || a.x - c.x);
   for (const e of list) e.draw();
@@ -1321,9 +1525,11 @@ function drawHamster() {
   let kind = "sit", frame = 0, x = ham.x, y = ham.y;
   if (ham.mode === "run") { kind = "run"; frame = Math.floor(ham.runPhase) % 4; y -= frame % 2 ? 1 : 0; }
   else if (ham.mode === "move") { kind = ham.move && ham.move.hop ? "sit" : "run"; frame = Math.floor(ham.runPhase) % 4; }
+  else if (ham.mode === "walk") { kind = "run"; frame = Math.floor(ham.runPhase) % 4; }
   else if (ham.mode === "sleep") { kind = "sleep"; frame = ham.breath; }
   else if (ham.blink > 0) kind = "blink";
-  const id = kind === "run" ? "hamster_run" : kind === "sleep" ? "hamster_sleep" : kind === "blink" ? "hamster_blink" : "hamster_sit";
+  let id = kind === "run" ? "hamster_run" : kind === "sleep" ? "hamster_sleep" : kind === "blink" ? "hamster_blink" : "hamster_sit";
+  if (ham.mode === "act" && ham.act && hasSprite(`hamster_${ham.act.pose}`)) { id = `hamster_${ham.act.pose}`; frame = Math.floor(performance.now() / 240) % 2; }
   const dx = Math.round(x - 12), dy = Math.round(y - 24), flip = ham.face < 0;
   const opts = { flip, skin, remap: (window.SKIN_REMAPS || {})[skin] };
   if (sprite(g, id, frame, dx, dy, opts)) return;
@@ -1448,6 +1654,7 @@ let last = performance.now(), acc = 0, acc10 = 0, hudClock = 0;
 function step(dt) {
   const st = liveStatus();
   stepHamster(dt, st);
+  stepPets(dt);
   stepWheel(dt, st);
   stepFx(dt, st);
   stepMeter(dt);
@@ -1812,7 +2019,11 @@ view.addEventListener("pointerdown", (e) => {
   if (crate) { openCrateUi(crate); return; }
   const hit = hitTest(L);
   if (hit) { select(hit.pid); press = { pid: hit.pid, cx: e.clientX, cy: e.clientY, L }; }
-  else select(null);
+  else {
+    select(null);
+    const pet = petAt(L), q = pet && S.pets.get(pet.id);
+    if (q) toast(`${q.name}: ${q.says}`);
+  }
 });
 view.addEventListener("pointermove", (e) => {
   const L = logical(e);
@@ -1992,6 +2203,7 @@ function tickThumbs() {
 // ---------- shop ----------
 const TABS = [
   { id: "decor", label: "Decor", cats: ["furniture", "wall"] },
+  { id: "pets", label: "Pets", cats: [] },
   { id: "rugs", label: "Rugs", cats: ["rug"] },
   { id: "styles", label: "Walls & Floors", cats: ["wallpaper", "floor"] },
   { id: "skins", label: "Skins", cats: ["skin"] },
@@ -2027,6 +2239,52 @@ function buildTabs() {
     box.appendChild(b);
   }
 }
+// Pets aren't sold: the tab says who's home, and what the others come for.
+let petCardSig = "";
+const petSigNow = () => JSON.stringify([S.me && Object.keys(S.me.pets || {}), S.me && S.me.petsActive]);
+function petThumb(cv, id, hidden) {
+  const c = cv.getContext("2d"), t = canvas(24, 24), x = t.getContext("2d");
+  sprite(x, id, 0, 0, 0, {});
+  if (hidden) { x.globalCompositeOperation = "source-in"; x.fillStyle = "#6b7280"; x.fillRect(0, 0, 24, 24); }
+  c.imageSmoothingEnabled = false;
+  c.clearRect(0, 0, cv.width, cv.height);
+  c.drawImage(t, 8, 8, 48, 48);
+}
+function petHint(q) {
+  if (q.kind === "run") return "Only comes while he runs";
+  if (q.kind === "golden") return "Only comes on a golden block";
+  const it = S.catalog.get(q.lure);
+  return `Comes for a ${it ? it.name : "something"}`;
+}
+async function setHome(active) {
+  const r = await post("/api/pets", { active });
+  if (r.ok && r.j.me) { applyMe(r.j.me); sfx("click"); updateCards(); }
+  else toast(errorWords(r.j), "err");
+}
+function buildPetCards(box) {
+  const me = S.me, home = (me && me.petsActive) || [], have = (me && me.pets) || {}, slots = (S.balance && S.balance.PETS && S.balance.PETS.SLOTS) || 3;
+  petCardSig = petSigNow();
+  const head = document.createElement("div");
+  head.className = "sub";
+  head.textContent = `Home ${home.length}/${slots}`;
+  box.appendChild(head);
+  for (const q of [...S.pets.values()].sort((a, b) => (have[b.id] ? 1 : 0) - (have[a.id] ? 1 : 0))) {
+    const el = document.createElement("div"), got = !!have[q.id], isHome = home.includes(q.id);
+    el.className = "card";
+    el.innerHTML = '<canvas class="thumb" width="64" height="64"></canvas><div class="cname"></div><div class="cnote"></div>';
+    el.querySelector(".cname").textContent = got ? q.name : "???";
+    el.querySelector(".cnote").textContent = got ? q.says : petHint(q);
+    petThumb(el.querySelector("canvas"), q.id, !got);
+    if (got) {
+      const b = document.createElement("button");
+      b.textContent = isHome ? "Send away" : "Bring home";
+      b.disabled = !isHome && home.length >= slots;
+      b.onclick = () => setHome(isHome ? home.filter((id) => id !== q.id) : [...home, q.id]);
+      el.appendChild(b);
+    }
+    box.appendChild(el);
+  }
+}
 function buildCards() {
   const box = $("cards"), tab = TABS.find((t) => t.id === shopTab);
   box.innerHTML = "";
@@ -2034,6 +2292,7 @@ function buildCards() {
   builtTab = shopTab;
   builtSize = S.catalog.size;
   if (!S.catalog.size) { box.innerHTML = "<p>Opening the shop…</p>"; return; }
+  if (tab.id === "pets") { buildPetCards(box); return; }
   const decor = tab.id === "decor", view = decor ? DECOR_VIEWS.find((v) => v.id === decorView) : null;
   if (decor) {
     const row = document.createElement("div");
@@ -2105,6 +2364,7 @@ function updateCards() {
   if (builtTab !== shopTab || builtSize !== S.catalog.size) return buildCards();
   const me = S.me;
   $("wallet").textContent = me ? `${fmt(me.watts)} W to spend` : "";
+  if (shopTab === "pets") { if (petCardSig !== petSigNow()) buildCards(); return; }
   for (const c of shopCards.values()) {
     const st = cardState(c.it, me), buying = st.kind === "buy" || st.kind === "upgrade";
     c.state = st;
