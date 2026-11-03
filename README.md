@@ -1,46 +1,64 @@
 # Squeek Den
 
-A cozy 2.5D isometric pixel den with a hamster on a wheel, and the hamster is real: the wheel spins at Squeektoshi's live rpm while he runs and he sleeps in your bed when he doesn't. Every settled Squeek block generates watts for every den, whether you are online or not; while he sleeps, every den earns about half the awake rate from its bed. Watts buy furniture, wall decor, wallpaper, flooring, skins, and three upgrade ladders: wheel (running income), bed (sleeping income) and den material (raid defense). Raids are open all the time: wager watts against another den on the leaderboard. Win and you loot them, lose and your wager burns. Nothing in the game asks the hamster to do anything; it rewards watching, never running. There is no email or password: pick a username, and a token in `localStorage` is your den. Linking a burner wallet (one gasless signature) is optional and adds a check next to your name.
+Squeek Den is a small idle game built around Squeektoshi. You get a pixel den with a hamster wheel in it, and the hamster on your screen copies the real one: when he runs, yours runs at his speed, and when he naps, yours goes to bed.
 
-Live at https://squeekden.art. The game says "den"; the code and these notes often say "room" for the same thing.
+Every block he settles pays watts to every den, even if you've closed the tab. Keeping the page open pays a bit more, and while he sleeps, dens earn more slowly from their beds. You spend watts on furniture, wallpaper, skins and upgrades, or risk them raiding other players and playing Burrow Drop, a pachinko-style minigame.
 
-Zero dependencies. Node 18+. Run the commands below from the repo root.
+You can play it at https://squeekden.art. It's a fan project, not an official Squeekchain one.
+
+## What it does with Squeektoshi
+
+The game only watches him. It can't reach him, and nothing in it asks him to do anything.
+
+The server reads two things, each every 10 seconds: `SqueekCore.state()` on Sepolia over public RPC, and `GET /v1/status` on `api.squeekchain.com` with the user agent `Squeekroom/0.1`. If the server's status reading goes stale, browsers fetch it from the same API themselves.
+
+It never writes to the chain and sends nothing to the wheel. Signing in with a wallet is optional and takes one free signature, which only puts a check next to your name.
+
+Players are paid for what he already did. He does change what they earn: running faster pays up to 50% more, and a raid won while he's running pays 10% extra. They just have no way to affect when he runs or how fast.
+
+Watts only exist in this game. You can't buy them or cash them out, there's no token, and every wager is in watts.
 
 ## Run
+
+You need Node 18 or newer and nothing else, since there are no dependencies. Run these from the repo root.
 
 ```bash
 node server.js
 ```
 
-Open http://localhost:8788. Live mode reads `SqueekCore.state()` on Sepolia every 10 s through public RPC (`ethereum-sepolia-rpc.publicnode.com`, falling back to `1rpc.io/sepolia`) and pays every room for each new settled `blockHeight`. The room server is born at the height seen on first boot; nobody earns for blocks before that, or before they joined. The server also polls the live wheel reading (running/napping, speed, rpm) from `api.squeekchain.com` every 10 s and passes it to the page through `/api/state`. That API sits behind a Cloudflare challenge that blocks many hosting providers' IPs, so when the server's copy is more than 60 s old the browser fetches the reading itself, and with no reading at all he shows as asleep.
+Then open http://localhost:8788. This is live mode, so it follows the real chain. Dens start earning from the block height the server sees on its first boot, and nobody gets paid for blocks before that or before they joined.
 
-Env: `PORT` (default 8788), `DATA_DIR`, `CORE_ADDRESS` (default `0x980b4424c007caf7a1f3670b48c8eaef7ebc3d44`), `SEPOLIA_RPC` (comma-separated), `SQUEEK_API`, `ALERT_WEBHOOK` (optional: a Discord webhook for security alerts, silent when unset; see the top of `lib/alert.js`).
+The status API sits behind a Cloudflare challenge that blocks many hosting providers' IPs, which is why block height comes from the chain. If nothing can get a status reading, he shows as asleep.
 
-Demo mode adds a strip of buttons (+1 block, +10, +1 day, grant 50k W, run a scripted 4-minute night) so you can watch the economy without waiting for the hamster:
+To try the economy without waiting for him, demo mode adds a row of buttons that fake blocks, grant watts and play a scripted night:
 
 ```bash
 node server.js --demo
 ```
 
-Replay mode runs a simulated Squeektoshi built from his real nights, sped up, with no RPC or API calls. It can't be combined with `--demo`. By default he runs nonstop, so there is no bed income; `REPLAY_NONSTOP=0` brings back the nightly rhythm. Also `REPLAY_SPEED` (default 3), `REPLAY_START_HEIGHT` and `REPLAY_EPOCH`.
+Replay mode simulates him from his real nights, sped up, and makes no RPC or API calls. He runs nonstop by default, so beds don't pay; `REPLAY_NONSTOP=0` brings back the nightly rhythm. You can't combine it with `--demo`. It also takes `REPLAY_SPEED` (default 3), `REPLAY_START_HEIGHT` and `REPLAY_EPOCH`.
 
 ```bash
 node server.js --replay
 ```
 
-Before going live, delete the demo state so every room restarts from the real height:
+Demo blocks end up in the saved state, so delete it before going live:
 
 ```bash
 rm -f data/state.json
 ```
 
-Tests (the economy, raids, Burrow Drop, stacking and the security alerts):
+The tests cover the economy, raids, Burrow Drop, stacking and the security alerts:
 
 ```bash
 node --test test/
 ```
 
+Other settings: `PORT` (default 8788), `DATA_DIR`, `CORE_ADDRESS` (default `0x980b4424c007caf7a1f3670b48c8eaef7ebc3d44`), `SEPOLIA_RPC` (comma-separated), `SQUEEK_API`, and `ALERT_WEBHOOK` (optional Discord webhook for security alerts, explained at the top of `lib/alert.js`).
+
 `/dev-sprites.html` shows every sprite, animation and skin at 4x on a checkerboard.
+
+Everything from "How it works" down is reference for people reading the code. It often says "room" where the game says "den".
 
 ## Deploy
 
