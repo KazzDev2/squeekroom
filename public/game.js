@@ -3536,6 +3536,10 @@ $("stakeNum").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.pr
 document.querySelectorAll("#raidForm [data-q]").forEach((b) => (b.onclick = () => { const sb = stakeNow(); setStake(Math.max(sb.min, Math.floor((sb.max * Number(b.dataset.q)) / 100))); }));
 $("raidGo").onclick = doRaid;
 // STAGING ONLY: this commit lives on the staging branch and must never reach main.
+$("allPets").onclick = async () => { // STAGING ONLY
+  const r = await post("/api/pets/all", {});
+  if (r.ok && r.j.me) applyMe(r.j.me);
+};
 $("raidReset").onclick = async () => {
   const r = await post("/api/raid/reset", {});
   if (!r.ok) { toast(`reset failed: ${r.j.error || r.status}`, "err"); return; }
