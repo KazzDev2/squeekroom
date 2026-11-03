@@ -1,8 +1,8 @@
 // Squeekroom: a cozy pixel room with a hamster on a wheel. The wheel is the real Squeektoshi:
 // every settled Squeek block generates watts for EVERY player, online or not (true idle), and while
-// he sleeps (no settled block for a while) every room earns a slower trickle from its bed.
+// he sleeps every room earns a slower trickle from its bed.
 // Watts buy cosmetics; wheel and bed upgrades are the only items that raise generation.
-// While he runs, players may raid richer rooms (POST /api/raid): a won raid moves watts, a lost
+// Players may raid richer rooms (POST /api/raid): a won raid moves watts, a lost
 // stake burns entirely. Only dens that have earned RAID.MIN_EARNED watts can raid or be raided.
 // GET /api/leaderboard lists every room by balance; GET /api/den (?id= or /random) shows one den's look.
 // Boosts (POST /api/boost), the Raid Shield (POST /api/shield) and lucky crates (POST /api/crate): single-use
@@ -16,7 +16,7 @@
 //
 //   node server.js            live mode: settled height from SqueekCore.state() on Sepolia
 //   node server.js --demo     adds POST /api/dev/{advance,grant,night,sleep} so you can fake blocks
-//   node server.js --replay   (or REPLAY=1) a simulated Squeektoshi on her real nightly rhythm, sped up:
+//   node server.js --replay   (or REPLAY=1) a simulated Squeektoshi on his real nightly rhythm, sped up:
 //                             no RPC/API calls at all; see "replay mode" below. Not combinable with --demo.
 //
 // Env: PORT (default 8788), SQUEEK_API (default https://api.squeekchain.com/v1),
@@ -79,7 +79,7 @@ const BALANCE = {
   // cadence across its runs (so the ramp's 0.5x edges pay 100% and its 1.5x middle up to 150%).
   // Less than WARMUP_MS of history (restart, cadence unknown) -> 100. Bed income is not affected.
   SPEED: { WINDOW_MS: 600_000, BASE_BPM: 4, MAX_PCT: 150, WARMUP_MS: 120_000 },
-  // Raids: wager a stake on a multiplier against a richer room while he RUNS. Win chance
+  // Raids: wager a stake on a multiplier against a richer room. Win chance
   // p = clamp((EDGE / M) x (1 - defense) x tilt, P_MIN, P_MAX), raised to at least 1/M when the target
   // holds at least the attacker's watts, so attacker EV = S x (p x M - 1) does not depend on M (the
   // multiplier only dials variance). Punching up is never -EV; peer raids into strong rooms and
@@ -121,7 +121,7 @@ const BALANCE = {
   // shield is up the den can't start raids (turtle mode). A successful raid against a den gives it
   // BRUISE_MS of free immunity that doesn't block its own raids; buying a shield replaces it.
   SHIELD: { MS: 3 * 3_600_000, PER_DAY: 1, PRICE_MIN: 500, PRICE_PCT: 3, BRUISE_MS: 600_000 },
-  // Sales switch for the Boosts tab: false = boosts and the Raid Shield can't be bought with watts;
+  // Sales switch: false = boosts and the Raid Shield can't be bought with watts;
   // they come only from lucky crates (boost items, shield tokens). The bruise shield is unaffected.
   BOOSTS_FOR_SALE: false,
   // Boosts: single-use, bought (the price burns) or found in crates; one active per kind, never stacked.
@@ -142,7 +142,7 @@ const BALANCE = {
   // Burrow Drop (public/drop.html): wager COST or more (up to your balance), aim, and the server rolls the drop (public/drop_sim.js:
   // the same deterministic physics the browser replays from the seed). Chambers and seeds pay per
   // DropSim.PAY x the wager; the shared stash (players see it as the Bounty) starts at STASH_START x COST and grows STASH_FEED_PCT of every wager
-  // with no cap (the owner's call: a big pot draws everyone in). Every board shows one drop-only prize (PRIZE_PCT by rarity; rarer ones
+  // with no cap. Every board shows one drop-only prize (PRIZE_PCT by rarity; rarer ones
   // sit in harder spots, and a bigger wager grows the target: DropSim.prizeRadius); hitting it wins it, or DUP_WATTS (at COST, scaled by the wager) if the den already has one. Some boards are
   // golden (seeds x2) or have a lucky crate wedged on a root (the usual crate table).
   // Tuned on simulated drops (watts only, no items): about 0.86 back per drop on average; the stash is
@@ -167,8 +167,6 @@ const BALANCE = {
 
 // ---------- room grid ----------
 // 20 x 12 cells of 16 px (logical canvas 320 x 192). Wall decor lives on rows 2..7 (2-D grid).
-// Floor furniture stands on the floor line (row 11, y = 176) and occupies whole columns (1-D).
-// Rugs are a flat layer on the floor strip and only collide with other rugs.
 const ROOM = {
   COLS: 20,
   ROWS: 12,
@@ -176,7 +174,7 @@ const ROOM = {
   FLOOR_ROW: 11,
   WALL_TOP: 2,
   WALL_BOTTOM: 7,
-  RESERVED: {}, // inclusive floor-column ranges by name; the burrow mound (16..18) was removed 1 Nov 2026
+  RESERVED: {}, // inclusive floor-column ranges by name
   // The wheel and the bed stand on floor tiles, against the walls too: the wheel covers 3 tiles and
   // the bed 2 (see fixtureTiles). Tiles with i + j > FIX_MAX_SUM fall off the bottom of the view.
   // The two never share a tile, and their anchors keep FIX_GAP tiles apart (Chebyshev).
@@ -185,7 +183,7 @@ const ROOM = {
   FIX_MAX_SUM: 14,
   FIX_GAP: 2,
   FIXTURE_DEFAULTS: { wheel: { i: 1, j: 5, flip: true }, bed: { i: 7, j: 2, flip: false } },
-  STACK_MAX_Z: 80, // furniture can stand this many px above the floor (see Stacking below)
+  STACK_MAX_Z: 80, // furniture can stand this many px above the floor
 };
 // Floor furniture and rugs stand on floor tiles: placement (x, y) = (i, j) is the BACK tile of a
 // w-tile chain that runs along i (flip false: parallel to the right wall, the iso art's canonical
@@ -298,7 +296,7 @@ const CATALOG = [
   place("fur_jukebox", "Jukebox", "furniture", 50_000, 2, 3, "floor", true),
   surface("fur_trophy_case", "Trophy Case", 80_000, 2, 3, 40),
   place("fur_golden_statue", "Golden Seed Statue", "furniture", 150_000, 2, 3, "floor"),
-  // v3 decor wave: small, cheap things for the first days, plus a pricey hammock
+  // Decor wave: small, cheap things for the first days, plus a pricey hammock
   place("fur_mushroom", "Tiny Mushroom", "furniture", 300, 1, 1, "floor"),
   place("fur_yarn", "Ball of Yarn", "furniture", 400, 1, 1, "floor"),
   place("fur_water_bottle", "Water Bottle", "furniture", 500, 1, 2, "floor"),
@@ -1917,17 +1915,17 @@ async function readCoreState() {
 // offset is REPLAY_START_HEIGHT on a fresh state. When an existing state.json switches to replay (or
 // the speed / epoch changes) it is chosen once so the height carries on from where it stood (no
 // windfall, no stall), and stored with the schedule key in state.replay = {key, offset, since}.
-// Everything downstream (accrueAll, chainIdle, bed income, raid windows) runs unchanged: a sleep
-// segment leaves the height still, so 10 min in he counts as asleep and raids close; the first poll
-// inside a run settles a block (the per-run count rounds UP), which reopens them.
+// Everything downstream (accrueAll, chainIdle, bed income) runs unchanged: a sleep
+// segment leaves the height still, so he counts as asleep; the first poll
+// inside a run settles a block (the per-run count rounds UP).
 //
 // Schedule source: Squeektoshi's real history, GET /v1/measurement/stats?range=30d (read 31 Oct
 // 2026: 5 nights, 26-30 Oct, 58,518 work units / 5,204 settled blocks = 11.25 units per block,
-// ~1,041 blocks a night). She runs only 21:00-07:30 UTC; the night's work by slice: 21:00-22:00 12%,
+// ~1,041 blocks a night). He runs only 21:00-07:30 UTC; the night's work by slice: 21:00-22:00 12%,
 // 22:00-23:30 31% (peak half-hour 22:00), 23:30-02:00 35%, 02:00-05:00 14.5%, 05:00-07:30 7.7%, and
 // not one passage 07:30-21:00 (~13.5 h asleep). A replay "night" keeps that order and work split but
 // is compressed into 24 h / SPEED (8 h at the default 3x), with runs of 10-30 min and rests of
-// 20-60 min, so every rest outlasts IDLE_AFTER_MS (bed income, raids closed) and a player who checks
+// 20-60 min, so every rest outlasts IDLE_AFTER_MS (bed income) and a player who checks
 // in a few times a day sees both states. The two short daytime stirs are synthetic (the real day is
 // silent) so the day sleep never runs past an hour. Blocks per day = 1,078 x SPEED (the real rate the
 // balance is tuned on), shared out over the runs by those real work weights.
@@ -1950,7 +1948,7 @@ const REPLAY_NIGHT = [
   ["run", 10, 2800, "stir"], // synthetic
   ["sleep", 60, 0, "day sleep"],
 ];
-// Nonstop (the default for now, until the real hamster goes live): the same runs with their real work
+// Nonstop (the default): the same runs with their real work
 // weights, stretched to fill the whole cycle with no rests, so he is always running. Same blocks per
 // day; there is no sleep, so no bed income. REPLAY_NONSTOP=0 brings back the real nightly rhythm.
 const REPLAY_NONSTOP_NIGHT = (() => {
@@ -2094,7 +2092,7 @@ function replayTick(st, now = Date.now(), sched = REPLAY_SCHEDULE, startHeight =
   const before = st.height;
   advanceTo(st.replay.offset + cum, now, st);
   const r = replayReading(now, sched);
-  // Blocks first seen while she already sleeps (the end of a run between polls, a restart after
+  // Blocks first seen while he already sleeps (the end of a run between polls, a restart after
   // downtime, or the very first boot) settled when that run ended: start the sleep clock there.
   if ((before == null || st.height > before) && !r.running && r.lastRunEndAt != null) st.lastAdvanceAt = Math.min(now, r.lastRunEndAt);
   st.chain = {
