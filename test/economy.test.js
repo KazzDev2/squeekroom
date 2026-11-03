@@ -580,7 +580,7 @@ test("raid: balance knobs", () => {
   assert.deepEqual(RA.MULT_PCT, [150, 200, 300, 500, 1000]);
   assert.deepEqual(RA.DEFENSE_PCT, [0, 5, 10, 15, 15, 15]); // Gold and Diamond are looks only
   assert.equal(RA.DEF_SHARE_PCT, undefined); // failed raids pay the defender nothing
-  assert.equal(RA.MIN_EARNED, 5000);
+  assert.equal(RA.MIN_EARNED, 0);
   assert.deepEqual([RA.TILT_EXP, RA.TILT_MIN_PCT, RA.TILT_MAX_PCT, RA.P_MIN_PCT, RA.P_MAX_PCT], [0.25, 75, 175, 2, 90]);
   assert.deepEqual([RA.LOOT_U_MIN_PCT, RA.LOOT_U_MAX_PCT, RA.CRIT_CHANCE_PCT, RA.CRIT_MULT_PCT], [undefined, undefined, 5, 150]); // fixed loot, no roll
   assert.deepEqual([RA.STAKE_MIN, RA.STAKE_MIN_BAL_PCT, RA.LOOT_MAX_DEF_PCT, RA.ELIGIBLE_MIN_PCT], [50, 5, 25, 70]);
@@ -1386,60 +1386,15 @@ test("raid feed: records display names at raid time", () => {
   for (const e of st.raidFeed) assert.deepEqual(Object.keys(e).sort(), ["amount", "at", "atk", "atkId", "bonus", "crit", "def", "defId", "win"]);
 });
 
-// ---------- v3 patch 1: earned-watts floor for raids ----------
-test("raid floor: a den raids and can be raided only after earning MIN_EARNED (welcome watts don't count)", () => {
-  // a brand-new den holds the welcome grant but has earned nothing
+// ---------- no earning limit on raids ----------
+test("a brand-new den can raid and be raided on its welcome Watts", () => {
   const n = S.newPlayer(1000, T0, TA);
-  assert.deepEqual([n.watts, n.lifetimeWatts, S.raidReady(n)], [BALANCE.WELCOME_WATTS, 0, false]);
-  // fresh attacker: refused, nothing moves, no raid used
-  const st = raidWorld({ atk: { lifetimeWatts: RA.MIN_EARNED - 1 } });
-  const r = raid(st, TA, TB, 500, 2);
-  assert.deepEqual([r.ok, r.error, r.reason, r.needEarned, r.earned], [false, "not_eligible", "fresh_attacker", 5000, 4999]);
-  assert.deepEqual([st.players[TA].watts, st.players[TA].raidsToday, st.burned], [10_000, 0, 0]);
-  assert.deepEqual(S.raidStatus(st, st.players[TA], T0).ready, false);
-  // fresh target: refused and not offered as a target, even to a revenge
-  const st2 = raidWorld({ def: { lifetimeWatts: 0, watts: 50_000 } });
-  const r2 = raid(st2, TA, TB, 500, 2);
-  assert.deepEqual([r2.ok, r2.error, r2.reason], [false, "not_eligible", "fresh_target"]);
-  assert.deepEqual([st2.players[TA].watts, st2.players[TA].raidsToday], [10_000, 0]);
-  const row = S.leaderboard(st2, TA, T0).rows.find((x) => x.publicId === pidOf(TB));
-  assert.deepEqual([row.fresh, row.raidable], [true, false]);
-  st2.players[TA].raidedBy = [{ pid: pidOf(TB), at: T0 - 1000, avenged: false }];
-  S.invalidateLeaderboard(st2);
-  assert.equal(S.leaderboard(st2, TA, T0).rows.find((x) => x.publicId === pidOf(TB)).raidable, false);
-  // a fresh viewer sees no targets at all (the leaderboard itself is unchanged)
-  const st3 = raidWorld({ atk: { lifetimeWatts: 10 } });
-  const lb = S.leaderboard(st3, TA, T0);
-  assert.equal(lb.rows.length, 3);
-  assert.ok(lb.rows.every((x) => !x.raidable));
-  assert.deepEqual([lb.raid.ready, lb.raid.earned, lb.raid.needEarned], [false, 10, 5000]);
-});
-
-test("raid floor: crossing MIN_EARNED through income makes a den eligible both ways", () => {
+  assert.deepEqual([n.watts, n.lifetimeWatts, S.raidReady(n)], [BALANCE.WELCOME_WATTS, 0, true]);
   const st = raidWorld({ atk: { lifetimeWatts: 0 }, def: { lifetimeWatts: 0 } });
-  const a = st.players[TA], d = st.players[TB];
-  assert.equal(raid(st, TA, TB, 500, 2).reason, "fresh_attacker");
-  // 499 blocks at tier 0 x 10 W, not watching: 4,990 W earned
-  S.accrue(a, 499, T0);
-  assert.deepEqual([a.lifetimeWatts, S.raidReady(a)], [4990, false]);
-  S.accrue(a, 1, T0);
-  assert.deepEqual([a.lifetimeWatts, S.raidReady(a)], [5000, true]);
-  assert.equal(raid(st, TA, TB, 500, 2).reason, "fresh_target"); // the target still hasn't earned enough
-  S.bedCredit(d, 300 * 60_000, T0); // bed income counts too (20 W/min live at tier 0)
-  assert.ok(d.lifetimeWatts >= RA.MIN_EARNED, String(d.lifetimeWatts));
-  assert.ok(raid(st, TA, TB, 1000, 2).ok); // earning lifted the balance to 15k: the 5% minimum is 750
-  // raid loot is not earnings: a den can't reach the floor by being handed watts
-  const st2 = raidWorld({ poor: { lifetimeWatts: 0, watts: 1e6 } });
-  assert.equal(S.raidReady(st2.players[TC]), false);
-});
-
-test("raid floor: existing dens are backfilled from their lifetime on load", () => {
-  const vet = fresh({ watts: 9000, lifetimeWatts: 120_000 });
-  const newb = fresh({ watts: 9000, lifetimeWatts: 300 });
-  const broken = fresh({ watts: 9000 });
-  delete broken.lifetimeWatts;
-  S.patchState({ height: 10, players: { [TA]: vet, [TB]: newb, [TC]: broken } }, T0);
-  assert.deepEqual([S.raidReady(vet), S.raidReady(newb), S.raidReady(broken), broken.lifetimeWatts], [true, false, false, 0]);
+  const row = S.leaderboard(st, TA, T0).rows.find((x) => x.publicId === pidOf(TB));
+  assert.deepEqual([row.fresh, row.raidable], [false, true]);
+  assert.equal(S.raidStatus(st, st.players[TA], T0).ready, true);
+  assert.ok(raid(st, TA, TB, 500, 2).ok);
 });
 
 test("wallet persistence + config: fields default to null on load, kept when present; rules published", () => {

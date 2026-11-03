@@ -22,7 +22,6 @@ const KEYS = {
   welcome: (B) => `${fmt(B.WELCOME_WATTS)} W`,
   defense: (B) => `${max(B.RAID.DEFENSE_PCT)}%`,
   perDay: (B) => String(B.RAID.PER_DAY),
-  minEarned: (B) => `${fmt(B.RAID.MIN_EARNED)} W`,
   eligible: (B) => `${B.RAID.ELIGIBLE_MIN_PCT}%`,
   revenge: (B) => dur(B.RAID.REVENGE_WINDOW_MS),
   mults: (B) => `${mult(Math.min(...B.RAID.MULT_PCT))} to ${mult(max(B.RAID.MULT_PCT))}`,
