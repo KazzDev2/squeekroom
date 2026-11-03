@@ -144,7 +144,8 @@ h1 .logo{width:40px;height:40px;image-rendering:pixelated;flex:none}
 .tabs{display:flex;flex-wrap:wrap;gap:4px}
 .tabs button{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:5px 8px;font-size:12px;cursor:pointer;white-space:nowrap}
 .tabs button:hover{border-color:var(--ink)}
-.tabs button[aria-selected="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.tabs button[aria-selected="true"],.tabs button[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.cards .views{grid-column:1/-1}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:8px}
 .cards .sub{grid-column:1/-1;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-top:4px}
 .card{border:1px solid var(--line);border-radius:8px;background:var(--bg);padding:8px;display:flex;flex-direction:column;gap:3px;min-width:0}
@@ -737,6 +738,13 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
 <script src="sprites_v3_wall_b.js"></script>
 <script src="sprites_v3_floor_a.js"></script>
 <script src="sprites_v3_floor_b.js"></script>
+<script src="sprites_v5_surfaces.js"></script>
+<script src="sprites_v5_small.js"></script>
+<script src="sprites_v5_big1.js"></script>
+<script src="sprites_v5_big2.js"></script>
+<script src="sprites_v5_wall.js"></script>
+<script src="sprites_v5_styles.js"></script>
+<script src="sprites_v5_prizes.js"></script>
 <script src="sprites_iso_wheel.js"></script>
 <script src="scenes.js"></script>
 <script src="sound.js"></script>

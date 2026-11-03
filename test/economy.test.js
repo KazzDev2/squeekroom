@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const S = require("../server.js");
 require("./alert.test.js"); // security alerts; Node 22+ runs only this file for `node --test test/` (see package.json)
 require("./drop.test.js"); // the Burrow Drop preview
+require("./stack.test.js"); // furniture on furniture
 const { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible } = S;
 
 const T0 = Date.UTC(2026, 9, 30, 22, 0, 0);
@@ -2339,7 +2340,7 @@ test("v3 catalog: the new items, prices, sizes and zones", () => {
   assert.ok(cheap >= 20, `${cheap} items in the 300-2,000 W band`);
   // the crate-only jackpots: never sold, never a free default, but in the crate decor table
   const crate = CATALOG.filter((i) => i.crate).map((i) => i.id).sort();
-  assert.deepEqual(crate, ["fur_clover_jar", "fur_sunflower", "wall_lucky_lantern", "wall_shooting_star"]);
+  assert.deepEqual(crate, ["fur_clover_jar", "fur_lucky_hamster", "fur_sunflower", "fur_wishing_well", "wall_horseshoe", "wall_lucky_lantern", "wall_rainbow", "wall_shooting_star"]);
   for (const id of crate) {
     assert.equal(S.CATALOG_BY_ID.get(id).price, 0);
     assert.ok(!S.FREE_IDS.includes(id), id);

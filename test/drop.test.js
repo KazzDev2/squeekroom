@@ -172,7 +172,7 @@ test("drop: boards are valid, odds follow PRIZE_PCT, and a stored board is kept 
 
 test("drop: prizes are never sold and never free", () => {
   const ids = S.DROP_ITEMS.map((i) => i.id);
-  assert.equal(ids.length, 8);
+  assert.equal(ids.length, 16);
   for (const r of S.RARITIES) assert.ok(S.DROP_ITEMS.some((i) => i.rarity === r), r);
   for (const id of ids) {
     assert.deepEqual(S.canBuy(S.newPlayer(1000, T0), id), { ok: false, error: "drop_only" });
