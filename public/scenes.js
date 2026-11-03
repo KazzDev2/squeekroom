@@ -148,7 +148,7 @@ const TUT = [
         for (let k = 0; k < 3; k++) { c.fillStyle = OUTLINE; c.fillRect(x - 7 + k * 5, 6, 4, 4); c.fillStyle = k < tier ? "#22c55e" : "#4b5563"; c.fillRect(x - 6 + k * 5, 7, 2, 2); }
       }
     } },
-  { title: "Raid richer dens", text: "Once your den has earned 5,000 W, wager Watts to rob a den worth at least 0.7x yours. The richer the target, the better your odds.",
+  { title: "Raid richer dens", text: "Wager Watts to rob a den worth at least 0.7x yours. The richer the target, the better your odds.",
     draw(c, t) {
       tutBg(c, false);
       const P = 2.6, moved = Math.floor(t / P) % 4, p = (t % P) / P, f = Math.floor(t * 14) % 4;

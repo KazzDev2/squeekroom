@@ -3,7 +3,7 @@
 // he sleeps every room earns a slower trickle from its bed.
 // Watts buy cosmetics; wheel and bed upgrades are the only items that raise generation.
 // Players may raid richer rooms (POST /api/raid): a won raid moves watts, a lost
-// stake burns entirely. Only dens that have earned RAID.MIN_EARNED watts can raid or be raided.
+// stake burns entirely.
 // GET /api/leaderboard lists every room by balance; GET /api/den (?id= or /random) shows one den's look.
 // Boosts (POST /api/boost), the Raid Shield (POST /api/shield) and lucky crates (POST /api/crate): single-use
 // consumables bought with watts (burned) or found in crates that drop, on settled blocks, for dens that are
@@ -108,9 +108,7 @@ const BALANCE = {
     REVENGE_WINDOW_MS: 86_400_000, // ...unless they raided the attacker within 24 h (once per provocation)
     RAIDED_BY_MAX: 20,
     PER_DAY: 10, // raids per attacker per UTC day; being raided has no limit
-    // A den raids and can be raided only once it has EARNED this much (lifetimeWatts: wheel + bed,
-    // never the welcome grant or raid loot), so fresh alt dens can't wager or lose their welcome watts.
-    MIN_EARNED: 5_000,
+    MIN_EARNED: 0, // Watts a den must earn (wheel + bed) before it can raid or be raided; 0 = no limit
     FEED_MAX: 50,
     FEED_SNAPSHOT: 20,
     LEADERBOARD_MAX: 200,
