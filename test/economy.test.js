@@ -2565,3 +2565,36 @@ test("www goes to the bare domain, keeping the path; other hosts stay", () => {
     assert.equal(S.wwwRedirect(host, "/"), null);
   }
 });
+
+// ---------- leaderboard snapshot ----------
+test("late dens: made in the 6 h before the snapshot, they have no raids until it passes", () => {
+  const AT = S.SNAPSHOT_AT, W = S.LATE_DEN_MS;
+  assert.equal(W, 6 * 3_600_000);
+  assert.equal(S.lateDen(S.newPlayer(1000, AT - W - 1, TA), AT - 1000), false);
+  const late = S.newPlayer(1000, AT - W, TB);
+  assert.deepEqual([S.lateDen(late, AT - 1000), S.lateDen(late, AT)], [true, false]);
+  const st = raidWorld();
+  st.players[TA].createdAt = new Date(AT - 3_600_000).toISOString();
+  const r = raid(st, TA, TB, 500, 2, AT - 60_000);
+  assert.deepEqual([r.ok, r.error, r.resetMs], [false, "no_raids_left", 60_000]);
+  assert.deepEqual([st.players[TA].watts, st.players[TA].raidsToday], [10_000, 0]);
+  const status = S.raidStatus(st, st.players[TA], AT - 60_000);
+  assert.deepEqual([status.raidsLeft, status.resetMs], [0, 60_000]);
+  assert.ok(raid(st, TB, TA, 500, 2, AT - 60_000).ok); // an older den can still raid it
+  assert.ok(raid(st, TA, TB, 500, 2, AT + 1000).ok); // and it can raid once the snapshot has passed
+});
+
+test("leaderboard snapshot: taken once when due, ranked like the leaderboard, with wallets", () => {
+  const AT = S.SNAPSHOT_AT;
+  const st = raidWorld();
+  st.players[TB].wallet = "0xabc";
+  assert.equal(S.takeSnapshot(st, AT - 1), null);
+  const snap = S.takeSnapshot(st, AT + 5000);
+  assert.equal(snap.at, AT + 5000);
+  const lb = S.leaderboard(st, null, AT + 5000).rows;
+  assert.deepEqual(snap.rows.map((x) => x.publicId), lb.map((x) => x.publicId));
+  assert.deepEqual(snap.rows.map((x) => x.rank), lb.map((x) => x.rank));
+  assert.equal(snap.rows.find((x) => x.publicId === pidOf(TB)).wallet, "0xabc");
+  assert.equal(S.takeSnapshot(st, AT + 60_000), null);
+  assert.equal(st.leaderboardSnapshot, snap);
+});
