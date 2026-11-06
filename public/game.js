@@ -3385,22 +3385,9 @@ function renderVisitBar() {
 // Copies the den as a PNG (or saves it where copying images isn't supported), then opens an X post.
 // The text is picked at random so shared posts don't all read the same.
 const SHARE_LINES = [
-  "Check out my den!",
-  "My hamster den is coming along nicely.",
-  "Squeektoshi has been busy. Here's my den.",
+  "Check out my hamster's den on Squeek Den! 🐹",
+  "My hamster's den, powered by a real hamster on a wheel. 🐹",
   "Rate my den 🐹",
-  "{w} Watts and counting. Come see my den.",
-  "Spent way too many Watts on this den.",
-  "New furniture in the den today.",
-  "My den, powered by a real hamster on a wheel.",
-  "Built this den one block at a time.",
-  "Cozy den update 🏠",
-  "Come raid me if you dare. {w} Watts sitting right here.",
-  "Decorated my den. Thoughts?",
-  "Hamster wheel go brrr. Here's my den.",
-  "{name}'s den, as of today.",
-  "Not done decorating, but here's my den so far.",
-  "My little corner of Squeek Den.",
 ];
 const shareBtn = $("shareX");
 function syncShare() {
