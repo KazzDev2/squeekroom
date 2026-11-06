@@ -1671,6 +1671,7 @@ function loop(now) {
     while (acc10 >= STEP10) { acc10 -= STEP10; tick10(); }
   }
   render(st || liveStatus());
+  syncShare();
   requestAnimationFrame(loop);
 }
 
@@ -3380,6 +3381,71 @@ function renderVisitBar() {
   if (V.den.verified) nm.appendChild(verifiedBadge());
   $("visitRaid").hidden = !(V.raid && V.raid.raidable);
 }
+// ---------- share to X ----------
+// Copies the den as a PNG (or saves it where copying images isn't supported), then opens an X post.
+// The text is picked at random so shared posts don't all read the same.
+const SHARE_LINES = [
+  "Check out my den!",
+  "My hamster den is coming along nicely.",
+  "Squeektoshi has been busy. Here's my den.",
+  "Rate my den 🐹",
+  "{w} Watts and counting. Come see my den.",
+  "Spent way too many Watts on this den.",
+  "New furniture in the den today.",
+  "My den, powered by a real hamster on a wheel.",
+  "Built this den one block at a time.",
+  "Cozy den update 🏠",
+  "Come raid me if you dare. {w} Watts sitting right here.",
+  "Decorated my den. Thoughts?",
+  "Hamster wheel go brrr. Here's my den.",
+  "{name}'s den, as of today.",
+  "Not done decorating, but here's my den so far.",
+  "My little corner of Squeek Den.",
+];
+const shareBtn = $("shareX");
+function syncShare() {
+  const off = !S.me || !!S.preview || !!V.den;
+  if (shareBtn.hidden !== off) shareBtn.hidden = off;
+}
+function shareText() {
+  const me = S.me || {};
+  const line = SHARE_LINES[Math.floor(Math.random() * SHARE_LINES.length)]
+    .replace("{w}", fmt(me.watts || 0)).replace("{name}", me.username || "My");
+  return `${line}\n\nhttps://squeekden.art`;
+}
+function shareImage() {
+  return new Promise((resolve, reject) => {
+    const k = Math.max(1, Math.round(1056 / view.width));
+    const c = document.createElement("canvas");
+    c.width = view.width * k; c.height = view.height * k;
+    const x = c.getContext("2d");
+    x.imageSmoothingEnabled = false;
+    x.drawImage(view, 0, 0, c.width, c.height);
+    c.toBlob((b) => (b ? resolve(b) : reject(new Error("no image"))), "image/png");
+  });
+}
+shareBtn.onclick = () => {
+  const post = "https://x.com/intent/post?text=" + encodeURIComponent(shareText());
+  const image = shareImage();
+  let copy = Promise.resolve(false);
+  try {
+    if (navigator.clipboard && window.ClipboardItem) copy = navigator.clipboard.write([new ClipboardItem({ "image/png": image })]).then(() => true, () => false);
+  } catch { copy = Promise.resolve(false); }
+  copy.then(async (copied) => {
+    if (!copied) {
+      try {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(await image);
+        a.download = "my-squeek-den.png";
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+      } catch { /* nothing to save */ }
+    }
+    toast(copied ? "Den image copied. Paste it into your post." : "Den image saved. Add it to your post.");
+    const w = window.open(post, "_blank");
+    if (w) w.opener = null;
+  });
+};
 $("visitHome").onclick = leaveVisit;
 $("visitRaid").onclick = () => {
   if (!V.den) return;
