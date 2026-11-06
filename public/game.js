@@ -3382,7 +3382,8 @@ function renderVisitBar() {
   $("visitRaid").hidden = !(V.raid && V.raid.raidable);
 }
 // ---------- share to X ----------
-// Copies the den as a PNG (or saves it where copying images isn't supported), then opens an X post.
+// Opens a popup with a preview of the den: Copy image (or Save image where copying images isn't
+// supported) and Post on X.
 // The text is picked at random so shared posts don't all read the same.
 const SHARE_LINES = [
   "Check out my hamster's den on Squeek Den! 🐹",
@@ -3411,12 +3412,31 @@ function shareImage() {
     c.toBlob((b) => (b ? resolve(b) : reject(new Error("no image"))), "image/png");
   });
 }
+const shareUi = { image: null, url: null };
+const canCopyImage = () => !!(navigator.clipboard && window.ClipboardItem);
+function closeShare() {
+  $("shareModal").hidden = true;
+  if (shareUi.url) URL.revokeObjectURL(shareUi.url);
+  shareUi.image = shareUi.url = null;
+  $("shareImg").removeAttribute("src");
+}
 shareBtn.onclick = () => {
-  const post = "https://x.com/intent/post?text=" + encodeURIComponent(shareText());
-  const image = shareImage();
+  const image = (shareUi.image = shareImage());
+  image.then((b) => {
+    if (shareUi.image !== image) return;
+    shareUi.url = URL.createObjectURL(b);
+    $("shareImg").src = shareUi.url;
+  }).catch(() => {});
+  $("shareCopy").textContent = canCopyImage() ? "Copy image" : "Save image";
+  $("shareModal").hidden = false;
+  $("sharePost").focus();
+};
+$("shareCopy").onclick = () => {
+  const image = shareUi.image;
+  if (!image) return;
   let copy = Promise.resolve(false);
   try {
-    if (navigator.clipboard && window.ClipboardItem) copy = navigator.clipboard.write([new ClipboardItem({ "image/png": image })]).then(() => true, () => false);
+    if (canCopyImage()) copy = navigator.clipboard.write([new ClipboardItem({ "image/png": image })]).then(() => true, () => false);
   } catch { copy = Promise.resolve(false); }
   copy.then(async (copied) => {
     if (!copied) {
@@ -3426,13 +3446,18 @@ shareBtn.onclick = () => {
         a.download = "my-squeek-den.png";
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
-      } catch { /* nothing to save */ }
+      } catch { toast("Couldn't get the image.", "err"); return; }
     }
-    toast(copied ? "Den image copied. Paste it into your post." : "Den image saved. Add it to your post.");
-    const w = window.open(post, "_blank");
-    if (w) w.opener = null;
+    toast(copied ? "Image copied." : "Image saved.");
   });
 };
+$("sharePost").onclick = () => {
+  const w = window.open("https://x.com/intent/post?text=" + encodeURIComponent(shareText()), "_blank");
+  if (w) w.opener = null;
+};
+$("shareClose").onclick = closeShare;
+$("shareModal").onclick = (e) => { if (e.target === e.currentTarget) closeShare(); };
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("shareModal").hidden) closeShare(); });
 $("visitHome").onclick = leaveVisit;
 $("visitRaid").onclick = () => {
   if (!V.den) return;

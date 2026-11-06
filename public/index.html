@@ -104,6 +104,7 @@ h1 .logo{width:40px;height:40px;image-rendering:pixelated;flex:none}
 .zoomctl button[hidden]{display:none}
 .zoomctl button:focus-visible{outline:2px solid var(--chain);outline-offset:2px}
 .sharectl{bottom:46px}
+.shareimg{display:block;width:100%;height:auto;aspect-ratio:352/240;image-rendering:pixelated;border:2px solid #000;background:#000}
 .panel{border-left:1px solid var(--line);background:var(--panel);padding:14px max(16px,env(safe-area-inset-right,0px)) 24px 16px;overflow:auto;display:flex;flex-direction:column;gap:12px}
 @media (max-width:860px){.panel{border-left:0;border-top:1px solid var(--line);padding-left:max(16px,env(safe-area-inset-left,0px))}}
 .panel h2{font-family:var(--display);font-size:13px;margin:0;letter-spacing:.3px}
@@ -618,6 +619,19 @@ a.helpbtn{text-decoration:none;display:inline-flex;align-items:center}
 </main>
 
 <div class="toasts" id="toasts"></div>
+
+<!-- Share to X: a preview of the den, copy the image, open a post. -->
+<div class="tutmodal" id="shareModal" hidden>
+  <div class="tutbox" role="dialog" aria-modal="true" aria-labelledby="shareTitle">
+    <button type="button" class="certx tutx" id="shareClose" aria-label="Close">✕</button>
+    <h2 id="shareTitle">Share your den</h2>
+    <img class="shareimg" id="shareImg" alt="Your den">
+    <div class="tutnav">
+      <button type="button" class="pxbtn alt" id="shareCopy">Copy image</button>
+      <button type="button" class="pxbtn" id="sharePost">Post on X</button>
+    </div>
+  </div>
+</div>
 
 <!-- How to play: five short animated steps, drawn live from the game's own sprites. -->
 <div class="tutmodal" id="tut" hidden>
