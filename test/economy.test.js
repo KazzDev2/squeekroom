@@ -2616,3 +2616,22 @@ test("offensive usernames: refused when picked or changed, everyday words still 
   S.patchPlayer(fine, TC);
   assert.equal(fine.username, "flowers");
 });
+
+test("banned dens: from 6 h before the snapshot they leave the leaderboard and snapshot, and can't raid or be raided", () => {
+  const AT = S.SNAPSHOT_AT, from = AT - S.LATE_DEN_MS;
+  assert.equal(S.BANNED_DENS.size, 7);
+  const st = raidWorld();
+  const banned = [...S.BANNED_DENS][0];
+  st.players[TB].publicId = banned;
+  S.invalidateLeaderboard(st);
+  assert.deepEqual([S.bannedDen(st.players[TB], from - 1), S.bannedDen(st.players[TB], from)], [false, true]);
+  assert.ok(S.leaderboard(st, null, from - 1).rows.some((r) => r.publicId === banned));
+  S.invalidateLeaderboard(st);
+  assert.ok(!S.leaderboard(st, null, from + 1000).rows.some((r) => r.publicId === banned));
+  const tryRaid = (atk, defPid, now) => S.applyRaid(st, atk, { target: defPid, stake: 500, mult: 200 }, now, { rng: seq(LOSE) });
+  assert.equal(tryRaid(TA, banned, from + 1000).error, "bad_target"); // nobody can raid it
+  assert.equal(tryRaid(TB, pidOf(TA), from + 1000).error, "no_raids_left"); // and it can't raid
+  const snap = S.takeSnapshot(st, AT + 1000);
+  assert.ok(!snap.rows.some((r) => r.publicId === banned));
+  assert.ok(snap.rows.some((r) => r.publicId === pidOf(TA)));
+});
