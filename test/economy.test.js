@@ -916,7 +916,7 @@ test("applyRaid fuzz: watts + burned conserved, integers only, lifetime never mo
   assert.ok(wins > 50 && losses > 50, `wins ${wins} losses ${losses}`);
   assert.ok(Number.isInteger(st.burned) && st.burned > 0);
   assert.deepEqual(tokens.map((t) => st.players[t].lifetimeWatts), life);
-  assert.equal(st.raidFeed.length, RA.FEED_MAX);
+  assert.equal(st.raidFeed.length, Math.min(RA.FEED_MAX, wins + losses));
 });
 
 test("raid stake bounds: min max(50, 5% of balance); max the balance or the target's loot cap", () => {
@@ -1076,22 +1076,23 @@ test("raid revenge: waives the 70% rule once per provocation, expires after 24 h
   assert.deepEqual([raid(st4, TA, TC, 500, 1.5).error, st4.players[TA].raidedBy[0].avenged], ["stake_out_of_range", false]); // not used up
 });
 
-test("raid ring buffers: raidedBy keeps 20 (24 h), the feed keeps 50", () => {
+test("raid ring buffers: raidedBy keeps 20 (24 h), the feed keeps FEED_MAX", () => {
   const st = raidWorld({ def: { watts: 1e9 } });
-  for (let i = 0; i < 60; i++) {
+  const N = RA.FEED_MAX + 10;
+  for (let i = 0; i < N; i++) {
     st.players[TA].raidsToday = 0;
     st.players[TA].watts = 10_000; // keep the 5% minimum at 500
     assert.ok(raid(st, TA, TB, 500 + i, 2, T0 + i, seq(LOSE)).ok);
   }
   const d = st.players[TB];
   assert.equal(d.raidedBy.length, RA.RAIDED_BY_MAX);
-  assert.equal(d.raidedBy.at(-1).at, T0 + 59);
+  assert.equal(d.raidedBy.at(-1).at, T0 + N - 1);
   assert.equal(st.raidFeed.length, RA.FEED_MAX);
-  assert.equal(st.raidFeed.at(-1).amount, 559); // newest last
+  assert.equal(st.raidFeed.at(-1).amount, 500 + N - 1); // newest last
   assert.equal(st.raidFeed[0].amount, 510); // the oldest 10 dropped
   for (const e of st.raidFeed) assert.deepEqual(Object.keys(e).sort(), ["amount", "at", "atk", "atkId", "bonus", "crit", "def", "defId", "win"]);
   // entries older than the revenge window are pruned on the next raid
-  const later = T0 + RA.REVENGE_WINDOW_MS + 100;
+  const later = T0 + N + RA.REVENGE_WINDOW_MS + 100;
   st.lastAdvanceAt = later;
   assert.ok(raid(st, TC, TB, 100, 2, later, seq(LOSE)).ok);
   assert.deepEqual(d.raidedBy.map((e) => e.pid), [pidOf(TC)]);
@@ -2618,3 +2619,23 @@ test("offensive usernames: refused when picked or changed, everyday words still 
   assert.equal(fine.username, "flowers");
 });
 
+// ---------- raid and Bounty history ----------
+test("history pages: newest first, before/limit paging, no repeats, Bounty rows without den ids", () => {
+  const feed = Array.from({ length: 120 }, (_, i) => ({ at: 1000 + i, kind: "raid", atk: "a", atkId: "x", def: "b", defId: "y", win: true, amount: i }));
+  const st = { raidFeed: feed, drop: { wins: Array.from({ length: 30 }, (_, i) => ({ at: 5000 + i, name: "w" + i, pid: "secret", amount: 100 + i })) } };
+  const p1 = S.raidHistory(st, "", "50");
+  assert.deepEqual([p1.rows.length, p1.rows[0].amount, p1.rows.at(-1).amount, p1.more], [50, 119, 70, true]);
+  const p2 = S.raidHistory(st, p1.rows.at(-1).at, 50);
+  const p3 = S.raidHistory(st, p2.rows.at(-1).at, 50);
+  assert.deepEqual([p2.rows[0].amount, p3.rows.length, p3.rows.at(-1).amount, p3.more], [69, 20, 0, false]);
+  const seen = [...p1.rows, ...p2.rows, ...p3.rows].map((e) => e.amount);
+  assert.equal(new Set(seen).size, 120);
+  assert.equal(S.raidHistory(st, null, 999).rows.length, 100); // limit is capped
+  assert.equal(S.raidHistory({}, null, 10).rows.length, 0);
+  const b = S.bountyHistory(st, 0, 20);
+  assert.deepEqual(b.rows[0], { at: 5029, name: "w29", amount: 129 });
+  assert.equal(b.more, true);
+  assert.ok(b.rows.every((r) => !("pid" in r)));
+  assert.equal(RA.FEED_MAX, 5000);
+  assert.equal(BALANCE.DROP.WINS_MAX, 1000);
+});

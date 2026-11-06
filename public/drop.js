@@ -409,6 +409,46 @@ function setBoard(b) {
   updateLook();
   renderHud();
 }
+// Bounty winners, newest first (GET /api/bounties), opened from the History button under the board's numbers
+const BH = { open: false, rows: [], more: true, loading: false };
+const bhAgo = (at) => {
+  const s = Math.max(0, Math.round((Date.now() - at) / 1000));
+  return s < 45 ? "now" : s < 3600 ? `${Math.round(s / 60)}m` : s < 86_400 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86_400)}d`;
+};
+function bhEl(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function renderBountyHist() {
+  const ol = $("bountyHist");
+  ol.hidden = !BH.open;
+  $("bountyHistBtn").textContent = BH.open ? "Hide" : "History";
+  if (!BH.open) return;
+  ol.innerHTML = "";
+  if (!BH.rows.length && !BH.loading) ol.appendChild(bhEl("li", null, "No winners yet."));
+  for (const w of BH.rows) {
+    const li = bhEl("li");
+    li.append(bhEl("b", null, w.name), bhEl("span", "a", `+${fmt(w.amount)} W`), bhEl("span", "t", bhAgo(w.at)));
+    ol.appendChild(li);
+  }
+  if (BH.loading || BH.more) {
+    const li = bhEl("li", "more"), b = bhEl("button", null, BH.loading ? "Loading…" : "Show older");
+    b.type = "button";
+    b.onclick = loadBounties;
+    li.appendChild(b);
+    ol.appendChild(li);
+  }
+}
+async function loadBounties() {
+  if (BH.loading || !BH.more) return;
+  BH.loading = true; renderBountyHist();
+  const before = BH.rows.length ? BH.rows[BH.rows.length - 1].at : "";
+  const r = await api(`/api/bounties?before=${before}&limit=20`);
+  if (r.ok && Array.isArray(r.j.rows)) { BH.rows.push(...r.j.rows); BH.more = !!r.j.more; }
+  BH.loading = false; renderBountyHist();
+}
+$("bountyHistBtn").onclick = () => {
+  BH.open = !BH.open;
+  if (BH.open) { BH.rows = []; BH.more = true; loadBounties(); } // fresh each time it opens
+  renderBountyHist();
+};
 function showLastWin(w) {
   $("lastBounty").hidden = !w;
   if (!w) return;
