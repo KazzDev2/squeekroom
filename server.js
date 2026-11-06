@@ -53,7 +53,7 @@ const SAVE_CHUNK = 1000; // players serialized per event-loop turn by the regula
 const MAX_PLAYERS = 50_000;
 // Leaderboard snapshot: once SNAPSHOT_AT passes, the standings are saved (state.leaderboardSnapshot and
 // leaderboard-snapshot.json beside state.json). Dens created in the LATE_DEN_MS before it have no raids until then.
-const SNAPSHOT_AT = Date.parse(process.env.SNAPSHOT_AT || "2026-11-07T14:00:00Z"); // Sat 7 Nov, 22:00 in Malaysia
+const SNAPSHOT_AT = Date.parse(process.env.SNAPSHOT_AT || "2026-11-07T14:00:00Z"); // Sat 7 Nov 2026, 14:00 UTC
 const LATE_DEN_MS = 6 * 3_600_000;
 const DEMO_BASE_HEIGHT = 4135; // used when demo mode has no chain reading yet
 const DEMO_MAX_ADVANCE = 2000;
