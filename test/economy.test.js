@@ -427,15 +427,15 @@ test("accrueBed: every player while asleep, 60 s cap per tick, nothing while awa
 });
 
 // ---------- bed + room ladders ----------
-test("catalog: bed tiers 1..3 and room tiers 1..5 (not placeable); teacup bed stays a cosmetic", () => {
+test("catalog: bed tiers 1..3 and room tiers 1..3 (not placeable); teacup bed stays a cosmetic", () => {
   const beds = CATALOG.filter((i) => i.cat === "bed");
   assert.deepEqual(beds.map((b) => b.id), ["bed_t1", "bed_t2", "bed_t3"]);
   assert.deepEqual(beds.map((b) => b.price), [6000, 20000, 60000]);
   assert.deepEqual(beds.map((b) => b.multPct), [125, 160, 200]);
   const rooms = CATALOG.filter((i) => i.cat === "room");
-  assert.deepEqual(rooms.map((r) => r.tier), [1, 2, 3, 4, 5]);
-  assert.deepEqual(rooms.map((r) => r.price), [20000, 60000, 160000, 400000, 900000]);
-  assert.deepEqual(rooms.map((r) => r.material), ["Stone", "Iron", "Silver", "Gold", "Diamond"]);
+  assert.deepEqual(rooms.map((r) => r.tier), [1, 2, 3]);
+  assert.deepEqual(rooms.map((r) => r.price), [20000, 60000, 160000]);
+  assert.deepEqual(rooms.map((r) => r.material), ["Stone", "Iron", "Silver"]);
   for (const i of [...beds, ...rooms]) assert.equal(i.zone, null);
   const teacup = S.CATALOG_BY_ID.get("fur_teacup_bed");
   assert.equal(teacup.cat, "furniture");
@@ -2546,15 +2546,16 @@ test("visits: per-address rate limit", () => {
   assert.equal(S.allowVisit(null, T0), true);
 });
 
-test("upgrade cap: wheel and bed stop at T3, Gold and Diamond dens add no defence, older dens are pulled back", () => {
+test("upgrade cap: wheel, bed and den stop at T3, older dens are pulled back", () => {
   assert.equal(BALANCE.WHEEL_MULT_PCT.at(-1), 200);
   assert.equal(BALANCE.BED_MULT_PCT.at(-1), 200);
-  assert.ok(CATALOG.some((i) => i.id === "room_t5"), "Diamond is still on sale");
+  assert.ok(!CATALOG.some((i) => i.id === "room_t4" || i.id === "room_t5"), "Gold and Diamond are gone");
   const def = (t) => BALANCE.RAID.DEFENSE_PCT[t];
   assert.deepEqual([def(3), def(4), def(5)], [15, 15, 15]);
-  const old = Object.assign(fresh(), { wheelTier: 5, bedTier: 4 });
+  const old = Object.assign(fresh(), { wheelTier: 5, bedTier: 4, roomTier: 5 });
   S.patchPlayer(old, TOKEN);
-  assert.deepEqual([old.wheelTier, old.bedTier], [3, 3]);
+  assert.deepEqual([old.wheelTier, old.bedTier, old.roomTier], [3, 3, 3]);
+  assert.equal(S.canBuy(Object.assign(fresh({ watts: 1e7 }), { roomTier: 3 }), "room_t4").error, "unknown_item");
   assert.ok(accrue(old, 1, T0) > 0, "still earns");
 });
 

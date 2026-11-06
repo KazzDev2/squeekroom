@@ -96,7 +96,7 @@ const BALANCE = {
   RAID: {
     EDGE_PCT: 110,
     MULT_PCT: [150, 200, 300, 500, 1000], // M = 1.5, 2, 3, 5, 10 ("Heist")
-    DEFENSE_PCT: [0, 5, 10, 15, 15, 15], // by the DEFENDER's roomTier 0..5: Gold and Diamond are looks only
+    DEFENSE_PCT: [0, 5, 10, 15, 15, 15], // by the DEFENDER's roomTier (0..3 are sold; 4..5 were retired before anyone bought them)
     TILT_EXP: 0.25, // tilt = (defenderWatts / attackerWatts) ^ TILT_EXP, clamped below
     TILT_MIN_PCT: 75,
     TILT_MAX_PCT: 175, // reached at ~9.4x the attacker's watts
@@ -229,8 +229,6 @@ const CATALOG = [
   roomMat(1, "Stone", 20_000),
   roomMat(2, "Iron", 60_000),
   roomMat(3, "Silver", 160_000),
-  roomMat(4, "Gold", 400_000),
-  roomMat(5, "Diamond", 900_000),
   // wallpaper (equip one)
   style("wp_dirt", "Packed Dirt", "wallpaper", 0),
   style("wp_plain", "Plain Cream", "wallpaper", 0),
@@ -657,6 +655,7 @@ function patchPlayer(p, token) {
   if (Number.isInteger(p.wheelTier)) p.wheelTier = Math.min(p.wheelTier, BALANCE.WHEEL_MULT_PCT.length - 1);
   if (!Number.isFinite(p.bedFrac)) p.bedFrac = 0;
   if (!Number.isInteger(p.roomTier)) p.roomTier = 0;
+  p.roomTier = Math.min(p.roomTier, Math.max(0, ...CATALOG.filter((i) => i.cat === "room").map((i) => i.tier))); // Gold and Diamond were retired
   if (!Number.isFinite(p.lifetimeWatts)) p.lifetimeWatts = 0; // raidReady() reads it
   if (!Number.isFinite(p.lastRaidAt)) p.lastRaidAt = 0;
   if (p.raidDay === undefined) p.raidDay = null;
