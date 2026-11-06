@@ -2459,6 +2459,7 @@ function nameProblem(v) {
 function nameErrorWords(j, want) {
   const e = j && j.error;
   return e === "username_taken" ? `“${want}” is already taken. Try another.` : e === "bad_username" ? "Not allowed: 3–16 letters, numbers or _."
+    : e === "name_not_allowed" ? "That name isn't allowed. Try another."
     : e === "too_many_dens" ? "Too many new dens from your network. Try again in an hour." : e === "server_full" ? "The server is full right now." : errorWords(j);
 }
 async function saveUsername(want) {

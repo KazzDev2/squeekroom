@@ -350,6 +350,7 @@ function nameForm(body, { cur, saveLabel, onSaved, extraBtn }) {
     if (e === "network") b.toast("You're offline: can't reach the server.", "err");
     serverMsg = e === "username_taken" ? `“${want}” is already taken. Try another.`
       : e === "bad_username" ? "Not allowed: 3–16 letters, numbers or _."
+      : e === "name_not_allowed" ? "That name isn't allowed. Try another."
       : e === "wallet_required" ? "Link a wallet first: your den isn't linked any more."
       : e === "network" ? "Can't reach the server. Try again in a moment."
       : serverWords(r.j);
