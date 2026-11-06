@@ -51,6 +51,10 @@ const POLL_MS = 10_000;
 const SAVE_DEBOUNCE_MS = 10_000; // a crash (not a deploy: SIGTERM saves first) loses at most this much
 const SAVE_CHUNK = 1000; // players serialized per event-loop turn by the regular save
 const MAX_PLAYERS = 50_000;
+// Leaderboard snapshot: once SNAPSHOT_AT passes, the standings are saved (state.leaderboardSnapshot and
+// leaderboard-snapshot.json beside state.json). Dens created in the LATE_DEN_MS before it have no raids until then.
+const SNAPSHOT_AT = Date.parse(process.env.SNAPSHOT_AT || "2026-11-07T14:00:00Z"); // Sat 7 Nov 2026, 14:00 UTC
+const LATE_DEN_MS = 6 * 3_600_000;
 const DEMO_BASE_HEIGHT = 4135; // used when demo mode has no chain reading yet
 const DEMO_MAX_ADVANCE = 2000;
 const TOKEN_RE = /^[A-Za-z0-9_-]{16,64}$/;
@@ -1428,8 +1432,13 @@ function parseMultPct(v) {
   return L.includes(pct) && Math.abs(v * 100 - pct) < 1e-9 ? pct : null;
 }
 // Daily allowance: PER_DAY raids per UTC day; the count resets at 00:00 UTC.
-const raidsLeft = (p, now) => (p.raidDay === utcDay(now) ? Math.max(0, BALANCE.RAID.PER_DAY - (p.raidsToday | 0)) : BALANCE.RAID.PER_DAY);
+function lateDen(p, now, at = SNAPSHOT_AT) {
+  const born = p ? Date.parse(p.createdAt) : NaN;
+  return Number.isFinite(born) && born >= at - LATE_DEN_MS && now < at;
+}
+const raidsLeft = (p, now) => (lateDen(p, now) ? 0 : p.raidDay === utcDay(now) ? Math.max(0, BALANCE.RAID.PER_DAY - (p.raidsToday | 0)) : BALANCE.RAID.PER_DAY);
 const msToUtcMidnight = (now) => 86_400_000 - (now % 86_400_000);
+const raidResetMs = (p, now) => (lateDen(p, now) ? SNAPSHOT_AT - now : msToUtcMidnight(now));
 // The oldest unavenged provocation by `pid` against `player` within the revenge window, or null.
 function pendingRevenge(player, pid, now) {
   const list = Array.isArray(player.raidedBy) ? player.raidedBy : [];
@@ -1446,7 +1455,7 @@ function raidEligibility(attacker, defender, now) {
 }
 const raidRunPct = (st, now, readAt) => (runningNow(st, now, readAt) ? BALANCE.RAID.RUN_BONUS_PCT : 0);
 function raidStatus(st, player, now = Date.now(), readAt = chainReadAt()) {
-  return { raidsLeft: raidsLeft(player, now), perDay: BALANCE.RAID.PER_DAY, resetMs: msToUtcMidnight(now), runPct: raidRunPct(st, now, readAt),
+  return { raidsLeft: raidsLeft(player, now), perDay: BALANCE.RAID.PER_DAY, resetMs: raidResetMs(player, now), runPct: raidRunPct(st, now, readAt),
     ready: raidReady(player), earned: Math.max(0, player.lifetimeWatts | 0), needEarned: BALANCE.RAID.MIN_EARNED, shielded: boughtShieldUp(player, now) };
 }
 
@@ -1490,7 +1499,7 @@ function applyRaid(st, token, body, now = Date.now(), { rng = Math.random, readA
   if (!atk) return fail("unknown_player");
   if (!raidReady(atk)) return { ok: false, error: "not_eligible", reason: "fresh_attacker", needEarned: R.MIN_EARNED, earned: Math.max(0, atk.lifetimeWatts | 0) };
   if (boughtShieldUp(atk, now)) return { ok: false, error: "shielded", until: atk.shield.until };
-  if (raidsLeft(atk, now) <= 0) return { ok: false, error: "no_raids_left", resetMs: msToUtcMidnight(now) };
+  if (raidsLeft(atk, now) <= 0) return { ok: false, error: "no_raids_left", resetMs: raidResetMs(atk, now) };
   const b = body && typeof body === "object" ? body : {};
   const defToken = tokenForPublicId(st, b.target);
   if (!defToken) return fail("bad_target");
@@ -1541,17 +1550,27 @@ function applyRaid(st, token, body, now = Date.now(), { rng = Math.random, readA
 // (a raid invalidates it). Per-viewer flags are added on top of the cached rows.
 // Online: a visible game tab pinging (the watching heartbeat) or a recent Burrow Drop, which has no heartbeat of its own.
 const isOnline = (p, now) => now - Math.max(p.lastHeartbeat || 0, (p.drop && p.drop.lastAt) || 0) <= BALANCE.HEARTBEAT_WINDOW_MS;
+const byStanding = (a, b) => b.watts - a.watts || b.lifetimeWatts - a.lifetimeWatts || (a.publicId < b.publicId ? -1 : a.publicId > b.publicId ? 1 : 0);
 function leaderboardRows(st, now) {
   const R = BALANCE.RAID;
   const c = LB_CACHE.get(st);
   if (c && now >= c.at && now - c.at < R.LEADERBOARD_CACHE_MS) return c;
   const all = Object.values(st.players).filter((p) => p && p.publicId);
-  all.sort((a, b) => b.watts - a.watts || b.lifetimeWatts - a.lifetimeWatts || (a.publicId < b.publicId ? -1 : a.publicId > b.publicId ? 1 : 0));
+  all.sort(byStanding);
   const rows = all.slice(0, R.LEADERBOARD_MAX).map((p, i) => ({ rank: i + 1, publicId: p.publicId, nick: p.nick, name: displayName(p), verified: !!p.wallet, watts: p.watts, lifetimeWatts: p.lifetimeWatts, roomTier: p.roomTier | 0, fresh: !raidReady(p), online: isOnline(p, now),
     shieldUntil: p.shield && p.shield.until > now ? p.shield.until : 0 }));
   const out = { at: now, rows, total: all.length, online: all.filter((p) => isOnline(p, now)).length };
   LB_CACHE.set(st, out);
   return out;
+}
+// The final standings, taken once when SNAPSHOT_AT has passed. Kept in state; returns null when not due or already taken.
+function takeSnapshot(st, now = Date.now(), at = SNAPSHOT_AT) {
+  if (st.leaderboardSnapshot || now < at) return null;
+  const all = Object.values(st.players).filter((p) => p && p.publicId).sort(byStanding);
+  const rows = all.map((p, i) => ({ rank: i + 1, name: displayName(p), username: p.username || null, publicId: p.publicId,
+    watts: p.watts, lifetimeWatts: p.lifetimeWatts, wallet: p.wallet || null }));
+  st.leaderboardSnapshot = { at: now, scheduledAt: at, height: st.height, rows };
+  return st.leaderboardSnapshot;
 }
 // What `viewer` (null: anonymous) may do to den `row` ({publicId, watts, fresh, shielded}): the same
 // rules applyRaid enforces (it re-checks everything). Shared by the leaderboard and den visits.
@@ -2057,6 +2076,17 @@ async function poll() {
   //    the time since the last tick.
   noteStatus(state, now); // every poll, whichever mode set the reading (demo readings aren't re-stamped)
   accrueBed(state, asleep(state, now, chainReadAt()), now);
+  const snap = takeSnapshot(state, now);
+  if (snap) {
+    try {
+      writeNow();
+      fs.writeFileSync(path.join(path.dirname(DATA_FILE), "leaderboard-snapshot.json"), JSON.stringify(snap, null, 2));
+    } catch (e) {
+      console.error("snapshot save failed:", e.message || e);
+    }
+    const top = snap.rows[0];
+    console.log(`leaderboard snapshot: ${snap.rows.length} dens${top ? `, #1 ${top.name} with ${top.watts} W` : ""}`);
+  }
   // 3. Live hamster reading. Demo mode fakes it (and lets a fake run go back to sleep); replay
   //    already synthesized it in replayTick().
   if (DEMO) {
@@ -2623,7 +2653,7 @@ function listen() {
 
 module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible, wwwRedirect };
 // Extra helpers for tests (the plan's six names above stay the primary surface).
-Object.assign(module.exports, { ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
+Object.assign(module.exports, { lateDen, takeSnapshot, SNAPSHOT_AT, LATE_DEN_MS, ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
   stackAbove, moveStack, footprint, runningNow, raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS, viewerFlags, denView, visitDen, randomDen, allowVisit, VISIT_LIMIT,

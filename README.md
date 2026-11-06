@@ -165,6 +165,5 @@ All rights reserved, not open source. See `LICENSE`. The two music tracks are CC
 
 - Pets that move into your den.
 - Voting on den designs.
-- Sharing your den to X and other sites.
 
 squeekchain-project: 890d9ba4-50bb-4e0b-98ce-63d4eaf087a0
