@@ -2600,3 +2600,39 @@ test("leaderboard snapshot: taken once when due, ranked like the leaderboard, wi
   assert.equal(S.takeSnapshot(st, AT + 60_000), null);
   assert.equal(st.leaderboardSnapshot, snap);
 });
+
+// ---------- offensive usernames ----------
+test("offensive usernames: refused when picked or changed, everyday words still fine, old ones renamed on load", () => {
+  for (const bad of ["jew_hamster", "JewHamster", "N1gg3r", "f_a_g_g_o_t", "H1tl3r", "kkk_den"]) assert.equal(S.offensiveName(bad), true, bad);
+  for (const ok of ["jewel_box", "Raccoon", "spicy_den", "grapefruit", "torpedo", "tycoon99", "coonhound", "niagara_den", "hamster_fan"]) assert.equal(S.offensiveName(ok), false, ok);
+  const st = { height: 10, players: {} };
+  assert.equal(S.createDen(st, TA, { username: "jew_hamster" }, T0).error, "name_not_allowed");
+  assert.ok(S.createDen(st, TA, { username: "nice_den" }, T0).ok);
+  assert.equal(S.setUsername(st, TA, { username: "H1tl3r" }).error, "name_not_allowed");
+  assert.equal(st.players[TA].username, "nice_den");
+  const old = Object.assign(fresh(), { publicId: "0139ce13c92a", username: "jewhamster" });
+  S.patchPlayer(old, TB);
+  assert.equal(old.username, "den_0139ce");
+  const fine = Object.assign(fresh(), { publicId: "abcdef123456", username: "flowers" });
+  S.patchPlayer(fine, TC);
+  assert.equal(fine.username, "flowers");
+});
+
+test("banned dens: from 6 h before the snapshot they leave the leaderboard and snapshot, and can't raid or be raided", () => {
+  const AT = S.SNAPSHOT_AT, from = AT - S.LATE_DEN_MS;
+  assert.equal(S.BANNED_DENS.size, 7);
+  const st = raidWorld();
+  const banned = [...S.BANNED_DENS][0];
+  st.players[TB].publicId = banned;
+  S.invalidateLeaderboard(st);
+  assert.deepEqual([S.bannedDen(st.players[TB], from - 1), S.bannedDen(st.players[TB], from)], [false, true]);
+  assert.ok(S.leaderboard(st, null, from - 1).rows.some((r) => r.publicId === banned));
+  S.invalidateLeaderboard(st);
+  assert.ok(!S.leaderboard(st, null, from + 1000).rows.some((r) => r.publicId === banned));
+  const tryRaid = (atk, defPid, now) => S.applyRaid(st, atk, { target: defPid, stake: 500, mult: 200 }, now, { rng: seq(LOSE) });
+  assert.equal(tryRaid(TA, banned, from + 1000).error, "bad_target"); // nobody can raid it
+  assert.equal(tryRaid(TB, pidOf(TA), from + 1000).error, "no_raids_left"); // and it can't raid
+  const snap = S.takeSnapshot(st, AT + 1000);
+  assert.ok(!snap.rows.some((r) => r.publicId === banned));
+  assert.ok(snap.rows.some((r) => r.publicId === pidOf(TA)));
+});
