@@ -2599,3 +2599,20 @@ test("leaderboard snapshot: taken once when due, ranked like the leaderboard, wi
   assert.equal(S.takeSnapshot(st, AT + 60_000), null);
   assert.equal(st.leaderboardSnapshot, snap);
 });
+
+// ---------- offensive usernames ----------
+test("offensive usernames: refused when picked or changed, everyday words still fine, old ones renamed on load", () => {
+  for (const bad of ["jew_hamster", "JewHamster", "N1gg3r", "f_a_g_g_o_t", "H1tl3r", "kkk_den"]) assert.equal(S.offensiveName(bad), true, bad);
+  for (const ok of ["jewel_box", "Raccoon", "spicy_den", "grapefruit", "torpedo", "tycoon99", "coonhound", "niagara_den", "hamster_fan"]) assert.equal(S.offensiveName(ok), false, ok);
+  const st = { height: 10, players: {} };
+  assert.equal(S.createDen(st, TA, { username: "jew_hamster" }, T0).error, "name_not_allowed");
+  assert.ok(S.createDen(st, TA, { username: "nice_den" }, T0).ok);
+  assert.equal(S.setUsername(st, TA, { username: "H1tl3r" }).error, "name_not_allowed");
+  assert.equal(st.players[TA].username, "nice_den");
+  const old = Object.assign(fresh(), { publicId: "0139ce13c92a", username: "jewhamster" });
+  S.patchPlayer(old, TB);
+  assert.equal(old.username, "den_0139ce");
+  const fine = Object.assign(fresh(), { publicId: "abcdef123456", username: "flowers" });
+  S.patchPlayer(fine, TC);
+  assert.equal(fine.username, "flowers");
+});

@@ -655,6 +655,7 @@ function patchPlayer(p, token) {
   if (Number.isInteger(p.wheelTier)) p.wheelTier = Math.min(p.wheelTier, BALANCE.WHEEL_MULT_PCT.length - 1);
   if (!Number.isFinite(p.bedFrac)) p.bedFrac = 0;
   if (!Number.isInteger(p.roomTier)) p.roomTier = 0;
+  if (typeof p.username === "string" && offensiveName(p.username) && p.publicId) p.username = `den_${p.publicId.slice(0, 6)}`; // renamed; they can pick another
   p.roomTier = Math.min(p.roomTier, Math.max(0, ...CATALOG.filter((i) => i.cat === "room").map((i) => i.tier))); // Gold and Diamond were retired
   if (!Number.isFinite(p.lifetimeWatts)) p.lifetimeWatts = 0; // raidReady() reads it
   if (!Number.isFinite(p.lastRaidAt)) p.lastRaidAt = 0;
@@ -739,8 +740,21 @@ function verifyWallet(st, token, body, now = Date.now()) {
 }
 // What's wrong with username `u` for den `p` (null: a den not created yet), or null if it's fine:
 // 3-16 of [A-Za-z0-9_], unique case-insensitively.
+// Slurs and hate terms, matched after folding case, look-alike digits and separators; OK_NAME_PARTS are
+// everyday words that contain one of them.
+const BLOCKED_NAME_PARTS = ["nigger", "nigga", "niga", "faggot", "fagot", "retard", "chink", "spic", "kike", "tranny", "coon", "gook",
+  "wetback", "beaner", "paki", "raghead", "towelhead", "nazi", "hitler", "heil", "kkk", "rape", "rapist", "pedo", "jew"];
+const OK_NAME_PARTS = ["jewel", "raccoon", "cocoon", "tycoon", "coonhound", "spice", "spicy", "auspic", "pakistan", "grape", "drape", "scrape",
+  "trape", "torpedo", "pedometer", "retardant", "niagara"];
+function offensiveName(u) {
+  const look = { 0: "o", 1: "i", 3: "e", 4: "a", 5: "s", 7: "t", 8: "b" };
+  let s = String(u).toLowerCase().replace(/[0134578]/g, (c) => look[c]).replace(/[^a-z]/g, "");
+  for (const ok of OK_NAME_PARTS) s = s.split(ok).join("");
+  return BLOCKED_NAME_PARTS.some((w) => s.includes(w));
+}
 function usernameProblem(st, p, u) {
   if (typeof u !== "string" || !WALLET.USERNAME_RE.test(u)) return "bad_username";
+  if (offensiveName(u)) return "name_not_allowed";
   const key = u.toLowerCase();
   for (const q of Object.values(st.players)) {
     if (q && q !== p && typeof q.username === "string" && q.username.toLowerCase() === key) return "username_taken";
@@ -2570,7 +2584,12 @@ async function handle(req, res) {
     res.writeHead(301, { location: toBare });
     return res.end();
   }
-  const url = new URL(req.url, "http://x");
+  let url;
+  try {
+    url = new URL(req.url, "http://x");
+  } catch {
+    return json(res, 400, { error: "bad_request" }); // e.g. "//": a malformed path must not take the server down
+  }
   try {
     if (url.pathname === "/api/state" && req.method === "GET") {
       return json(res, 200, snapshot(url.searchParams.get("token"), clientIp(req)));
@@ -2652,7 +2671,7 @@ function listen() {
 
 module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible, wwwRedirect };
 // Extra helpers for tests (the plan's six names above stay the primary surface).
-Object.assign(module.exports, { lateDen, takeSnapshot, SNAPSHOT_AT, LATE_DEN_MS, ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
+Object.assign(module.exports, { offensiveName, lateDen, takeSnapshot, SNAPSHOT_AT, LATE_DEN_MS, ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
   stackAbove, moveStack, footprint, runningNow, raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS, viewerFlags, denView, visitDen, randomDen, allowVisit, VISIT_LIMIT,
