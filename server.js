@@ -55,6 +55,10 @@ const MAX_PLAYERS = 50_000;
 // leaderboard-snapshot.json beside state.json). Dens created in the LATE_DEN_MS before it have no raids until then.
 const SNAPSHOT_AT = Date.parse(process.env.SNAPSHOT_AT || "2026-11-07T14:00:00Z"); // Sat 7 Nov 2026, 14:00 UTC
 const LATE_DEN_MS = 6 * 3_600_000;
+// Dens (by publicId) taken out of the standings from SNAPSHOT_AT - LATE_DEN_MS: off the leaderboard and the
+// snapshot, and they can't raid or be raided. Their den and Watts stay.
+const BANNED_DENS = new Set(["9e66646928b8", "ddfd10325b51", "fa478f7d4bcb", "799755f4a822", "b8be246222ea", "3e7738d88904", "1be032b5fac3"]);
+const bannedDen = (p, now, at = SNAPSHOT_AT) => !!p && BANNED_DENS.has(p.publicId) && now >= at - LATE_DEN_MS;
 const DEMO_BASE_HEIGHT = 4135; // used when demo mode has no chain reading yet
 const DEMO_MAX_ADVANCE = 2000;
 const TOKEN_RE = /^[A-Za-z0-9_-]{16,64}$/;
@@ -735,6 +739,7 @@ function patchPlayer(p, token) {
   if (Number.isInteger(p.wheelTier)) p.wheelTier = Math.min(p.wheelTier, BALANCE.WHEEL_MULT_PCT.length - 1);
   if (!Number.isFinite(p.bedFrac)) p.bedFrac = 0;
   if (!Number.isInteger(p.roomTier)) p.roomTier = 0;
+  if (typeof p.username === "string" && offensiveName(p.username) && p.publicId) p.username = `den_${p.publicId.slice(0, 6)}`; // renamed; they can pick another
   p.roomTier = Math.min(p.roomTier, Math.max(0, ...CATALOG.filter((i) => i.cat === "room").map((i) => i.tier))); // Gold and Diamond were retired
   if (!Number.isFinite(p.lifetimeWatts)) p.lifetimeWatts = 0; // raidReady() reads it
   if (!Number.isFinite(p.lastRaidAt)) p.lastRaidAt = 0;
@@ -822,8 +827,21 @@ function verifyWallet(st, token, body, now = Date.now()) {
 }
 // What's wrong with username `u` for den `p` (null: a den not created yet), or null if it's fine:
 // 3-16 of [A-Za-z0-9_], unique case-insensitively.
+// Slurs and hate terms, matched after folding case, look-alike digits and separators; OK_NAME_PARTS are
+// everyday words that contain one of them.
+const BLOCKED_NAME_PARTS = ["nigger", "nigga", "niga", "faggot", "fagot", "retard", "chink", "spic", "kike", "tranny", "coon", "gook",
+  "wetback", "beaner", "paki", "raghead", "towelhead", "nazi", "hitler", "heil", "kkk", "rape", "rapist", "pedo", "jew"];
+const OK_NAME_PARTS = ["jewel", "raccoon", "cocoon", "tycoon", "coonhound", "spice", "spicy", "auspic", "pakistan", "grape", "drape", "scrape",
+  "trape", "torpedo", "pedometer", "retardant", "niagara"];
+function offensiveName(u) {
+  const look = { 0: "o", 1: "i", 3: "e", 4: "a", 5: "s", 7: "t", 8: "b" };
+  let s = String(u).toLowerCase().replace(/[0134578]/g, (c) => look[c]).replace(/[^a-z]/g, "");
+  for (const ok of OK_NAME_PARTS) s = s.split(ok).join("");
+  return BLOCKED_NAME_PARTS.some((w) => s.includes(w));
+}
 function usernameProblem(st, p, u) {
   if (typeof u !== "string" || !WALLET.USERNAME_RE.test(u)) return "bad_username";
+  if (offensiveName(u)) return "name_not_allowed";
   const key = u.toLowerCase();
   for (const q of Object.values(st.players)) {
     if (q && q !== p && typeof q.username === "string" && q.username.toLowerCase() === key) return "username_taken";
@@ -1529,7 +1547,7 @@ function lateDen(p, now, at = SNAPSHOT_AT) {
   const born = p ? Date.parse(p.createdAt) : NaN;
   return Number.isFinite(born) && born >= at - LATE_DEN_MS && now < at;
 }
-const raidsLeft = (p, now) => (lateDen(p, now) ? 0 : p.raidDay === utcDay(now) ? Math.max(0, raidsPerDay(p) - (p.raidsToday | 0)) : raidsPerDay(p));
+const raidsLeft = (p, now) => (lateDen(p, now) || bannedDen(p, now) ? 0 : p.raidDay === utcDay(now) ? Math.max(0, raidsPerDay(p) - (p.raidsToday | 0)) : raidsPerDay(p));
 const msToUtcMidnight = (now) => 86_400_000 - (now % 86_400_000);
 const raidResetMs = (p, now) => (lateDen(p, now) ? SNAPSHOT_AT - now : msToUtcMidnight(now));
 // The oldest unavenged provocation by `pid` against `player` within the revenge window, or null.
@@ -1597,6 +1615,7 @@ function applyRaid(st, token, body, now = Date.now(), { rng = Math.random, readA
   const defToken = tokenForPublicId(st, b.target);
   if (!defToken) return fail("bad_target");
   const def = st.players[defToken];
+  if (bannedDen(def, now)) return fail("bad_target");
   if (def !== atk && !raidReady(def)) return { ok: false, error: "not_eligible", reason: "fresh_target", needEarned: R.MIN_EARNED };
   if (def !== atk && shieldUp(def, now)) return { ok: false, error: "target_shielded", until: def.shield.until };
   const el = raidEligibility(atk, def, now);
@@ -1648,7 +1667,7 @@ function leaderboardRows(st, now) {
   const R = BALANCE.RAID;
   const c = LB_CACHE.get(st);
   if (c && now >= c.at && now - c.at < R.LEADERBOARD_CACHE_MS) return c;
-  const all = Object.values(st.players).filter((p) => p && p.publicId);
+  const all = Object.values(st.players).filter((p) => p && p.publicId && !bannedDen(p, now));
   all.sort(byStanding);
   const rows = all.slice(0, R.LEADERBOARD_MAX).map((p, i) => ({ rank: i + 1, publicId: p.publicId, nick: p.nick, name: displayName(p), verified: !!p.wallet, watts: p.watts, lifetimeWatts: p.lifetimeWatts, roomTier: p.roomTier | 0, fresh: !raidReady(p), online: isOnline(p, now),
     shieldUntil: p.shield && p.shield.until > now ? p.shield.until : 0 }));
@@ -1659,7 +1678,7 @@ function leaderboardRows(st, now) {
 // The final standings, taken once when SNAPSHOT_AT has passed. Kept in state; returns null when not due or already taken.
 function takeSnapshot(st, now = Date.now(), at = SNAPSHOT_AT) {
   if (st.leaderboardSnapshot || now < at) return null;
-  const all = Object.values(st.players).filter((p) => p && p.publicId).sort(byStanding);
+  const all = Object.values(st.players).filter((p) => p && p.publicId && !bannedDen(p, now, at)).sort(byStanding);
   const rows = all.map((p, i) => ({ rank: i + 1, name: displayName(p), username: p.username || null, publicId: p.publicId,
     watts: p.watts, lifetimeWatts: p.lifetimeWatts, wallet: p.wallet || null }));
   st.leaderboardSnapshot = { at: now, scheduledAt: at, height: st.height, rows };
@@ -2688,7 +2707,12 @@ async function handle(req, res) {
     res.writeHead(301, { location: toBare });
     return res.end();
   }
-  const url = new URL(req.url, "http://x");
+  let url;
+  try {
+    url = new URL(req.url, "http://x");
+  } catch {
+    return json(res, 400, { error: "bad_request" }); // e.g. "//": a malformed path must not take the server down
+  }
   try {
     if (url.pathname === "/api/state" && req.method === "GET") {
       return json(res, 200, snapshot(url.searchParams.get("token"), clientIp(req)));
@@ -2770,7 +2794,7 @@ function listen() {
 
 module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible, wwwRedirect };
 // Extra helpers for tests (the plan's six names above stay the primary surface).
-Object.assign(module.exports, { lateDen, takeSnapshot, SNAPSHOT_AT, LATE_DEN_MS, ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
+Object.assign(module.exports, { bannedDen, BANNED_DENS, offensiveName, lateDen, takeSnapshot, SNAPSHOT_AT, LATE_DEN_MS, ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
   stackAbove, moveStack, footprint, PETS, PET_BY_ID, petPerk, addPet, rollCommonPet, rollRunPets, setPets, raidsPerDay, runningNow, raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS, viewerFlags, denView, visitDen, randomDen, allowVisit, VISIT_LIMIT,
