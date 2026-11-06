@@ -3631,7 +3631,7 @@ function drawRaidFx() {
 }
 
 // ----- raid feed (snapshot.raidFeed, oldest first; shown newest first; Bounty wins from Burrow Drop too) -----
-const FEED = { seen: new Set(), init: false, fresh: new Set(), sig: "", collapsed: null };
+const FEED = { seen: new Set(), init: false, fresh: new Set(), sig: "", collapsed: null, older: [], more: null, loading: false };
 const feedKey = (e) => `${e.at}|${e.atkId}|${e.defId}`;
 FEED.collapsed = ls.get("sr_feed") != null ? ls.get("sr_feed") === "1" : matchMedia("(max-width:860px)").matches;
 function applyFeed(list) {
@@ -3704,7 +3704,7 @@ function renderFeed() {
   if (!S.me || S.preview) { box.hidden = true; return; }
   box.hidden = false;
   const list = S.raidFeed || [], mine = myPid();
-  const sig = list.map(feedKey).join(",") + `|${mine}|${FEED.collapsed}|${Math.floor(Date.now() / 20_000)}`;
+  const sig = list.map(feedKey).join(",") + `|${mine}|${FEED.collapsed}|${Math.floor(Date.now() / 20_000)}|${FEED.older.length}|${FEED.more}|${FEED.loading}`;
   if (sig === FEED.sig) return;
   FEED.sig = sig;
   box.classList.toggle("collapsed", !!FEED.collapsed);
@@ -3715,7 +3715,29 @@ function renderFeed() {
   ol.innerHTML = "";
   if (!list.length) { ol.appendChild(elx("li", "empty", "No raids yet.")); return; }
   for (let i = list.length - 1; i >= 0; i--) ol.appendChild(feedLine(list[i], mine));
+  const shown = new Set(list.map(feedKey));
+  for (const e of FEED.older) if (!shown.has(feedKey(e))) ol.appendChild(feedLine(e, mine));
+  if (FEED.more !== false && (list.length >= (RB().FEED_SNAPSHOT || 20) || FEED.older.length)) {
+    const li = elx("li", "older"), b = elx("button", "olderbtn", FEED.loading ? "Loading…" : "Show older");
+    b.type = "button";
+    b.disabled = FEED.loading;
+    b.onclick = (ev) => { ev.stopPropagation(); loadOlderFeed(); };
+    li.appendChild(b);
+    ol.appendChild(li);
+  }
   setTimeout(() => { FEED.fresh = new Set(); }, 1300);
+}
+// older raids, a page at a time (GET /api/raids), below the live list
+async function loadOlderFeed() {
+  if (FEED.loading) return;
+  const oldest = [...(S.raidFeed || []), ...FEED.older].reduce((m, e) => Math.min(m, e.at), Infinity);
+  FEED.loading = true; FEED.sig = ""; renderFeed();
+  try {
+    const r = await fetch(`/api/raids?before=${Number.isFinite(oldest) ? oldest : ""}&limit=50`, { cache: "no-store" });
+    const j = await r.json();
+    if (r.ok && Array.isArray(j.rows)) { FEED.older.push(...j.rows); FEED.more = !!j.more; }
+  } catch { /* offline: the button stays */ }
+  FEED.loading = false; FEED.sig = ""; renderFeed();
 }
 
 // ---------- how to play: five short steps, each a tiny live scene (public/scenes.js, shared with the guide) ----------

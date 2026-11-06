@@ -113,7 +113,7 @@ const BALANCE = {
     RAIDED_BY_MAX: 20,
     PER_DAY: 10, // raids per attacker per UTC day; being raided has no limit
     MIN_EARNED: 0, // Watts a den must earn (wheel + bed) before it can raid or be raided; 0 = no limit
-    FEED_MAX: 50,
+    FEED_MAX: 5000, // raid feed kept in state (GET /api/raids pages through it)
     FEED_SNAPSHOT: 20,
     LEADERBOARD_MAX: 200,
     LEADERBOARD_CACHE_MS: 10_000,
@@ -154,7 +154,7 @@ const BALANCE = {
   // Each Bounty win is kept in state.drop.wins (newest last, WINS_MAX of them) and posted in the raid feed.
   DROP: {
     PAY: DropSim.PAY, // for the guide
-    COST: 500, STASH_START: 6, STASH_FEED_PCT: 5, WINS_MAX: 50, GOLDEN_ONE_IN: 8, CRATE_ONE_IN: 10, MIN_GAP_MS: 1500,
+    COST: 500, STASH_START: 6, STASH_FEED_PCT: 5, WINS_MAX: 1000, GOLDEN_ONE_IN: 8, CRATE_ONE_IN: 10, MIN_GAP_MS: 1500,
     PRIZE_PCT: { common: 55, uncommon: 26, rare: 12, epic: 5, legendary: 2 },
     DUP_WATTS: { common: 10, uncommon: 40, rare: 150, epic: 500, legendary: 1500 },
   },
@@ -1495,6 +1495,21 @@ function tokenForPublicId(st, pid) {
 
 const LB_CACHE = new WeakMap(); // state -> { at, rows, total }
 const invalidateLeaderboard = (st) => LB_CACHE.delete(st);
+// One page of a ring kept oldest first, returned newest first: entries older than `before` (ms; missing or 0 means
+// from the newest), at most `limit` of them (1..100, default 50). `more` says whether older ones remain.
+function historyPage(list, before, limit, map = (e) => e) {
+  const b = Number(before), cut = Number.isFinite(b) && b > 0 ? b : Infinity;
+  const n = Math.min(100, Math.max(1, Math.floor(Number(limit)) || 50));
+  const rows = [];
+  let i = list.length - 1;
+  while (i >= 0 && !(list[i] && list[i].at < cut)) i--;
+  for (; i >= 0 && rows.length < n; i--) if (list[i]) rows.push(map(list[i]));
+  while (i >= 0 && !list[i]) i--;
+  return { rows, more: i >= 0 };
+}
+const raidHistory = (st, before, limit) => historyPage(Array.isArray(st.raidFeed) ? st.raidFeed : [], before, limit);
+const bountyHistory = (st, before, limit) => historyPage(st.drop && Array.isArray(st.drop.wins) ? st.drop.wins : [], before, limit,
+  (w) => ({ at: w.at, name: w.name, amount: w.amount }));
 const pushRing = (arr, entry, max) => {
   arr.push(entry);
   if (arr.length > max) arr.splice(0, arr.length - max);
@@ -2603,6 +2618,10 @@ async function handle(req, res) {
       const { ok, ...body } = r;
       return json(res, 200, body);
     }
+    if ((url.pathname === "/api/raids" || url.pathname === "/api/bounties") && req.method === "GET") {
+      const before = url.searchParams.get("before"), limit = url.searchParams.get("limit");
+      return json(res, 200, url.pathname === "/api/raids" ? raidHistory(state, before, limit) : bountyHistory(state, before, limit));
+    }
     if (url.pathname === "/api/leaderboard" && req.method === "GET") {
       return json(res, 200, leaderboard(state, url.searchParams.get("token"), Date.now()));
     }
@@ -2671,7 +2690,7 @@ function listen() {
 
 module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible, wwwRedirect };
 // Extra helpers for tests (the plan's six names above stay the primary surface).
-Object.assign(module.exports, { offensiveName, lateDen, takeSnapshot, SNAPSHOT_AT, LATE_DEN_MS, ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
+Object.assign(module.exports, { historyPage, raidHistory, bountyHistory, offensiveName, lateDen, takeSnapshot, SNAPSHOT_AT, LATE_DEN_MS, ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
   stackAbove, moveStack, footprint, runningNow, raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS, viewerFlags, denView, visitDen, randomDen, allowVisit, VISIT_LIMIT,

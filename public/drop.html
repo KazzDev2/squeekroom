@@ -42,6 +42,15 @@ h1 img{width:30px;height:30px}
 .lastb[hidden]{display:none}
 .lastb b{color:var(--ink)}
 .lastb span{color:var(--gold);font-weight:700}
+.histbtn,.bhist button{all:unset;cursor:pointer;color:var(--ink);text-decoration:underline dotted;text-underline-offset:2px}
+.histbtn{margin-left:6px}
+.histbtn:focus-visible,.bhist button:focus-visible{outline:2px solid var(--ink);outline-offset:1px}
+.bhist{list-style:none;width:100%;box-sizing:border-box;margin:-4px 0 8px;padding:6px 8px;max-height:160px;overflow:auto;background:var(--panel);border:2px solid var(--ink);border-radius:6px;font-size:12px}
+.bhist[hidden]{display:none}
+.bhist li{display:flex;gap:6px;padding:2px 0}
+.bhist .a{color:var(--gold);font-weight:700}
+.bhist .t{margin-left:auto;color:var(--muted)}
+.bhist .more{justify-content:center}
 .gold{font-family:var(--display);font-size:10px;color:#1d1a14;background:#ffd166;border:1.5px solid #1d1a14;border-radius:4px;padding:1px 6px;align-self:center}
 canvas#board{display:block;width:min(100%, calc((100vh - 190px) * 240 / 360));min-width:240px;aspect-ratio:240/360;height:auto;image-rendering:pixelated;border:3px solid var(--ink);border-radius:8px;box-shadow:4px 4px 0 var(--ink);background:#3d1e0d;touch-action:none;cursor:crosshair}
 .wager{width:100%;max-width:360px;display:flex;align-items:center;gap:10px;margin-top:12px}
@@ -64,7 +73,8 @@ canvas#board{display:block;width:min(100%, calc((100vh - 190px) * 240 / 360));mi
   <span class="gold" id="golden" hidden>GOLDEN BOARD</span>
   <div class="stat stash" style="text-align:right"><small>BOUNTY</small><b id="stash">…</b></div>
 </div>
-<div class="lastb" id="lastBounty" hidden>Last Bounty: <b id="lastName"></b> <span id="lastAmt"></span></div>
+<div class="lastb" id="lastBounty" hidden>Last Bounty: <b id="lastName"></b> <span id="lastAmt"></span> <button type="button" class="histbtn" id="bountyHistBtn">History</button></div>
+<ol class="bhist" id="bountyHist" hidden></ol>
 <canvas id="board" width="240" height="360" role="img" aria-label="Burrow Drop board"></canvas>
 <div class="wager" id="wagerRow" role="group" aria-label="Wager">
   <input id="wagerRange" type="range" min="0" max="1000" step="1" value="0" aria-label="Wager">
