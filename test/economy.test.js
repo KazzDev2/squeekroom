@@ -2638,3 +2638,26 @@ test("history pages: newest first, before/limit paging, no repeats, Bounty rows 
   assert.equal(RA.FEED_MAX, 5000);
   assert.equal(BALANCE.DROP.WINS_MAX, 1000);
 });
+
+test("banned dens: from 6 h before the snapshot they leave the leaderboard and snapshot, and can't raid or be raided", () => {
+  const AT = S.SNAPSHOT_AT, from = AT - S.LATE_DEN_MS;
+  const st = raidWorld();
+  const banned = "testban00001";
+  st.players[TB].publicId = banned;
+  S.BANNED_DENS.add(banned);
+  try {
+    S.invalidateLeaderboard(st);
+    assert.deepEqual([S.bannedDen(st.players[TB], from - 1), S.bannedDen(st.players[TB], from)], [false, true]);
+    assert.ok(S.leaderboard(st, null, from - 1).rows.some((r) => r.publicId === banned));
+    S.invalidateLeaderboard(st);
+    assert.ok(!S.leaderboard(st, null, from + 1000).rows.some((r) => r.publicId === banned));
+    const tryRaid = (atk, defPid, now) => S.applyRaid(st, atk, { target: defPid, stake: 500, mult: 200 }, now, { rng: seq(LOSE) });
+    assert.equal(tryRaid(TA, banned, from + 1000).error, "bad_target"); // nobody can raid it
+    assert.equal(tryRaid(TB, pidOf(TA), from + 1000).error, "no_raids_left"); // and it can't raid
+    const snap = S.takeSnapshot(st, AT + 1000);
+    assert.ok(!snap.rows.some((r) => r.publicId === banned));
+    assert.ok(snap.rows.some((r) => r.publicId === pidOf(TA)));
+  } finally {
+    S.BANNED_DENS.delete(banned);
+  }
+});
