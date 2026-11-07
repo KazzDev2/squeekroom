@@ -55,6 +55,10 @@ const MAX_PLAYERS = 50_000;
 // leaderboard-snapshot.json beside state.json). Dens created in the LATE_DEN_MS before it have no raids until then.
 const SNAPSHOT_AT = Date.parse(process.env.SNAPSHOT_AT || "2026-11-07T14:00:00Z"); // Sat 7 Nov 2026, 14:00 UTC
 const LATE_DEN_MS = 6 * 3_600_000;
+// Dens listed in the BANNED_DENS environment variable (publicIds, comma-separated) leave the standings from
+// SNAPSHOT_AT - LATE_DEN_MS: off the leaderboard and the snapshot, and they can't raid or be raided. Den and Watts stay.
+const BANNED_DENS = new Set(String(process.env.BANNED_DENS || "").split(",").map((s) => s.trim()).filter(Boolean));
+const bannedDen = (p, now, at = SNAPSHOT_AT) => !!p && BANNED_DENS.has(p.publicId) && now >= at - LATE_DEN_MS;
 const DEMO_BASE_HEIGHT = 4135; // used when demo mode has no chain reading yet
 const DEMO_MAX_ADVANCE = 2000;
 const TOKEN_RE = /^[A-Za-z0-9_-]{16,64}$/;
@@ -1543,7 +1547,7 @@ function lateDen(p, now, at = SNAPSHOT_AT) {
   const born = p ? Date.parse(p.createdAt) : NaN;
   return Number.isFinite(born) && born >= at - LATE_DEN_MS && now < at;
 }
-const raidsLeft = (p, now) => (lateDen(p, now) ? 0 : p.raidDay === utcDay(now) ? Math.max(0, raidsPerDay(p) - (p.raidsToday | 0)) : raidsPerDay(p));
+const raidsLeft = (p, now) => (lateDen(p, now) || bannedDen(p, now) ? 0 : p.raidDay === utcDay(now) ? Math.max(0, raidsPerDay(p) - (p.raidsToday | 0)) : raidsPerDay(p));
 const msToUtcMidnight = (now) => 86_400_000 - (now % 86_400_000);
 const raidResetMs = (p, now) => (lateDen(p, now) ? SNAPSHOT_AT - now : msToUtcMidnight(now));
 // The oldest unavenged provocation by `pid` against `player` within the revenge window, or null.
@@ -1626,6 +1630,7 @@ function applyRaid(st, token, body, now = Date.now(), { rng = Math.random, readA
   const defToken = tokenForPublicId(st, b.target);
   if (!defToken) return fail("bad_target");
   const def = st.players[defToken];
+  if (bannedDen(def, now)) return fail("bad_target");
   if (def !== atk && !raidReady(def)) return { ok: false, error: "not_eligible", reason: "fresh_target", needEarned: R.MIN_EARNED };
   if (def !== atk && shieldUp(def, now)) return { ok: false, error: "target_shielded", until: def.shield.until };
   const el = raidEligibility(atk, def, now);
@@ -1677,7 +1682,7 @@ function leaderboardRows(st, now) {
   const R = BALANCE.RAID;
   const c = LB_CACHE.get(st);
   if (c && now >= c.at && now - c.at < R.LEADERBOARD_CACHE_MS) return c;
-  const all = Object.values(st.players).filter((p) => p && p.publicId);
+  const all = Object.values(st.players).filter((p) => p && p.publicId && !bannedDen(p, now));
   all.sort(byStanding);
   const rows = all.slice(0, R.LEADERBOARD_MAX).map((p, i) => ({ rank: i + 1, publicId: p.publicId, nick: p.nick, name: displayName(p), verified: !!p.wallet, watts: p.watts, lifetimeWatts: p.lifetimeWatts, roomTier: p.roomTier | 0, fresh: !raidReady(p), online: isOnline(p, now),
     shieldUntil: p.shield && p.shield.until > now ? p.shield.until : 0 }));
@@ -1688,7 +1693,7 @@ function leaderboardRows(st, now) {
 // The final standings, taken once when SNAPSHOT_AT has passed. Kept in state; returns null when not due or already taken.
 function takeSnapshot(st, now = Date.now(), at = SNAPSHOT_AT) {
   if (st.leaderboardSnapshot || now < at) return null;
-  const all = Object.values(st.players).filter((p) => p && p.publicId).sort(byStanding);
+  const all = Object.values(st.players).filter((p) => p && p.publicId && !bannedDen(p, now, at)).sort(byStanding);
   const rows = all.map((p, i) => ({ rank: i + 1, name: displayName(p), username: p.username || null, publicId: p.publicId,
     watts: p.watts, lifetimeWatts: p.lifetimeWatts, wallet: p.wallet || null }));
   st.leaderboardSnapshot = { at: now, scheduledAt: at, height: st.height, rows };
@@ -2808,7 +2813,7 @@ function listen() {
 
 module.exports = { BALANCE, CATALOG, accrue, canBuy, validatePlacement, certEligible, wwwRedirect };
 // Extra helpers for tests (the plan's six names above stay the primary surface).
-Object.assign(module.exports, { historyPage, raidHistory, bountyHistory, offensiveName, lateDen, takeSnapshot, SNAPSHOT_AT, LATE_DEN_MS, ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
+Object.assign(module.exports, { bannedDen, BANNED_DENS, historyPage, raidHistory, bountyHistory, offensiveName, lateDen, takeSnapshot, SNAPSHOT_AT, LATE_DEN_MS, ROOM, CATALOG_BY_ID, newPlayer, accrueAll, applyBuy, heartbeat, liveBonusPct, claimCommemorative, MAX_PLAYERS, chainIdle,
   accrueBed, asleep, noteStatus, statusFresh, STATUS_PAUSE_MS, bedCredit, bedMultPct, bedWattsPerMin, BED_FRAC_DEN, patchPlayer, patchState, publicIdFor, publicPlayer, snapshot, configPayload,
   stackAbove, moveStack, footprint, PETS, PET_BY_ID, petPerk, addPet, rollCommonPet, rollRunPets, setPets, raidsPerDay, runningNow, raidChance, resolveRaid, raidOdds, raidReady, fixtureTiles, fixtureFits, fixturesClear, repairFixtures, wealthTilt, stakeBounds, lootCap, raidsLeft, moveFixture, validFixtures, parseMultPct, raidEligibility, pendingRevenge, raidStatus, applyRaid,
   leaderboard, invalidateLeaderboard, tokenForPublicId, CHAIN_FRESH_MS, viewerFlags, denView, visitDen, randomDen, allowVisit, VISIT_LIMIT,
